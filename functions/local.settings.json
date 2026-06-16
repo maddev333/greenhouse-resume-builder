@@ -1,0 +1,25 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "AzureWebJobsFeatureFlags": "EnableWorkerIndexing",
+    "COSMOS_ENDPOINT": "https://localhost:8081",
+    "COSMOS_AUTH_KEY": "C2y6yDjf5/R+ob0N8A7Cgv30VRV6WEYXvzNgVYE3xg=",
+    "AZURE_STORAGE_ACCOUNT_NAME": "",
+    "AZURE_STORAGE_ACCOUNT_KEY": "",
+    "AZURE_STORAGE_CONNECTION_STRING": "",
+    "AZURE_STORAGE_CONTAINER": "raw",
+    "AZURE_STORAGE_ENDPOINT_SUFFIX": "",
+    "AGENT_MODE": "hybrid",
+    "AZURE_OPENAI_ENDPOINT": "",
+    "AZURE_OPENAI_API_KEY": "",
+    "AZURE_OPENAI_DEPLOYMENT": "",
+    "AZURE_OPENAI_API_VERSION": "2024-10-21",
+    "AZURE_OPENAI_TOKEN_SCOPE": "",
+    "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT": "",
+    "AZURE_DOCUMENT_INTELLIGENCE_KEY": "",
+    "AZURE_DOCUMENT_INTELLIGENCE_AUDIENCE": "",
+    "AZURE_AUTHORITY_HOST": ""
+  }
+}

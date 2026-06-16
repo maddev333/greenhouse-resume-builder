@@ -1,0 +1,49 @@
+# Agent governance policy — Agent Governance Toolkit (AGT) schema
+# https://microsoft.github.io/agent-governance-toolkit/
+#
+# Loaded by capabilities/mcp-core (src/governance.ts) when GOVERNANCE_ENABLED=true.
+# This is the AGT `governance.toolkit/v1` policy shape; the in-repo LocalPolicyProvider
+# evaluates the deterministic, eval-free subset documented below. When you vendor and
+# IL5-review `@microsoft/agent-governance-sdk`, the same file feeds its PolicyEvaluator.
+#
+# Evaluation: rules are checked highest-`priority` first; the first match decides.
+# If nothing matches, `default_action` applies. Each rule uses EITHER a structured
+# `match:` block (preferred — safe membership/regex) OR an AGT `condition:` string
+# (supported operators only: `FIELD in [..]`, `FIELD == '..'`, `FIELD matches '..'`).
+# Fields: tool_name | action_type | agent_id | input_text (input_text = JSON of args).
+
+apiVersion: governance.toolkit/v1
+name: greenhouse-resume-builder-policy
+default_action: allow
+
+rules:
+  # Destructive data operations are never agent-driven in this system.
+  - name: block-destructive
+    description: Destructive operations require human action, not an agent tool call.
+    priority: 100
+    action: deny
+    match:
+      action_type: [delete, drop, truncate, purge, shell_exec]
+
+  # Block obvious PII (SSN pattern) from being passed through tool arguments.
+  - name: block-ssn-in-args
+    description: SSN pattern detected in tool arguments.
+    priority: 90
+    action: deny
+    match:
+      args_pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+
+  # Writes to the system of record stay inside the durable boundary, not ad-hoc tool calls.
+  # Route through PersistBuilderOutput / persistence activities instead.
+  - name: require-approval-for-direct-writes
+    description: Direct index/store writes should be reviewed before an agent performs them.
+    priority: 50
+    action: require_approval
+    condition: "tool_name in ['index_upsert', 'upsert_explicit_relationship']"
+
+  # Example of the AGT condition syntax (equivalent structured form shown above).
+  # - name: block-web-egress-tool
+  #   description: Outbound fetch tools are not permitted in the IL5 boundary.
+  #   priority: 80
+  #   action: deny
+  #   condition: "action.type == 'http_fetch'"
