@@ -97,25 +97,24 @@ export const authMiddleware: RequestHandler = async (req, res, next) => {
   console.error('[authMiddleware] ALLOW_DEV_AUTH_BYPASS=', ALLOW_DEV_AUTH_BYPASS);
   console.error('[authMiddleware] hasAuthHeader=', !!authHeader);
 
-  if (!AZURE_AD_JWKS_URI?.trim()) {
-    // ── Dev mode: no JWKS configured → accept without verification ──
-    if (ALLOW_DEV_AUTH_BYPASS) {
-      // DEV BYPASS: ANY request passes, even with zero headers. No network calls.
-      console.error('[authMiddleware] → dev bypass accepted (any request).');
-      claims = { userId: 'dev-placeholder', tenantId: 'developer-tenant' };
-    } else if (!authHeader.toLowerCase().startsWith('bearer ')) {
-      // Dev without bypass requires a Bearer header
+  // ── Dev bypass: allow all requests locally regardless of JWKS config ──
+  if (ALLOW_DEV_AUTH_BYPASS) {
+    // ANY request passes, even with zero headers. No network calls.
+    console.error('[authMiddleware] → dev bypass accepted (any request).');
+    claims = { userId: 'dev-placeholder', tenantId: 'developer-tenant' };
+  } else if (!AZURE_AD_JWKS_URI?.trim()) {
+    // ── Local dev without bypass: require Bearer header ──
+    if (!authHeader.toLowerCase().startsWith('bearer ')) {
       const msg = 'Dev auth requires: EITHER set ALLOW_DEV_AUTH_BYPASS=true OR send an Authorization: Bearer <token>.';
       console.error('[authMiddleware] → reject: ' + msg);
       return res.status(401).json({ error: msg });
-    } else {
-      // Dev with validation: accepts Bearer but doesn't verify crypto
-      accessToken = authHeader.slice(7);
-      claims = await validateTokenClaimsDev(accessToken);
-      console.error('[authMiddleware] → dev accepted, userId=' + claims.userId);
     }
-  } else if (AZURE_AD_JWKS_URI) {
-    // ── Production: must have valid Bearer ──
+    // Accept Bearer but doesn't verify crypto
+    accessToken = authHeader.slice(7);
+    claims = await validateTokenClaimsDev(accessToken);
+    console.error('[authMiddleware] → dev accepted, userId=' + claims.userId);
+  } else {
+    // ── Production: require valid Bearer ──
     if (!authHeader.toLowerCase().startsWith('bearer ')) {
       return res.status(401).json({ error: 'Missing or invalid Authorization header (expected Bearer token)' });
     }
@@ -127,9 +126,6 @@ export const authMiddleware: RequestHandler = async (req, res, next) => {
       console.error('[authMiddleware] → prod verify failed:', err.message);
       return res.status(401).json({ error: 'Invalid Bearer token: ' + err.message });
     }
-  } else {
-    // Catch-all: shouldn't reach here but fail closed
-    return res.status(401).json({ error: 'Authentication mode unknown. Set AZURE_AD_JWKS_URI or ALLOW_DEV_AUTH_BYPASS=true.' });
   }
 
   // Type-safe assignment via unknown intermediate to satisfy TypeScript no-overlap check

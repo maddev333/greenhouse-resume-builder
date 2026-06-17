@@ -1,7 +1,7 @@
 /** Greenhouse Resume Builder MVP — Express API Server Entry Point */
 
-// ── Load environment variables first (centralized loader)
-import '../../../shared/src/env';
+// 🔥 Must be the FIRST import — loads .env into process.env before any module that reads process.env at load time.
+import './_env-loader';
 
 import express from 'express';
 import cors from 'cors';

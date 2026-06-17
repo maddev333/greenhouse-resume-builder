@@ -1,17 +1,22 @@
 /** Greenhouse Resume Builder - Landing page entry */
-import { useState, useEffect, useCallback } from 'react';import type { ExtractionRun, BulletDiff, RelationshipEdge, AnnotationItem } from './api';
+import { useState, useEffect, useCallback } from 'react';
+import type { ExtractionRun, BulletDiff, RelationshipEdge, AnnotationItem } from './api';
+import { useAuth } from './auth/useAuth';
+import { setAuthToken } from './auth/api-auth';
+import { AuthBar } from './auth/AuthBar';
 
-// ── API helper (use inline to avoid circular deps) ────
+// ── Auth helpers — attach MSAL Bearer token to API requests ────
+
+import { getApiAuthToken } from './auth/api-auth';
 
 const BASE = (import.meta.env.VITE_API_URL ?? '/api/v1') as string;
 
 async function json<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const init: RequestInit = { method };
-  if (body !== undefined) {
-    init.method = method;
-    init.headers = { 'Content-Type': 'application/json' };
-    init.body = JSON.stringify(body);
-  }
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = getApiAuthToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const init: RequestInit = { method, headers };
+  if (body !== undefined) init.body = JSON.stringify(body);
   const res = await fetch(`${BASE}${path}`, init);
   if (res.status === 204 || res.status === 205) return null as unknown as T;
   if (!res.ok) {
@@ -387,9 +392,12 @@ export function LandingPage() {
   const [ingestStatus, setIngestStatus] = useState<'idle' | 'submitting' | 'polling' | 'done' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Load recent runs on mount
+  // Load recent runs on mount (with auth header)
   useEffect(() => {
-    fetch('/api/v1/ingestion-requests?tenantId=tenant-dev')
+    const token = getApiAuthToken();
+    fetch('/api/v1/ingestion-requests?tenantId=tenant-dev', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
       .then(r => r.ok ? (r.json() as Promise<ExtractionRun[]>) : Promise.reject(''))
       .then(data => setRuns(Array.isArray(data) ? data.reverse().slice(0, 20) : []))
       .catch(() => {});
@@ -428,10 +436,10 @@ export function LandingPage() {
         return;
       }
 
-      // Submit ingestion request
+      // Submit ingestion request (with auth header)
       const resp = await fetch('/api/v1/ingestion-requests', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ['Content-Type']: 'application/json', ...(getApiAuthToken() ? { Authorization: `Bearer ${getApiAuthToken()}` } : {}) },
         body: JSON.stringify({ tenantId: 'tenant-dev', sourceDocuments: sources } as any),
       });
       if (!resp.ok) throw new Error(`Status ${resp.status}`);
@@ -578,7 +586,16 @@ export function LandingPage() {
 
 // ── App Root ────────────────────────────────────────────────
 
+export function useAppAuth(): void {
+  const { authenticated, getToken } = useAuth();
+  useEffect(() => {
+    setAuthToken(authenticated ? getToken() : null);
+  }, [authenticated, getToken]);
+}
+
 export default function App() {
+  useAppAuth();
+
   // Show CandidateProfilePage only when a personId is specified in the URL,
   // otherwise show LandingPage (the entry screen for ingestion).
   const params = new URLSearchParams(window.location.search);
@@ -586,6 +603,15 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', minHeight: '100vh', background: '#f3f4f6' }}>
+      {/* ── Top bar ─────────────────────────────────────── */}
+      <header style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '10px 20px', background: '#fff', borderBottom: '1px solid #e5e7eb',
+      }}>
+        <h1 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Greenhouse Resume Builder</h1>
+        <AuthBar />
+      </header>
+
       {hasPersonId ? <CandidateProfilePage /> : <LandingPage />}
     </div>
   );
