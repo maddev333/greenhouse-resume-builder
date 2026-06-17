@@ -2,22 +2,18 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { ExtractionRun, BulletDiff, RelationshipEdge, AnnotationItem } from './api';
 import { useAuth } from './auth/useAuth';
-import { setAuthToken } from './auth/api-auth';
+import { fetchWithAuth, setAuthToken, setAuthTokenProvider } from './auth/api-auth';
 import { AuthBar } from './auth/AuthBar';
+import { isAuthConfigured } from './auth/msal-config';
 
 // ── Auth helpers — attach MSAL Bearer token to API requests ────
 
-import { getApiAuthToken } from './auth/api-auth';
-
-const BASE = (import.meta.env.VITE_API_URL ?? '/api/v1') as string;
-
 async function json<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const token = getApiAuthToken();
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const headers = new Headers();
+  if (body !== undefined) headers.set('Content-Type', 'application/json');
   const init: RequestInit = { method, headers };
   if (body !== undefined) init.body = JSON.stringify(body);
-  const res = await fetch(`${BASE}${path}`, init);
+  const res = await fetchWithAuth(path, init);
   if (res.status === 204 || res.status === 205) return null as unknown as T;
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ error: res.statusText }));
@@ -394,11 +390,7 @@ export function LandingPage() {
 
   // Load recent runs on mount (with auth header)
   useEffect(() => {
-    const token = getApiAuthToken();
-    fetch('/api/v1/ingestion-requests?tenantId=tenant-dev', {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-      .then(r => r.ok ? (r.json() as Promise<ExtractionRun[]>) : Promise.reject(''))
+    json<ExtractionRun[]>('GET', '/ingestion-requests?tenantId=tenant-dev')
       .then(data => setRuns(Array.isArray(data) ? data.reverse().slice(0, 20) : []))
       .catch(() => {});
   }, []);
@@ -436,14 +428,10 @@ export function LandingPage() {
         return;
       }
 
-      // Submit ingestion request (with auth header)
-      const resp = await fetch('/api/v1/ingestion-requests', {
-        method: 'POST',
-        headers: { ['Content-Type']: 'application/json', ...(getApiAuthToken() ? { Authorization: `Bearer ${getApiAuthToken()}` } : {}) },
-        body: JSON.stringify({ tenantId: 'tenant-dev', sourceDocuments: sources } as any),
-      });
-      if (!resp.ok) throw new Error(`Status ${resp.status}`);
-      const result = (await resp.json()) as Record<string, unknown>;
+      const result = await json<Record<string, unknown>>('POST', '/ingestion-requests', {
+        tenantId: 'tenant-dev',
+        sourceDocuments: sources,
+      } as any);
       const runId = (result.runId ?? result.id) as string;
       if (!runId) throw new Error('No runId in response');
 
@@ -453,8 +441,8 @@ export function LandingPage() {
       let attempts = 0;
       while (attempts < 120) {
         await new Promise(r => setTimeout(r, 5000));
-        const status = await fetch(`/api/v1/ingestion-requests/${runId}/status`)
-          .then(r => r.ok ? (r.json() as Promise<ExtractionRun>) : null);
+        const status = await json<ExtractionRun>('GET', `/ingestion-requests/${runId}/status`)
+          .catch(() => null);
 
         if (status) {
           setRuns(prev => [status, ...prev.filter(r => r.id !== runId)].slice(0, 21));
@@ -586,15 +574,18 @@ export function LandingPage() {
 
 // ── App Root ────────────────────────────────────────────────
 
-export function useAppAuth(): void {
-  const { authenticated, getToken } = useAuth();
+export function useAppAuth() {
+  const auth = useAuth();
+  const { accessToken, authenticated, getAccessToken, getToken } = auth;
   useEffect(() => {
     setAuthToken(authenticated ? getToken() : null);
-  }, [authenticated, getToken]);
+    setAuthTokenProvider(authenticated ? getAccessToken : null);
+  }, [accessToken, authenticated, getAccessToken, getToken]);
+  return auth;
 }
 
 export default function App() {
-  useAppAuth();
+  const auth = useAppAuth();
 
   // Show CandidateProfilePage only when a personId is specified in the URL,
   // otherwise show LandingPage (the entry screen for ingestion).
@@ -612,7 +603,14 @@ export default function App() {
         <AuthBar />
       </header>
 
-      {hasPersonId ? <CandidateProfilePage /> : <LandingPage />}
+      {isAuthConfigured && auth.loading ? (
+        <main style={{ maxWidth: 760, margin: '48px auto', padding: '0 20px', color: '#6b7280' }}>Checking Microsoft sign-in…</main>
+      ) : isAuthConfigured && !auth.authenticated ? (
+        <main style={{ maxWidth: 760, margin: '48px auto', padding: '0 20px', background: '#fff', borderRadius: 8, boxShadow: '#e5e7eb 0px 1px 3px' }}>
+          <h2 style={{ margin: '0 0 8px', paddingTop: 20, fontSize: 20 }}>Sign in required</h2>
+          <p style={{ margin: '0 0 20px', color: '#6b7280' }}>Use the Microsoft sign-in button above to access resume services.</p>
+        </main>
+      ) : hasPersonId ? <CandidateProfilePage /> : <LandingPage />}
     </div>
   );
 }

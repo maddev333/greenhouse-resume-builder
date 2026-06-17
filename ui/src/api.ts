@@ -2,23 +2,10 @@
  * API client — typed fetch wrapper for the Greenhouse Resume Builder.
  */
 
-const BASE = (import.meta.env.VITE_API_URL ?? '/api/v1') as string;
+import { fetchWithAuth, jsonWithAuth } from './auth/api-auth';
 
 async function json<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const init: RequestInit = {
-    method, headers: { 'Content-Type': 'application/json' },
-  };
-  if (body) init.body = JSON.stringify(body);
-
-  const res = await fetch(`${BASE}${path}`, init);
-  if (res.status === 204 || res.status === 205) return null as T; // No content
-  
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(detail.error ?? `API ${method} ${path}: ${res.status}`);
-  }
-
-  return res.json() as Promise<T>;
+  return jsonWithAuth<T>(method, path, body);
 }
 
 export type ExtractionRun = { id: string; status: string; createdAt: string; completedAt?: string | null; personId?: string };
@@ -82,7 +69,7 @@ export const apiAnnotations = {
     json<any>(`PATCH`, `/annotations/${id}`, { status }),
 
   /** Delete an annotation. */
-  remove: (id: string) => fetch(`${BASE}/annotations/${id}`, { method: 'DELETE' }).then(r => r.status),
+  remove: (id: string) => fetchWithAuth(`/annotations/${id}`, { method: 'DELETE' }).then(r => r.status),
 };
 
 // ── Relationships ───────────────────────────────────────────

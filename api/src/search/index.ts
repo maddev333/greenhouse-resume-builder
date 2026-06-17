@@ -2,6 +2,8 @@
  * Azure AI Search service — initializes index, syncs docs, queries facts/bullets/annotations.
  */
 
+import { getCredentialForUser } from '../services/entra-token';
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyImport = any;
 
@@ -20,13 +22,12 @@ function searchEndpoint(): string {
  * Credential for Azure AI Search. Uses the admin API key when AZURE_SEARCH_API_KEY is set;
  * otherwise Microsoft Entra ID (managed identity) — required for DoD IL5.
  */
-function getSearchCredential(): AnyImport {
+function getSearchCredential(userAssertionToken?: string): AnyImport {
   if (SEARCH_API_KEY) {
     const { AzureKeyCredential } = require('@azure/core-auth');
     return new AzureKeyCredential(SEARCH_API_KEY);
   }
-  const { DefaultAzureCredential } = require('@azure/identity');
-  return new DefaultAzureCredential();
+  return getCredentialForUser(userAssertionToken);
 }
 
 let _indexClient: AnyImport | null = null;
@@ -125,13 +126,14 @@ export interface SearchQueryOptions {
   factKey?:    string;
   top?:         number;
   skip?:        number;
+  userAssertionToken?: string;
 }
 
 /** Full-text search across bullets and facts, with optional filters. */
 export async function searchResumeContents(options: SearchQueryOptions): Promise<Record<string, unknown>[]> {
   if (!SEARCH_SERVICE_NAME) return [];
 
-  const { query, top = 20, skip = 0, ...filters } = options;
+  const { query, top = 20, skip = 0, userAssertionToken, ...filters } = options;
 
   let filterParts: string[] = [];
   for (const [key, value] of Object.entries(filters)) {
@@ -146,7 +148,7 @@ export async function searchResumeContents(options: SearchQueryOptions): Promise
 
   const endpoint = searchEndpoint();
   // @ts-ignore -- SearchClient constructor/signature compatibility
-  const searchClient = new ((globalThis as any)?.SearchClient || (require('@azure/search-documents')?.SearchClient))(endpoint, getSearchCredential());
+  const searchClient = new ((globalThis as any)?.SearchClient || (require('@azure/search-documents')?.SearchClient))(endpoint, getSearchCredential(userAssertionToken));
 
   let results: any;
   try {

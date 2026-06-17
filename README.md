@@ -132,8 +132,12 @@ greenhouse-resume-builder/
 
 ## Authentication
 
-- **Dev mode**: permissive bearer-token bypass for local development
-- **Production mode**: `jose`-based JWT verification against remote JWKS (`api/src/middleware/auth.middleware.ts`)
+- **UI sign-in**: the Vite app uses MSAL and `VITE_AZURE_AD_CLIENT_ID` to sign in with Microsoft Entra ID, then requests an API token for `VITE_API_SCOPE` or `api://VITE_API_CLIENT_ID/.default`.
+- **API validation**: the Express API verifies Entra access tokens with `jose`, remote JWKS, accepted audiences, issuer prefixes/exact issuers, and tenant/user claims (`api/src/middleware/auth.middleware.ts`). Production verification activates when `AZURE_AD_JWKS_URI` is set, or `AZURE_TENANT_ID` **plus** an audience (`AZURE_AD_CLIENT_ID`/`AZURE_AD_AUDIENCE`/`AZURE_AD_VALID_AUDIENCES`) is set.
+- **Token propagation**: all UI REST calls use the same MSAL access-token provider. The API exposes the validated user as `req.user` and keeps the raw token as `req.accessToken` for OBO-capable downstream calls.
+- **Nested SSO**: Azure AI Search calls use OBO when the API has OBO configuration. The Functions starter call uses OBO or managed identity via `FUNCTIONS_TOKEN_SCOPE`; Durable orchestration receives only user/tenant metadata, not raw bearer tokens, so tokens are not persisted in Durable history.
+- **Function boundary**: the Durable HTTP starter authenticates the calling API (trusted-subsystem) before trusting the forwarded tenant/user identity. Enable it by setting `FUNCTIONS_AUTH_AUDIENCE` (to the resource of `FUNCTIONS_TOKEN_SCOPE`); when unset it is not enforced, so otherwise protect the endpoint with platform auth (EasyAuth/APIM) or network isolation (`functions/src/pipeline/validate-caller.ts`).
+- **Dev mode**: `ALLOW_DEV_AUTH_BYPASS=true` is a local-only bypass — it is ignored when `NODE_ENV=production`. With neither the bypass nor a JWKS audience configured the API **fails closed** (rejects requests) rather than trusting unverified token claims.
 
 ## Database (PostgreSQL)
 

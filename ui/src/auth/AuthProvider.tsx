@@ -1,35 +1,33 @@
-/** Auth context provider — wraps the app with MSAL login/logoud state. */
+/** Auth context provider — wraps the app with shared MSAL state. */
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { PublicClientApplication } from '@azure/msal-browser';
-import { msalConfig } from './msal-config';
+import React, { createContext, useContext } from 'react';
+import { useAuth } from './useAuth';
 
 export const AuthContext = createContext({
   user: null as any | null,
   isAuthenticated: false,
-  login: () => {},
-  logout: () => {},
+  login: async () => {},
+  logout: async () => {},
   accessToken: null as string | null,
 });
 
 interface MsalState {
   user: any | null;
   isAuthenticated: boolean;
-  login: () => void;
-  logout: () => void;
+  login: () => Promise<void>;
+  logout: () => Promise<void>;
   accessToken: string | null;
 }
 
-const msalInstance = new PublicClientApplication(msalConfig);
-
-// Simple MSAL state wrapper for your app
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<MsalState>({ user: null, isAuthenticated: false, login: () => {}, logout: () => {}, accessToken: null });
-
-  // Auto-login on mount — try silent first, fall back to popup
-  useEffect(() => {
-    msalInstance.loginRedirect({ scopes: ['api://<BACKEND_CLIENT_ID>/.default'] });
-  }, []);
+  const auth = useAuth();
+  const state: MsalState = {
+    user: auth.user,
+    isAuthenticated: auth.authenticated,
+    login: auth.login,
+    logout: auth.logout,
+    accessToken: auth.accessToken,
+  };
 
   return (
     <AuthContext.Provider value={state}>

@@ -9,6 +9,8 @@ import * as persist from '../persistence/index';
 
 interface OrchestrationInput {
   runId:      string;
+  tenantId?: string;
+  requestedByUserId?: string;
   personOverride?: string;
   webUrls?:   string[];
 }
@@ -30,6 +32,7 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
   const df = context.df;
   const input = (df.getInput() ?? {}) as OrchestrationInput;
   const runId = input.runId;
+  const tenantId = input.tenantId || 'tenant-default';
   const log = (msg: string) => { if (!df.isReplaying) context.log(msg); };
 
   log('[Orchestrator] Starting ingestion for run ' + runId);
@@ -118,7 +121,7 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
   // ── Gate 4b: Builder-agent stage (resume building) ──
   const builderOutput = yield df.callActivity('ResumeBuilderAgent', {
     runId,
-    tenantId: 'tenant-default',
+    tenantId,
     personId,
     sourceDocumentIds,
     extracted: {
@@ -137,7 +140,7 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
     runId,
     person: {
       id: personId,
-      tenantId: 'tenant-default',
+      tenantId,
       canonicalName: nameMatch || 'Unknown Candidate',
       aliases: nameMatch ? [nameMatch] : [],
       dedupStatus,

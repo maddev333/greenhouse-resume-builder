@@ -82,6 +82,7 @@ app.get('/health', (_req, res) => {
         personId,
         top: parseInt(req.body.top as string) || 20,
         skip: parseInt(req.body.skip as string) || 0,
+        userAssertionToken: req.accessToken,
       });
       res.json({ results, total: results.length });
     } catch (err: any) {

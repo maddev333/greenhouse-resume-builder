@@ -7,7 +7,7 @@
  * The loop is transport-agnostic: you provide a `callTool(name, args)` function. Use
  * `mcpToolCaller(serverUrl)` to call a capability's MCP server over Streamable HTTP.
  */
-import { getAoaiAuthHeaders, getEntraToken, isModelConfigured } from './identity';
+import { getAoaiAuthHeaders, getEntraToken, getOboToken, isModelConfigured, isOboConfigured } from './identity';
 
 export interface AgentTool {
   name: string;
@@ -143,15 +143,29 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
 /**
  * Build a `callTool` that dispatches to a remote MCP capability server over Streamable
- * HTTP (JSON-RPC tools/call). Auth uses a managed-identity bearer token when
- * MCP_TOKEN_SCOPE is set (IL5); otherwise the call is unauthenticated (local dev).
+ * HTTP (JSON-RPC tools/call). Auth uses OBO when a user assertion is supplied and
+ * configured, otherwise a managed-identity bearer token when MCP_TOKEN_SCOPE is set
+ * (IL5); without a scope the call is unauthenticated for local dev.
  */
-export function mcpToolCaller(serverUrl: string): (name: string, args: any) => Promise<unknown> {
+export interface McpToolCallerOptions {
+  /** Signed-in user's access token for OBO-capable MCP service calls. */
+  userAssertionToken?: string;
+  tenantId?: string;
+  traceId?: string;
+}
+
+export function mcpToolCaller(serverUrl: string, options: McpToolCallerOptions = {}): (name: string, args: any) => Promise<unknown> {
   let nextId = 1;
   return async (name: string, args: any): Promise<unknown> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     const scope = process.env.MCP_TOKEN_SCOPE;
-    if (scope) headers.Authorization = `Bearer ${await getEntraToken(scope)}`;
+    if (options.tenantId) headers['x-tenant-id'] = options.tenantId;
+    if (options.traceId) headers['x-trace-id'] = options.traceId;
+    if (scope) {
+      headers.Authorization = options.userAssertionToken && isOboConfigured()
+        ? `Bearer ${await getOboToken(options.userAssertionToken, scope)}`
+        : `Bearer ${await getEntraToken(scope)}`;
+    }
     const resp = await fetch(serverUrl, {
       method: 'POST',
       headers,

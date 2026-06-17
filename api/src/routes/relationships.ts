@@ -35,7 +35,7 @@ router.patch('/:relationshipId', async (req: any, res: any) => {
 
       const relId = `rel_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       await relationshipRepo.create({
-        id: relId, tenantId: req.user?.tenantId || 'tenant',
+        id: relId, tenantId: req.user?.tenantId || req.tenantId || 'tenant',
         fromPersonId: req.body.fromPersonId, toPersonId: req.body.toPersonId,
         relationshipType: req.body.relationshipType || 'shared_employer',
         status: 'suggested' as const,
@@ -46,7 +46,7 @@ router.patch('/:relationshipId', async (req: any, res: any) => {
       // Return aligned with Relationship DTO (no hardcoded defaults)
       res.status(201).json({
         id: relId,
-        tenantId: req.user?.tenantId || 'tenant',
+        tenantId: req.user?.tenantId || req.tenantId || 'tenant',
         fromPersonId: req.body.fromPersonId,
         toPersonId: req.body.toPersonId,
         relationshipType: req.body.relationshipType || 'shared_employer',
@@ -59,7 +59,7 @@ router.patch('/:relationshipId', async (req: any, res: any) => {
       const edge = await relationshipRepo.getById(req.params.relationshipId);
       if (!edge) return res.status(404).json({ error: 'Not found' });
 
-      await relationshipRepo.updateStatus(req.params.relationshipId, status as Relationship['status'], req.user?.id || 'system');
+      await relationshipRepo.updateStatus(req.params.relationshipId, status as Relationship['status'], req.user?.id || req.userId || 'system');
       res.json({ updated: true });
     } else {
       res.status(400).json({ error: 'Invalid status' });

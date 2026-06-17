@@ -21,12 +21,12 @@ router.put('/:id', async (req: any, res: any) => {
 
     const annotation: Annotation = {
       id: req.params.id ?? `ann_${Date.now()}`,
-      tenantId: req.user?.tenantId || 'tenant',
+      tenantId: req.user?.tenantId || req.tenantId || 'tenant',
       personId,
       targetType: 'factVersion',
       targetFactVersionId: body.targetFactVersionId || '',
       commentText: body.commentText,
-      createdByUserId: req.user?.id || 'system',
+      createdByUserId: req.user?.id || req.userId || 'system',
       createdAt: existing?.createdAt || new Date().toISOString(),
       status: (existing as any)?.status || 'open',
     };

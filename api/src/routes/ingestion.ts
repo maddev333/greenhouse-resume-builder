@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { CreateIngestionRequestInput, ExtractionRun, IngestionRunResponse } from '@greenhouse-resume-builder/shared';
 import { extractionRunRepo, sourceDocRepo } from '../db/repo';
+import { getServiceAuthHeaders } from '../services/entra-token';
 
 import crypto from 'crypto';
 
@@ -24,9 +25,12 @@ router.post('/', async (req: any, res: any) => {
     return res.status(400).json({ error: 'Invalid request body' });
   }
 
+  const tenantId = input.tenantId || req.user?.tenantId || req.tenantId || 'tenant-default';
+  const requestedByUserId = req.user?.id || req.userId || 'system';
+
   // ── Idempotency check ────────────────────────────────────────────────
   const contentHash = computeContentHash(input.sourceDocuments);
-  const recentRuns = await extractionRunRepo.activeByTenant(input.tenantId);
+  const recentRuns = await extractionRunRepo.activeByTenant(tenantId);
   for (const r of recentRuns as unknown as ExtractionRun[]) {
     if ((Date.now() - new Date(r.createdAt).getTime()) > DEDUP_WINDOW_MS) continue;
     // Quick content hash match on the run's source doc IDs to avoid false positives
@@ -49,8 +53,8 @@ router.post('/', async (req: any, res: any) => {
     const now = new Date().toISOString();
     const run = await extractionRunRepo.create({
       id: `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      tenantId: input.tenantId,
-      requestedByUserId: req.user?.id ?? 'system',
+      tenantId,
+      requestedByUserId,
       sourceDocumentIds: [],
     } as any);
 
@@ -62,7 +66,7 @@ router.post('/', async (req: any, res: any) => {
     for (const sd of input.sourceDocuments) {
       const sdId = `sd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       await sourceDocRepo.create({
-        id: sdId, tenantId: input.tenantId, personId: input.personId,
+        id: sdId, tenantId, personId: input.personId,
         extractionRunId: run.id, sourceType: (sd.sourceType || 'upload'),
         uri: sd.uri, blobPath: sd.blobPath, mimeType: sd.mimeType,
       } as any);
@@ -82,10 +86,19 @@ router.post('/', async (req: any, res: any) => {
     } satisfies IngestionRunResponse);
 
     const fnHost = process.env.FUNCTIONS_HOST || 'http://localhost:7071';
-    fetch(`${fnHost}/api/orchestrators/IngestCandidateOrchestrator`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ runId: run.id }),
-    }).catch(e => console.error('[Ingestion] Orchestrator failed:', e));
+    void (async () => {
+      const authHeaders = await getServiceAuthHeaders(process.env.FUNCTIONS_TOKEN_SCOPE, req.accessToken);
+      await fetch(`${fnHost}/api/orchestrators/IngestCandidateOrchestrator`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-authenticated-user-id': requestedByUserId,
+          'x-tenant-id': tenantId,
+          ...authHeaders,
+        },
+        body: JSON.stringify({ runId: run.id, tenantId, requestedByUserId }),
+      });
+    })().catch(e => console.error('[Ingestion] Orchestrator failed:', e));
 
   } catch (err) {
     console.error('[Ingestion] Error:', err);
