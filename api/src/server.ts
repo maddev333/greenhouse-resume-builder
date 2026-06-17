@@ -1,12 +1,7 @@
 /** Greenhouse Resume Builder MVP — Express API Server Entry Point */
 
-// ── Load dotenv synchronously at the top of the file.
-// (tsx respects tsconfig — module: CommonJS means no top-level await — so we keep
-//  this as a plain import/require pattern rather than an `await import('dotenv')`).
-import { config } from 'dotenv';
-
-const dotA = config({ path: '/Users/nick/repos/greenhouse-resume-builder/.env' });
-const dotB = config({ path: '/Users/nick/repos/greenhouse-resume-builder/.env.local' });
+// ── Load environment variables first (centralized loader)
+import '../../../shared/src/env';
 
 import express from 'express';
 import cors from 'cors';

@@ -8,6 +8,9 @@
  * this client function receives the request and calls client.startNew(...).
  */
 
+// Load environment variables
+import '../env';
+
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions';
 import * as df from 'durable-functions';
 

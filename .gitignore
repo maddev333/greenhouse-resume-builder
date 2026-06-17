@@ -24,6 +24,8 @@ Thumbs.db
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
 .idea/
 *.swp
 *.swo

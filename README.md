@@ -2,29 +2,52 @@
 
 > Agentic resume ingestion pipeline that extracts employment, skills, education, summary, relationship, and temporal-event data from uploaded CVs and web profiles — then normalizes everything into cited resume bullets, version diffs, and recruiter-reviewable predictions.
 
-## Quick Start
+## 🚀 Quick Start
+
+**New to the project? Start here:**
+
+1. **Read the [Setup Summary](./SETUP_SUMMARY.md)** for a quick overview of recent changes
+2. **Follow the [Development Guide](./DEVELOPMENT.md)** for detailed setup instructions
+3. **Run the quick start script**:
+   ```bash
+   # Windows
+   quick-start.bat
+   
+   # Linux/Mac
+   chmod +x quick-start.sh && ./quick-start.sh
+   ```
+
+### Essential Steps
 
 ```bash
-# 1. Create .env from example
-cp .env.example .env
-# Edit .env — set PGHOST to your Azure PostgreSQL server,
-# PGUSER to your admin email, and PGPASSWORD (or leave blank for managed identity)
+# 1. Environment setup (already done - .env exists with defaults)
+# Edit .env if you need to configure Azure services or PostgreSQL
 
 # 2. Install & build
-npm ci && npm run build --workspaces
-npm run build -w @greenhouse-resume-builder/mcp-core
+npm ci
+npm run build -w @greenhouse-resume-builder/shared
 
 # 3. Start the API server (Express REST + PostgreSQL)
-npm run dev --workspace=@greenhouse-resume-builder/api
+cd api && npm run dev
+# API runs on http://localhost:3001
 
 # 4. Start the React UI (Vite)
-npm run dev --workspace=@greenhouse-resume-builder/ui
+cd ui && npm run dev
+# UI runs on http://localhost:5173
 
-# 5. Start Azure Functions (ingestion pipeline — needs func CLI)
-npm run start:dev --workspace=@greenhouse-resume-builder/azure-functions
+# 5. (Optional) Start Azure Functions (ingestion pipeline)
+cd functions && npm run start:dev
+# Functions run on http://localhost:7071
 ```
-az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv
-> **Note:** The API loads `.env` from the repo root in `api/src/server.ts`, so you only need it at the top level. Copying to `api/.env` also works but is not required.
+
+### VS Code Debugging
+
+Press `F5` in VS Code and select:
+- **Debug Full Stack** - Run API + UI with debugger attached
+- **Debug API Server** - Debug the Express API
+- **Debug Azure Functions** - Debug Functions runtime
+
+See [DEVELOPMENT.md](./DEVELOPMENT.md) for complete debugging guide.
 
 ## Architecture Overview
 

@@ -1,0 +1,81 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug API Server",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/api",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--loader",
+        "tsx",
+        "src/server.ts"
+      ],
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"],
+      "outputCapture": "std",
+      "restart": true,
+      "sourceMaps": true
+    },
+    {
+      "name": "Debug API Server (tsx watch)",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/api",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "tsx",
+        "watch",
+        "src/server.ts"
+      ],
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"],
+      "outputCapture": "std",
+      "restart": true,
+      "sourceMaps": true
+    },
+    {
+      "name": "Debug Azure Functions",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "restart": true,
+      "protocol": "inspector",
+      "sourceMaps": true,
+      "cwd": "${workspaceFolder}/functions",
+      "skipFiles": ["<node_internals>/**"],
+      "preLaunchTask": "func: host start"
+    },
+    {
+      "name": "Debug UI (Chrome)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/ui/src",
+      "sourceMaps": true,
+      "sourceMapPathOverrides": {
+        "/@/*": "${webRoot}/*"
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Debug Full Stack",
+      "configurations": [
+        "Debug API Server",
+        "Debug UI (Chrome)"
+      ],
+      "stopAll": true,
+      "presentation": {
+        "order": 1
+      }
+    }
+  ]
+}

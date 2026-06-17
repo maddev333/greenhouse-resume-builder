@@ -1,0 +1,50 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "npm: install",
+      "type": "shell",
+      "command": "npm ci",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "npm: build all workspaces",
+      "type": "shell",
+      "command": "npm run build --workspaces",
+      "problemMatcher": ["$tsc"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "func: host start",
+      "type": "shell",
+      "command": "func start --verbose --inspect=9229 --lang-worker -- \"--inspect=9229\"",
+      "options": {
+        "cwd": "${workspaceFolder}/functions"
+      },
+      "isBackground": true,
+      "problemMatcher": [
+        {
+          "pattern": [
+            {
+              "regexp": ".",
+              "file": 1,
+              "location": 2,
+              "message": 3
+            }
+          ],
+          "background": {
+            "activeOnStart": true,
+            "beginsPattern": "^.*Debugger listening on.*",
+            "endsPattern": "^.*Worker process started and initialized.*"
+          }
+        }
+      ]
+    }
+  ]
+}
