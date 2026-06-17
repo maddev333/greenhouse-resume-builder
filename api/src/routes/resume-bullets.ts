@@ -61,31 +61,20 @@ router.get('/:personId/differences', async (req: any, res: any) => {
   const personId = req.params.personId;
 
   // Get latest two runs for this person
-  const runDocsRaw = await factVersionRepo.query({
-    sql: 'SELECT DISTINCT c.extractionRunId as runId FROM c WHERE c.personId = @p ORDER BY c.extractedAt DESC',
-    parameters: [{ name: '@p', value: personId }],
-  });
-  const allRuns: string[] = (runDocsRaw as any[]).map((x: any) => x.runId).slice(0, 2);
+  const allRuns = await factVersionRepo.distinctRunIdsByPerson(personId, 2);
 
   if (allRuns.length < 2) { return res.json([]); }
   const prevRunId = allRuns[1];
 
   let prevBulletMap: Record<string, BulletMapping> = {};
-  const prevBulletsRaw = await bulletMappingRepo.query({
-    sql: 'SELECT * FROM c WHERE c.extractionRunId = @r',
-    parameters: [{ name: '@r', value: prevRunId }],
-  });
+  const prevBulletsRaw = await bulletMappingRepo.allByRun(prevRunId);
 
-  for (const b of (prevBulletsRaw as unknown as BulletMapping[])) {
+  for (const b of prevBulletsRaw) {
     if (!prevBulletMap[b.bulletSignature]) prevBulletMap[b.bulletSignature] = b;
   }
 
   const curRunId = allRuns[0];
-  const curBulletsRaw = await bulletMappingRepo.query({
-    sql: 'SELECT * FROM c WHERE c.extractionRunId = @r AND c.sectionId = "experience"',
-    parameters: [{ name: '@r', value: curRunId }],
-  });
-  const curBullets = curBulletsRaw as unknown as BulletMapping[];
+  const curBullets = await bulletMappingRepo.allByRunAndSection(curRunId, 'experience');
 
   // Return diff shapes aligned with DiffResult DTO
   const diffs: DiffResult[] = [];

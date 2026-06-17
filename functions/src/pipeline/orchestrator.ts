@@ -242,7 +242,7 @@ export interface PersistBuilderOutputResult {
  * Activity that handles all side-effecting I/O for builder output:
  *   - Upsert the resolved Person doc (so the persons container is populated and
  *     relationship inference / UI navigation have a record to anchor to)
- *   - Bulk upsert of FactVersions / BulletMappings to Cosmos DB
+ *   - Bulk upsert of FactVersions / BulletMappings to PostgreSQL
  *   - Index both into Azure AI Search (best-effort)
  *
  * Called via df.callActivity() from the orchestrator so all I/O (and the
@@ -268,7 +268,7 @@ export async function persistBuilderOutput(
     personOk = true;
   }
 
-  // Phase 1: Persist facts + bullets to Cosmos DB (best-effort per-item).
+  // Phase 1: Persist facts + bullets to PostgreSQL (best-effort per-item).
   await persist.persistBuildResults(input.facts as any, input.bullets as any);
 
   // Phase 2: Index into Azure AI Search (best-effort; errors logged in-indexer).

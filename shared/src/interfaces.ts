@@ -1,6 +1,6 @@
 /**
  * Core entity interfaces for the Greenhouse Resume Builder MVP.
- * These map directly to Cosmos DB container documents.
+ * These map directly to PostgreSQL table documents (stored as JSONB).
  */
 
 // ===== Base interface for all entities =====

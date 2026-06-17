@@ -11,20 +11,15 @@ export class PersonRepo extends Repo<Person> {
 
   /** Find candidates where name partially matches. */
   async searchByName(nameSearch: string): Promise<Person[]> {
-    const docs = await this.query({
-      sql: 'SELECT * FROM c WHERE ARRAY_CONTAINS(c.aliases, @s) OR CONTAINS(LOWER(c.canonicalName), LOWER(@s))',
-      parameters: [{ name: '@s', value: nameSearch }],
-    });
-    return (docs as unknown as Person[]);
+    return this.findDocs<Person>(
+      "data->'aliases' @> to_jsonb($1::text) OR LOWER(data->>'canonicalName') LIKE '%' || LOWER($1) || '%'",
+      [nameSearch],
+    );
   }
 
   /** All persons in the tenant. */
   async allByTenant(tenantId: string): Promise<Person[]> {
-    const docs = await this.query({
-      sql: 'SELECT * FROM c WHERE c.tenantId = @t',
-      parameters: [{ name: '@t', value: tenantId }],
-    });
-    return (docs as unknown as Person[]);
+    return this.findDocs<Person>("data->>'tenantId' = $1", [tenantId]);
   }
 
   async upsert(person: Partial<Person> & { id: string }) {

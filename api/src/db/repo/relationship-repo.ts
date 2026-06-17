@@ -11,29 +11,28 @@ export class RelationshipRepo extends Repo<Relationship> {
 
   /** Suggested relationships for a person. */
   async suggested(personId: string): Promise<Relationship[]> {
-    const docs = await this.query({
-      sql: "SELECT * FROM c WHERE c.status = @s AND (c.fromPersonId = @p OR c.toPersonId = @p)",
-      parameters: [{ name: '@s', value: 'suggested' }, { name: '@p', value: personId }],
-    });
-    return (docs as unknown as Relationship[]);
+    return this.findDocs<Relationship>(
+      "data->>'status' = 'suggested' AND (data->>'fromPersonId' = $1 OR data->>'toPersonId' = $1)",
+      [personId],
+    );
   }
 
   /** Confirmed relationships for a person. */
   async confirmed(personId: string): Promise<Relationship[]> {
-    const docs = await this.query({
-      sql: "SELECT * FROM c WHERE c.status = @s AND (c.fromPersonId = @p OR c.toPersonId = @p)",
-      parameters: [{ name: '@s', value: 'confirmed' }, { name: '@p', value: personId }],
-    });
-    return (docs as unknown as Relationship[]);
+    return this.findDocs<Relationship>(
+      "data->>'status' = 'confirmed' AND (data->>'fromPersonId' = $1 OR data->>'toPersonId' = $1)",
+      [personId],
+    );
   }
 
   /** Check if an edge already exists between two people. */
   async edgeExists(personA: string, personB: string): Promise<boolean> {
-    const docs = await this.query({
-      sql: "SELECT TOP 1 c.id FROM c WHERE (c.fromPersonId = @a AND c.toPersonId = @b) OR (c.fromPersonId = @b AND c.toPersonId = @a)",
-      parameters: [{ name: '@a', value: personA }, { name: '@b', value: personB }],
-    });
-    return !!(docs as unknown as any[])[0];
+    const docs = await this.findDocs<Relationship>(
+      "(data->>'fromPersonId' = $1 AND data->>'toPersonId' = $2) OR (data->>'fromPersonId' = $2 AND data->>'toPersonId' = $1)",
+      [personA, personB],
+      { limit: 1 },
+    );
+    return docs.length > 0;
   }
 
   async updateStatus(id: string, status: Relationship['status'], userId?: string): Promise<void> {
@@ -52,8 +51,7 @@ export class RelationshipRepo extends Repo<Relationship> {
   }
 
   async create(edge: Partial<Relationship> & { id: string }): Promise<void> {
-    const doc = { ...edge, partitionKey: edge.id } as unknown as Relationship;
-    await this.upsert(doc);
+    await this.upsert(edge as Relationship);
   }
 }
 

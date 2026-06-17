@@ -9,47 +9,55 @@ export class FactVersionRepo extends Repo<FactVersion> {
 
   /** Latest version for a given person + section. */
   async latestByPersonSection(personId: string, sectionId: string): Promise<FactVersion | null> {
-    const docs = await this.query({
-      sql: 'SELECT TOP 1 * FROM c WHERE c.personId = @p AND c.sectionId = @s ORDER BY c.extractedAt DESC',
-      parameters: [{ name: '@p', value: personId }, { name: '@s', value: sectionId }],
-    });
-    return (docs[0] as unknown as FactVersion) ?? null;
+    const docs = await this.findDocs<FactVersion>(
+      "data->>'personId' = $1 AND data->>'sectionId' = $2",
+      [personId, sectionId],
+      { orderBy: 'extractedAt', desc: true, limit: 1 },
+    );
+    return docs[0] ?? null;
   }
 
   /** All versions for a specific fact key. */
   async getByFactKey(personId: string, factKey: string): Promise<FactVersion[]> {
-    const docs = await this.query({
-      sql: 'SELECT * FROM c WHERE c.personId = @p AND c.factKey = @k ORDER BY c.extractedAt DESC',
-      parameters: [{ name: '@p', value: personId }, { name: '@k', value: factKey }],
-    });
-    return (docs as unknown as FactVersion[]);
+    return this.findDocs<FactVersion>(
+      "data->>'personId' = $1 AND data->>'factKey' = $2",
+      [personId, factKey],
+      { orderBy: 'extractedAt', desc: true },
+    );
   }
 
   /** All facts for a run. */
   async getByRun(runId: string): Promise<FactVersion[]> {
-    const docs = await this.query({
-      sql: 'SELECT * FROM c WHERE c.extractionRunId = @r',
-      parameters: [{ name: '@r', value: runId }],
-    });
-    return (docs as unknown as FactVersion[]);
+    return this.findDocs<FactVersion>("data->>'extractionRunId' = $1", [runId]);
   }
 
   /** All facts for a person + section, newest first. */
   async allByPersonSection(personId: string, sectionId: string): Promise<FactVersion[]> {
-    const docs = await this.query({
-      sql: 'SELECT * FROM c WHERE c.personId = @p AND c.sectionId = @s ORDER BY c.extractedAt DESC',
-      parameters: [{ name: '@p', value: personId }, { name: '@s', value: sectionId }],
-    });
-    return (docs as unknown as FactVersion[]);
+    return this.findDocs<FactVersion>(
+      "data->>'personId' = $1 AND data->>'sectionId' = $2",
+      [personId, sectionId],
+      { orderBy: 'extractedAt', desc: true },
+    );
   }
 
   async getById(id: string): Promise<FactVersion | null> { return (await this.read(id))?.resource ?? null; }
 
+  /** Distinct extraction-run IDs for a person, most-recent fact first. */
+  async distinctRunIdsByPerson(personId: string, limit?: number): Promise<string[]> {
+    let sql = `SELECT data->>'extractionRunId' AS "runId", MAX(data->>'extractedAt') AS last
+               FROM ${this.table}
+               WHERE data->>'personId' = $1
+               GROUP BY data->>'extractionRunId'
+               ORDER BY last DESC`;
+    if (limit != null) sql += ` LIMIT ${Number(limit)}`;
+    const rows = await this.rawRows<{ runId: string | null }>(sql, [personId]);
+    return rows.map((r) => r.runId).filter((v): v is string => !!v);
+  }
+
   async createMany(facts: Partial<FactVersion>[]): Promise<void> {
-    const c = await (this as any).getContainer();
     for (const f of facts) {
-      // Repo.upsert handles id-as-partition; use it directly.
-      
+      if (!f.id) throw new Error('FactVersion must have id');
+      await this.upsert(f as FactVersion);
     }
   }
 }

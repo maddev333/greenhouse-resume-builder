@@ -1,58 +1,99 @@
 // ──────────────────────────────────────────────────────────────────────
-// Generic repository for a Cosmos DB container (fixed partition key `/id`)
+// Generic repository backed by a PostgreSQL JSONB document table.
+// Each entity is stored as `{ id TEXT PRIMARY KEY, data JSONB }`, mirroring
+// the single-partition Cosmos containers the MVP previously used.
 // ──────────────────────────────────────────────────────────────────────
 
-import type { ItemResponse, Container as CosmosContainer } from '@azure/cosmos';
-import { getDatabase } from '../cosmos-client';
+import { getPool, physicalTable } from '../pg-client';
+
+/** Back-compat envelope so callers can keep using `.resource`. */
+export interface ItemResult<T> {
+  resource: T;
+}
+
+export interface FindOptions {
+  orderBy?: string; // top-level JSON field to sort on (ISO timestamps sort lexicographically)
+  desc?: boolean;
+  limit?: number;
+}
 
 export class Repo<T extends { id: string }> {
-  private container: Promise<CosmosContainer> | null = null;
+  protected readonly table: string;
 
-  constructor(private dbName: string, private containerName: string) {}
-
-  // lazy-load the container pointer
-  private async container_(): Promise<CosmosContainer> {
-    if (!this.container) this.container = getDatabase().then(db => db.container(this.containerName));
-    return this.container;
+  constructor(_dbName: string, containerName: string) {
+    this.table = physicalTable(containerName);
   }
 
   // ── CRUD ──────────────────────────────────────────────────────
 
   /** Upsert (create-or-update) a document. */
-  async upsert(doc: T): Promise<ItemResponse<T>> {
-    const c = await this.container_();
-    return (c.items.upsert<any>(doc)) as unknown as ItemResponse<T>;
+  async upsert(doc: T): Promise<ItemResult<T>> {
+    const pool = await getPool();
+    const res = await pool.query(
+      `INSERT INTO ${this.table} (id, data) VALUES ($1, $2::jsonb)
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
+       RETURNING data`,
+      [doc.id, JSON.stringify(doc)],
+    );
+    return { resource: res.rows[0].data as T };
   }
 
-  /** Read by id; returns null on 404. */
-  async read(id: string): Promise<ItemResponse<T> | null> {
-    const c = await this.container_();
-    try {
-      return (await c.item(id, id).read<T>()) as unknown as ItemResponse<T>;
-    } catch { return null; }
+  /** Read by id; returns null on miss. */
+  async read(id: string): Promise<ItemResult<T> | null> {
+    const pool = await getPool();
+    const res = await pool.query(`SELECT data FROM ${this.table} WHERE id = $1`, [id]);
+    if (res.rowCount === 0) return null;
+    return { resource: res.rows[0].data as T };
   }
 
   /** Replace (full overwrite) by id. */
-  async replace(id: string, doc: T): Promise<ItemResponse<T>> {
-    const c = await this.container_();
-    return (await c.item(id, id).replace<T>(doc)) as unknown as ItemResponse<T>;
+  async replace(id: string, doc: T): Promise<ItemResult<T>> {
+    return this.upsert({ ...(doc as any), id } as T);
   }
 
   /** Delete by id. */
   async delete(id: string): Promise<void> {
-    const c = await this.container_();
-    await c.item(id, id).delete();
+    const pool = await getPool();
+    await pool.query(`DELETE FROM ${this.table} WHERE id = $1`, [id]);
   }
 
   // ── Queries ───────────────────────────────────────────────────
 
-  /** Run a parameterized SQL query; returns all resources. */
-  async query<TOut = T>(spec: string | { sql?: string; parameters?: any[] }): Promise<TOut[]> {
-    const c = await this.container_();
-    const txt$1 = typeof spec === 'string' ? spec : ((spec as any).sql || (spec as any).query) || '';
-    const prm3: any[] = (spec as any).parameters || [];
-    const qs87 = { query: txt$1, ...(prm3.length ? { parameters: prm3 } : {}) };
-    return (await c.items.query<TOut>(qs87 as any).fetchAll()).resources as TOut[];
+  /**
+   * Find documents matching a SQL `WHERE` clause written against the `data` JSONB
+   * column (e.g. `data->>'personId' = $1`). Optional ordering/limit on a JSON field.
+   */
+  protected async findDocs<TOut = T>(where: string, params: any[] = [], opts?: FindOptions): Promise<TOut[]> {
+    const pool = await getPool();
+    let sql = `SELECT data FROM ${this.table}`;
+    if (where) sql += ` WHERE ${where}`;
+    if (opts?.orderBy) sql += ` ORDER BY data->>'${opts.orderBy}' ${opts.desc ? 'DESC' : 'ASC'}`;
+    if (opts?.limit != null) sql += ` LIMIT ${Number(opts.limit)}`;
+    const res = await pool.query(sql, params);
+    return res.rows.map((r) => r.data as TOut);
+  }
+
+  /** Escape hatch for custom SQL that returns the `data` column. */
+  protected async rawDocs<TOut = T>(sql: string, params: any[] = []): Promise<TOut[]> {
+    const pool = await getPool();
+    const res = await pool.query(sql, params);
+    return res.rows.map((r) => r.data as TOut);
+  }
+
+  /** Escape hatch for custom SQL that returns arbitrary projected rows. */
+  protected async rawRows<R = any>(sql: string, params: any[] = []): Promise<R[]> {
+    const pool = await getPool();
+    const res = await pool.query(sql, params);
+    return res.rows as R[];
+  }
+
+  /** COUNT(*) with an optional `WHERE` clause over the `data` column. */
+  async count(where?: string, params: any[] = []): Promise<number> {
+    const pool = await getPool();
+    let sql = `SELECT COUNT(*)::int AS n FROM ${this.table}`;
+    if (where) sql += ` WHERE ${where}`;
+    const res = await pool.query(sql, params);
+    return res.rows[0].n as number;
   }
 
   // ── Helpers ───────────────────────────────────────────────────
@@ -60,6 +101,6 @@ export class Repo<T extends { id: string }> {
   /** Upsert then return the resource. */
   async upsertAndGet(doc: T): Promise<T> {
     const r = await this.upsert(doc);
-    return r.resource!;
+    return r.resource;
   }
 }

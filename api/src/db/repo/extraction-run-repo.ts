@@ -33,20 +33,35 @@ export class ExtractionRunRepo extends Repo<ExtractionRun> {
 
   /** Return the most recent completed / active run for a person. */
   async latestByPerson(personId: string): Promise<ExtractionRun | null> {
-    const docs = await this.query({
-      sql: 'SELECT TOP 1 * FROM c WHERE c.personId = @p ORDER BY c.createdAt DESC',
-      parameters: [{ name: '@p', value: personId }],
-    });
-    return (docs[0] as unknown as ExtractionRun) ?? null;
+    const docs = await this.findDocs<ExtractionRun>(
+      "data->>'personId' = $1",
+      [personId],
+      { orderBy: 'createdAt', desc: true, limit: 1 },
+    );
+    return docs[0] ?? null;
   }
 
   /** All runs for a tenant, newest first. */
   async allByTenant(tenantId: string): Promise<ExtractionRun[]> {
-    const docs = await this.query({
-      sql: 'SELECT * FROM c WHERE c.tenantId = @t ORDER BY c.createdAt DESC',
-      parameters: [{ name: '@t', value: tenantId }],
-    });
-    return (docs as unknown as ExtractionRun[]);
+    return this.findDocs<ExtractionRun>(
+      "data->>'tenantId' = $1",
+      [tenantId],
+      { orderBy: 'createdAt', desc: true },
+    );
+  }
+
+  /** Active (queued / in-progress) runs for a tenant, newest first. */
+  async activeByTenant(tenantId: string): Promise<ExtractionRun[]> {
+    return this.findDocs<ExtractionRun>(
+      "data->>'tenantId' = $1 AND data->>'status' IN ('queued', 'in_progress')",
+      [tenantId],
+      { orderBy: 'createdAt', desc: true },
+    );
+  }
+
+  /** Most recent runs across all tenants, newest first. */
+  async recentAll(limit = 50): Promise<ExtractionRun[]> {
+    return this.findDocs<ExtractionRun>('', [], { orderBy: 'createdAt', desc: true, limit });
   }
 }
 

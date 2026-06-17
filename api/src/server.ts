@@ -11,16 +11,16 @@ app.use(express.json());
 
 // ── Initialization (runs before routes are mounted) ────────────────
 
-import { ensureMVPContainersExist } from './db/cosmos-client';
+import { ensureMVPTablesExist } from './db/pg-client';
 import { ensureSearchIndex } from './search/index';
 import { authMiddleware } from './middleware/auth.middleware';
 
 async function bootstrap() {
   console.log('[Server] Initializing data layers...');
 
-  // Cosmos DB — auto-provision all containers
-  await ensureMVPContainersExist();
-  console.log('[Server] Cosmos DB containers verified');
+  // PostgreSQL — auto-provision all document tables
+  await ensureMVPTablesExist();
+  console.log('[Server] PostgreSQL tables verified');
 
   // Azure AI Search — create the resume-facts index if it doesn't exist
   await ensureSearchIndex();
@@ -90,33 +90,23 @@ app.get('/health', (_req, res) => {
   });
 })();
 
-// ── Stats endpoint (runtime counts from Cosmos) ──────────────────
+// ── Stats endpoint (runtime counts from PostgreSQL) ─────────────────
 
 (async () => {
   const repos = await import('./db/repo');
   app.get('/api/v1/stats', async (_req: any, res: any) => {
     try {
-      // Use COUNT queries instead of full container scans.
-      const factsCount = await repos.factVersionRepo.query<number>({
-        sql: 'SELECT VALUE COUNT(1) FROM c WHERE isObject(c)',
-      });
-      const bulletsCount = await repos.bulletMappingRepo.query<number>({
-        sql: 'SELECT VALUE COUNT(1) FROM c WHERE isObject(c)',
-      });
-      const pendingRuns = await repos.extractionRunRepo.query<number>({
-        sql: 'SELECT VALUE COUNT(1) FROM c WHERE c.status IN ("pending", "started", "queued")',
-      });
-
-      // Each query returns a single-element array with a scalar count.
-      const toNum = (vals: number[]) => {
-        if (!Array.isArray(vals) || vals.length === 0) return 0;
-        return vals[0] ?? 0;
-      };
+      // COUNT(*) over each table rather than full scans.
+      const factsTotal = await repos.factVersionRepo.count();
+      const bulletsTotal = await repos.bulletMappingRepo.count();
+      const runsPending = await repos.extractionRunRepo.count(
+        "data->>'status' IN ('pending', 'started', 'queued')",
+      );
 
       res.json({
-        factsTotal: toNum(factsCount),
-        bulletsTotal: toNum(bulletsCount),
-        runsPending: toNum(pendingRuns),
+        factsTotal,
+        bulletsTotal,
+        runsPending,
         searchConfigured: !!process.env.AZURE_SEARCH_SERVICE,
       });
     } catch (err: any) {

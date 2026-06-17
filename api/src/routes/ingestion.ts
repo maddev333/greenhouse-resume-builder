@@ -26,16 +26,7 @@ router.post('/', async (req: any, res: any) => {
 
   // ── Idempotency check ────────────────────────────────────────────────
   const contentHash = computeContentHash(input.sourceDocuments);
-  const dedupFilter: any = {
-    sql: "SELECT * FROM c WHERE c.tenantId = @t AND (c.status = @q OR c.status = @in) ORDER BY c.createdAt DESC",
-    parameters: [
-      { name: '@t', value: input.tenantId },
-      { name: '@q', value: 'queued' },
-      { name: '@in', value: 'in_progress' },
-    ],
-  };
-
-  const recentRuns = await extractionRunRepo.query(dedupFilter);
+  const recentRuns = await extractionRunRepo.activeByTenant(input.tenantId);
   for (const r of recentRuns as unknown as ExtractionRun[]) {
     if ((Date.now() - new Date(r.createdAt).getTime()) > DEDUP_WINDOW_MS) continue;
     // Quick content hash match on the run's source doc IDs to avoid false positives
@@ -121,9 +112,7 @@ router.get('/', async (_req: any, res: any) => {
     if (tenantId) {
       docs = await extractionRunRepo.allByTenant(tenantId);
     } else {
-      docs = (await extractionRunRepo.query({
-        sql: 'SELECT * FROM c ORDER BY c.createdAt DESC LIMIT 50',
-      })) as unknown as ExtractionRun[];
+      docs = await extractionRunRepo.recentAll(50);
     }
 
     const result = docs.map(r => ({

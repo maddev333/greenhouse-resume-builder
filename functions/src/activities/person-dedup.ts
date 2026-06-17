@@ -52,7 +52,7 @@ function nameSimilarity(a: string, b: string): number {
   return 1.0 - (levenshtein(na, nb) / maxLen);
 }
 
-/** Match an extracted candidate against existing candidates in Cosmos DB. */
+/** Match an extracted candidate against existing candidates in PostgreSQL. */
 export function resolvePersonDedup(
   extractedName: string,
   extractedEmployers: string[],

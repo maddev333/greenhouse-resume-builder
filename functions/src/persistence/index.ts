@@ -1,12 +1,13 @@
 /**
  * Persistence layer for the Azure Functions pipeline.
  *
- * Uses @azure/cosmos directly (already in functions/package.json) so it works
- * independently of the Express API in this repo. Each function can call these
- * helpers without needing to start an HTTP server.
+ * Uses node-postgres (`pg`) directly so it works independently of the Express API
+ * in this repo. Each function can call these helpers without needing to start an
+ * HTTP server. Every entity is stored as a JSONB document keyed by its stable `id`,
+ * mirroring the single-partition containers the MVP previously used in Cosmos DB.
  */
 
-import { CosmosClient, type Container, type ItemResponse } from '@azure/cosmos';
+import { Pool, type PoolConfig } from 'pg';
 import { DefaultAzureCredential } from '@azure/identity';
 import type {
   Person,
@@ -18,222 +19,243 @@ import type {
   Relationship,
 } from '@greenhouse-resume-builder/shared';
 
-// ── Singleton client (lazy-init from env) ───────────────────────────────────
+// ── Logical container → physical table mapping ──────────────────────────────
 
-let _client: CosmosClient | undefined;
-const DB          = 'resumeBuilder';
-const CONTAINERS  = [
-  'persons',
-  'sourceDocuments',
-  'extractionRuns',
-  'factVersions',
-  'bulletMappings',
-  'annotations',
-  'relationships',
-];
+const TABLES = {
+  persons: 'persons',
+  sourceDocuments: 'source_documents',
+  extractionRuns: 'extraction_runs',
+  factVersions: 'fact_versions',
+  bulletMappings: 'bullet_mappings',
+  annotations: 'annotations',
+  relationships: 'relationships',
+} as const;
 
-async function getClient(): Promise<CosmosClient> {
-  if (_client) return _client;
-  const endpoint = process.env.COSMOS_ENDPOINT ?? '';
-  const key      = process.env.COSMOS_AUTH_KEY ?? '';
-  if (!endpoint) throw new Error('COSMOS_ENDPOINT is required');
-  // IL5 / production: Microsoft Entra ID (managed identity) when no account key is supplied.
-  _client = key
-    ? new CosmosClient({ endpoint, key })
-    : new CosmosClient({ endpoint, aadCredentials: new DefaultAzureCredential() });
-  return _client;
+// ── Singleton pool (lazy-init from env) ─────────────────────────────────────
+
+let _poolPromise: Promise<Pool> | undefined;
+
+/** AAD scope for Azure Database for PostgreSQL flexible server (managed-identity auth). */
+const AAD_SCOPE = process.env.PG_AAD_SCOPE ?? 'https://ossrdbms-aad.database.windows.net/.default';
+
+function isAzureHost(host: string): boolean {
+  return /\.postgres\.database\.(azure\.com|usgovcloudapi\.net|chinacloudapi\.cn)$/i.test(host);
 }
 
-/** Ensure all containers exist on first access. */
+function buildPoolConfig(): PoolConfig {
+  const connectionString = process.env.DATABASE_URL;
+  const host = process.env.PGHOST ?? '';
+  const sslWanted =
+    process.env.PGSSLMODE === 'require' ||
+    process.env.DATABASE_SSL === 'true' ||
+    (!!host && isAzureHost(host)) ||
+    (!!connectionString && /\bsslmode=require\b/.test(connectionString));
+  const rejectUnauthorized = process.env.PGSSL_REJECT_UNAUTHORIZED !== 'false';
+  const ssl = sslWanted ? { rejectUnauthorized } : undefined;
+
+  if (connectionString) {
+    return { connectionString, ssl, max: Number(process.env.PG_POOL_MAX ?? 10) };
+  }
+
+  const config: PoolConfig = {
+    host,
+    port: Number(process.env.PGPORT ?? 5432),
+    database: process.env.PGDATABASE ?? 'resume_builder',
+    user: process.env.PGUSER ?? 'postgres',
+    ssl,
+    max: Number(process.env.PG_POOL_MAX ?? 10),
+  };
+
+  // IL5 / production: when no password is supplied, authenticate with Microsoft Entra ID.
+  // node-postgres evaluates a function password per new connection, so AAD tokens refresh
+  // automatically as the pool opens new connections.
+  const password = process.env.PGPASSWORD ?? '';
+  if (password) {
+    config.password = password;
+  } else {
+    const credential = new DefaultAzureCredential();
+    config.password = async () => {
+      const token = await credential.getToken(AAD_SCOPE);
+      if (!token?.token) throw new Error('Failed to acquire AAD token for PostgreSQL');
+      return token.token;
+    };
+  }
+
+  return config;
+}
+
+async function ensureTables(pool: Pool): Promise<void> {
+  for (const table of Object.values(TABLES)) {
+    await pool.query(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data JSONB NOT NULL)`);
+  }
+}
+
+async function getPool(): Promise<Pool> {
+  if (!_poolPromise) {
+    _poolPromise = (async () => {
+      const pool = new Pool(buildPoolConfig());
+      pool.on('error', (err) => console.error('[pg] idle client error:', err.message));
+      await ensureTables(pool);
+      return pool;
+    })();
+  }
+  return _poolPromise;
+}
+
+/** Ensure all document tables exist (idempotent; triggers pool init). */
 export async function ensureContainers(): Promise<void> {
-  const client = await getClient();
-  await ensureAllContainers(client);
+  await getPool();
 }
 
-// Generic container provider — lazy-creates containers on first access.
-const _containers: Partial<Record<string, Promise<Container>>> = {};
-async function ensureAllContainers(client: CosmosClient): Promise<void> {
-  const db = client.database(DB);
-  for (const name_ of CONTAINERS) {
-    if (!_containers[name_]) {
-      _containers[name_] = db.containers.createIfNotExists({ id: name_ }).then(r => r.container);
-    }
-  }
+// ── Generic JSONB document helpers ──────────────────────────────────────────
+
+interface FindOptions {
+  orderBy?: string; // top-level JSON field (ISO timestamps sort lexicographically)
+  desc?: boolean;
+  limit?: number;
 }
 
-async function getContainer(name: string): Promise<Container> {
-  if (_containers[name]) return _containers[name];
-
-  // Lazy init + ensure all registered containers exist
-  const client = await getClient();
-  if (!_containers[CONTAINERS[0]]) {
-    await ensureAllContainers(client);
-  }
-
-  if (!Object.prototype.hasOwnProperty.call(_containers, name)) {
-    throw new Error('Container not registered: ' + name);
-  }
-  return _containers[name];
+async function upsertDoc<T extends { id: string }>(table: string, doc: T): Promise<T> {
+  const pool = await getPool();
+  const res = await pool.query(
+    `INSERT INTO ${table} (id, data) VALUES ($1, $2::jsonb)
+     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
+     RETURNING data`,
+    [doc.id, JSON.stringify(doc)],
+  );
+  return res.rows[0].data as T;
 }
 
-/** ── Upsert helpers ─────────────────────────────────────────────────────── */
-
-async function upsert<T extends { id: string }>(doc: T, containerName: string): Promise<ItemResponse<T>> {
-  const c = await getContainer(containerName);
-  return (await c.items.upsert(doc)) as unknown as ItemResponse<T>;
+async function readDoc<T>(table: string, id: string): Promise<T | null> {
+  const pool = await getPool();
+  const res = await pool.query(`SELECT data FROM ${table} WHERE id = $1`, [id]);
+  return res.rowCount ? (res.rows[0].data as T) : null;
 }
 
-/** ── Query helper ───────────────────────────────────────────────────────── */
+async function findDocs<T>(table: string, where: string, params: any[] = [], opts?: FindOptions): Promise<T[]> {
+  const pool = await getPool();
+  let sql = `SELECT data FROM ${table}`;
+  if (where) sql += ` WHERE ${where}`;
+  if (opts?.orderBy) sql += ` ORDER BY data->>'${opts.orderBy}' ${opts.desc ? 'DESC' : 'ASC'}`;
+  if (opts?.limit != null) sql += ` LIMIT ${Number(opts.limit)}`;
+  const res = await pool.query(sql, params);
+  return res.rows.map((r) => r.data as T);
+}
 
-async function query<TOut>(sql: string, parameters: any[] | undefined, containerName: string): Promise<TOut[]> {
-  const c = await getContainer(containerName);
-  return (await c.items.query<TOut>({ query: sql, parameters }).fetchAll()).resources;
+async function deleteDoc(table: string, id: string): Promise<void> {
+  const pool = await getPool();
+  await pool.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
 }
 
 // ── Public persistence functions ────────────────────────────────────────────
 
 /** ── FactVersions ────────────────────────────────────────────────────────── */
 
-export const upsertFactVersion = async (doc: FactVersion): Promise<FactVersion> => {
-  const r = await upsert(doc, 'factVersions');
-  return r.resource as FactVersion;
-};
+export const upsertFactVersion = async (doc: FactVersion): Promise<FactVersion> =>
+  upsertDoc(TABLES.factVersions, doc);
 
 export const bulkInsertFacts = async (facts: Partial<FactVersion>[]): Promise<void> => {
-  // Use raw container batch upsert for performance.
-  const c = await getContainer('factVersions');
   for (const f of facts) {
     if (!f.id) throw new Error('FactVersion must have id');
-    await c.items.upsert({ ...f, partitionKey: f.id } as any);
+    await upsertDoc(TABLES.factVersions, f as FactVersion);
   }
 };
 
-export const queryFactsByPersonAndRun = async (personId: string, runId: string): Promise<FactVersion[]> => {
-  return query<FactVersion>(
-    "SELECT * FROM c WHERE c.personId = @p AND c.extractionRunId = @r",
-    [{ name: '@p', value: personId }, { name: '@r', value: runId }],
-    'factVersions',
+export const queryFactsByPersonAndRun = async (personId: string, runId: string): Promise<FactVersion[]> =>
+  findDocs<FactVersion>(
+    TABLES.factVersions,
+    "data->>'personId' = $1 AND data->>'extractionRunId' = $2",
+    [personId, runId],
   );
-};
 
-export const queryFactsByPerson = async (personId: string): Promise<FactVersion[]> => {
-  return query<FactVersion>(
-    "SELECT * FROM c WHERE c.personId = @p ORDER BY c.extractedAt DESC",
-    [{ name: '@p', value: personId }],
-    'factVersions',
+export const queryFactsByPerson = async (personId: string): Promise<FactVersion[]> =>
+  findDocs<FactVersion>(
+    TABLES.factVersions,
+    "data->>'personId' = $1",
+    [personId],
+    { orderBy: 'extractedAt', desc: true },
   );
-};
 
-export const queryAllFacts = async (limit = 500): Promise<FactVersion[]> => {
-  return query<FactVersion>(`SELECT TOP ${limit} * FROM c ORDER BY c.extractedAt DESC`, undefined, 'factVersions');
-};
+export const queryAllFacts = async (limit = 500): Promise<FactVersion[]> =>
+  findDocs<FactVersion>(TABLES.factVersions, '', [], { orderBy: 'extractedAt', desc: true, limit });
 
 export const queryFactsLatestByPersonSection = async (personId: string, sectionId: string): Promise<FactVersion | null> => {
-  const docs = await query<FactVersion>(
-    "SELECT TOP 1 * FROM c WHERE c.personId = @p AND c.sectionId = @s ORDER BY c.extractedAt DESC",
-    [{ name: '@p', value: personId }, { name: '@s', value: sectionId }],
-    'factVersions',
+  const docs = await findDocs<FactVersion>(
+    TABLES.factVersions,
+    "data->>'personId' = $1 AND data->>'sectionId' = $2",
+    [personId, sectionId],
+    { orderBy: 'extractedAt', desc: true, limit: 1 },
   );
-  return (docs[0] ?? null) as unknown as FactVersion | null;
+  return docs[0] ?? null;
 };
 
 /** ── BulletMappings ───────────────────────────────────────────────────────── */
 
 export const bulkInsertBullets = async (bullets: Partial<BulletMapping>[]): Promise<void> => {
-  const c = await getContainer('bulletMappings');
   for (const b of bullets) {
     if (!b.id) throw new Error('BulletMapping must have id');
-    await c.items.upsert({ ...b, partitionKey: b.id } as any);
+    await upsertDoc(TABLES.bulletMappings, b as BulletMapping);
   }
 };
 
-export const queryBulletsByRun = async (runId: string): Promise<BulletMapping[]> => {
-  return query<BulletMapping>(
-    "SELECT * FROM c WHERE c.extractionRunId = @r",
-    [{ name: '@r', value: runId }],
-    'bulletMappings',
-  );
-};
+export const queryBulletsByRun = async (runId: string): Promise<BulletMapping[]> =>
+  findDocs<BulletMapping>(TABLES.bulletMappings, "data->>'extractionRunId' = $1", [runId]);
 
-export const queryBulletsByPerson = async (personId: string): Promise<BulletMapping[]> => {
-  return query<BulletMapping>(
-    "SELECT * FROM c WHERE c.personId = @p",
-    [{ name: '@p', value: personId }],
-    'bulletMappings',
-  );
-};
+export const queryBulletsByPerson = async (personId: string): Promise<BulletMapping[]> =>
+  findDocs<BulletMapping>(TABLES.bulletMappings, "data->>'personId' = $1", [personId]);
 
-export const queryAllBulletsByPerson = async (personId: string): Promise<BulletMapping[]> => {
-  return query<BulletMapping>(
-    "SELECT * FROM c WHERE c.personId = @p ORDER BY c.createdAt DESC",
-    [{ name: '@p', value: personId }],
-    'bulletMappings',
+export const queryAllBulletsByPerson = async (personId: string): Promise<BulletMapping[]> =>
+  findDocs<BulletMapping>(
+    TABLES.bulletMappings,
+    "data->>'personId' = $1",
+    [personId],
+    { orderBy: 'createdAt', desc: true },
   );
-};
 
 /** Latest bullet with a given signature for a specific person and section. */
 export const latestBulletBySignature = async (personId: string, signature: string, sectionId?: string): Promise<BulletMapping | null> => {
-  let sql = 'SELECT TOP 1 * FROM c WHERE c.personId = @p AND c.bulletSignature = @sig ORDER BY c.createdAt DESC';
-  const params: any[] = [{ name: '@p', value: personId }, { name: '@sig', value: signature }];
-
+  let where = "data->>'personId' = $1 AND data->>'bulletSignature' = $2";
+  const params: any[] = [personId, signature];
   if (sectionId) {
-    sql += " AND c.sectionId = @s";
-    params.push({ name: '@s', value: sectionId });
+    where += " AND data->>'sectionId' = $3";
+    params.push(sectionId);
   }
-  const docs = await query<BulletMapping>(sql, params, 'bulletMappings');
-  return (docs[0] ?? null) as unknown as BulletMapping | null;
+  const docs = await findDocs<BulletMapping>(TABLES.bulletMappings, where, params, { orderBy: 'createdAt', desc: true, limit: 1 });
+  return docs[0] ?? null;
 };
 
 /** All latest bullets for a person across all sections. */
-export const latestBulletsByPerson = async (personId: string): Promise<BulletMapping[]> => {
-  return query<BulletMapping>(
-    "SELECT * FROM c WHERE c.personId = @p AND c.latestForBullet = true",
-    [{ name: '@p', value: personId }],
-    'bulletMappings',
+export const latestBulletsByPerson = async (personId: string): Promise<BulletMapping[]> =>
+  findDocs<BulletMapping>(
+    TABLES.bulletMappings,
+    "data->>'personId' = $1 AND (data->>'latestForBullet')::boolean = true",
+    [personId],
   );
-};
 
 /** ── Person ──────────────────────────────────────────────────────────────── */
 
 export const upsertPerson = async (doc: Partial<Person> & { id: string }): Promise<void> => {
-  const c = await getContainer('persons');
-  await c.items.upsert({ ...doc, partitionKey: doc.id } as any);
+  await upsertDoc(TABLES.persons, doc as Person);
 };
 
-export const getPerson = async (personId: string): Promise<Person | null> => {
-  const c = await getContainer('persons');
-  try {
-    const r = await c.item(personId, personId).read<Person>();
-    return r.resource;
-  } catch {
-    return null;
-  }
-};
+export const getPerson = async (personId: string): Promise<Person | null> =>
+  readDoc<Person>(TABLES.persons, personId);
 
-export const searchPersonsByName = async (nameSearch: string): Promise<Person[]> => {
-  return query<Person>(
-    "SELECT * FROM c WHERE ARRAY_CONTAINS(c.aliases, @n) OR CONTAINS(LOWER(c.canonicalName), LOWER(@n))",
-    [{ name: '@n', value: nameSearch }],
-    'persons',
+export const searchPersonsByName = async (nameSearch: string): Promise<Person[]> =>
+  findDocs<Person>(
+    TABLES.persons,
+    "data->'aliases' @> to_jsonb($1::text) OR LOWER(data->>'canonicalName') LIKE '%' || LOWER($1) || '%'",
+    [nameSearch],
   );
-};
 
 /** ── ExtractionRun ───────────────────────────────────────────────────────── */
 
 export const upsertExtractionRun = async (doc: Partial<ExtractionRun> & { id: string }): Promise<void> => {
-  const c = await getContainer('extractionRuns');
-  await c.items.upsert({ ...doc, partitionKey: doc.id } as any);
+  await upsertDoc(TABLES.extractionRuns, doc as ExtractionRun);
 };
 
-export const queryExtractionRun = async (runId: string): Promise<ExtractionRun | null> => {
-  const c = await getContainer('extractionRuns');
-  try {
-    const r = await c.item(runId, runId).read<ExtractionRun>();
-    return r.resource;
-  } catch {
-    return null;
-  }
-};
+export const queryExtractionRun = async (runId: string): Promise<ExtractionRun | null> =>
+  readDoc<ExtractionRun>(TABLES.extractionRuns, runId);
 
 export const updateExtractionRunStatus = async (runId: string, status: ExtractionRun['status'], extra?: Partial<ExtractionRun>): Promise<void> => {
   const r = await queryExtractionRun(runId);
@@ -243,28 +265,45 @@ export const updateExtractionRunStatus = async (runId: string, status: Extractio
 
 /** Latest active run for a person. */
 export const latestRunByPerson = async (personId: string): Promise<ExtractionRun | null> => {
-  const docs = await query<ExtractionRun>(
-    "SELECT TOP 1 * FROM c WHERE c.personId = @p ORDER BY c.createdAt DESC",
-    [{ name: '@p', value: personId }],
-    'extractionRuns',
+  const docs = await findDocs<ExtractionRun>(
+    TABLES.extractionRuns,
+    "data->>'personId' = $1",
+    [personId],
+    { orderBy: 'createdAt', desc: true, limit: 1 },
   );
-  return (docs[0] ?? null) as unknown as ExtractionRun | null;
+  return docs[0] ?? null;
+};
+
+/** Cleanup: mark stuck queued/in-progress runs created before `cutoffIso` as failed. Returns affected count. */
+export const markStaleRunsFailed = async (cutoffIso: string, reason: string): Promise<number> => {
+  const pool = await getPool();
+  const res = await pool.query(
+    `UPDATE ${TABLES.extractionRuns}
+     SET data = data || jsonb_build_object('status', 'failed', 'failedReason', $1::text, 'updatedAt', $2::text)
+     WHERE data->>'status' IN ('queued', 'in_progress') AND data->>'createdAt' < $3`,
+    [reason, new Date().toISOString(), cutoffIso],
+  );
+  return res.rowCount ?? 0;
+};
+
+/** Cleanup: delete completed runs created before `cutoffIso`. Returns deleted count. */
+export const deleteCompletedRunsBefore = async (cutoffIso: string): Promise<number> => {
+  const pool = await getPool();
+  const res = await pool.query(
+    `DELETE FROM ${TABLES.extractionRuns} WHERE data->>'status' = 'completed' AND data->>'createdAt' < $1`,
+    [cutoffIso],
+  );
+  return res.rowCount ?? 0;
 };
 
 /** ── SourceDocument ──────────────────────────────────────────────────────── */
 
 export const upsertSourceDoc = async (doc: Partial<SourceDocument> & { id: string }): Promise<void> => {
-  const c = await getContainer('sourceDocuments');
-  await c.items.upsert({ ...doc, partitionKey: doc.id } as any);
+  await upsertDoc(TABLES.sourceDocuments, doc as SourceDocument);
 };
 
-export const querySourceDocsByRun = async (runId: string): Promise<SourceDocument[]> => {
-  return query<SourceDocument>(
-    "SELECT * FROM c WHERE c.extractionRunId = @r",
-    [{ name: '@r', value: runId }],
-    'sourceDocuments',
-  );
-};
+export const querySourceDocsByRun = async (runId: string): Promise<SourceDocument[]> =>
+  findDocs<SourceDocument>(TABLES.sourceDocuments, "data->>'extractionRunId' = $1", [runId]);
 
 export const upsertPersonSourceDoc = async (personId: string, runId: string, sourceDocs: SourceDocument[]): Promise<SourceDocument[]> => {
   for (const doc of sourceDocs) {
@@ -278,90 +317,85 @@ export const upsertPersonSourceDoc = async (personId: string, runId: string, sou
 /** ── Relationship ─────────────────────────────────────────────────────────── */
 
 export const upsertRelationship = async (doc: Partial<Relationship> & { id: string }): Promise<void> => {
-  await upsert(doc, 'relationships');
+  await upsertDoc(TABLES.relationships, doc as Relationship);
 };
 
-export const queryRelationshipsForPerson = async (personId: string): Promise<Relationship[]> => {
-  return query<Relationship>(
-    "SELECT * FROM c WHERE c.fromPersonId = @p OR c.toPersonId = @p ORDER BY c.createdAt DESC",
-    [{ name: '@p', value: personId }],
-    'relationships',
+export const queryRelationshipsForPerson = async (personId: string): Promise<Relationship[]> =>
+  findDocs<Relationship>(
+    TABLES.relationships,
+    "data->>'fromPersonId' = $1 OR data->>'toPersonId' = $1",
+    [personId],
+    { orderBy: 'createdAt', desc: true },
   );
-};
 
 export const confirmRelationship = async (relationshipId: string, userId: string): Promise<void> => {
-  const r = await query<Relationship>(
-    "SELECT TOP 1 * FROM c WHERE c.id = @r",
-    [{ name: '@r', value: relationshipId }],
-    'relationships',
-  );
-  if (!r.length) throw new Error('Relationship not found');
-  const rel = r[0] as Relationship;
-  await upsert({ ...rel, status: 'confirmed', confirmedByUserId: userId, confirmedAt: new Date().toISOString() } as any, 'relationships');
+  const rel = await readDoc<Relationship>(TABLES.relationships, relationshipId);
+  if (!rel) throw new Error('Relationship not found');
+  await upsertDoc(TABLES.relationships, {
+    ...rel,
+    status: 'confirmed',
+    confirmedByUserId: userId,
+    confirmedAt: new Date().toISOString(),
+  } as Relationship);
 };
 
 export const rejectRelationship = async (relationshipId: string, userId: string): Promise<void> => {
-  const r = await query<Relationship>(
-    "SELECT TOP 1 * FROM c WHERE c.id = @r",
-    [{ name: '@r', value: relationshipId }],
-    'relationships',
-  );
-  if (!r.length) throw new Error('Relationship not found');
-  const rel = r[0] as Relationship;
-  await upsert({ ...rel, status: 'rejected', rejectedByUserId: userId, rejectedAt: new Date().toISOString() } as any, 'relationships');
+  const rel = await readDoc<Relationship>(TABLES.relationships, relationshipId);
+  if (!rel) throw new Error('Relationship not found');
+  await upsertDoc(TABLES.relationships, {
+    ...rel,
+    status: 'rejected',
+    rejectedByUserId: userId,
+    rejectedAt: new Date().toISOString(),
+  } as Relationship);
 };
 
 export const edgeExists = async (personA: string, personB: string): Promise<boolean> => {
-  const docs = await query(
-    "SELECT TOP 1 c.id FROM c WHERE (c.fromPersonId = @a AND c.toPersonId = @b) OR (c.fromPersonId = @b AND c.toPersonId = @a)",
-    [{ name: '@a', value: personA }, { name: '@b', value: personB }],
-    'relationships',
+  const docs = await findDocs<Relationship>(
+    TABLES.relationships,
+    "(data->>'fromPersonId' = $1 AND data->>'toPersonId' = $2) OR (data->>'fromPersonId' = $2 AND data->>'toPersonId' = $1)",
+    [personA, personB],
+    { limit: 1 },
   );
-  return !!docs.length;
+  return docs.length > 0;
 };
 
 /** ── Annotation ──────────────────────────────────────────────────────────── */
 
 export const upsertAnnotation = async (doc: Partial<Annotation> & { id: string }): Promise<void> => {
-  await upsert(doc, 'annotations');
+  await upsertDoc(TABLES.annotations, doc as Annotation);
 };
 
-export const queryAnnotationsForFact = async (factVersionId: string): Promise<Annotation[]> => {
-  return query<Annotation>(
-    "SELECT * FROM c WHERE c.targetFactVersionId = @f ORDER BY c.createdAt DESC",
-    [{ name: '@f', value: factVersionId }],
-    'annotations',
+export const queryAnnotationsForFact = async (factVersionId: string): Promise<Annotation[]> =>
+  findDocs<Annotation>(
+    TABLES.annotations,
+    "data->>'targetFactVersionId' = $1",
+    [factVersionId],
+    { orderBy: 'createdAt', desc: true },
   );
-};
 
-export const queryAnnotationsForPerson = async (personId: string): Promise<Annotation[]> => {
-  return query<Annotation>(
-    "SELECT * FROM c WHERE c.personId = @p ORDER BY c.createdAt DESC",
-    [{ name: '@p', value: personId }],
-    'annotations',
+export const queryAnnotationsForPerson = async (personId: string): Promise<Annotation[]> =>
+  findDocs<Annotation>(
+    TABLES.annotations,
+    "data->>'personId' = $1",
+    [personId],
+    { orderBy: 'createdAt', desc: true },
   );
-};
 
 export const updateAnnotationStatus = async (annotationId: string, status: Annotation['status']): Promise<void> => {
-  const r = await query<Annotation>(
-    "SELECT TOP 1 * FROM c WHERE c.id = @a",
-    [{ name: '@a', value: annotationId }],
-    'annotations',
-  );
-  if (!r.length) throw new Error('Annotation not found');
-  const ann = r[0] as Annotation;
-  await upsert({ ...ann, status } as any, 'annotations');
+  const ann = await readDoc<Annotation>(TABLES.annotations, annotationId);
+  if (!ann) throw new Error('Annotation not found');
+  await upsertDoc(TABLES.annotations, { ...ann, status } as Annotation);
 };
 
 export const deleteAnnotation = async (annotationId: string): Promise<void> => {
-  const c = await getContainer('annotations');
-  await c.item(annotationId, annotationId).delete();
+  await deleteDoc(TABLES.annotations, annotationId);
 };
 
 /** ── Batch persistence for builder output ─────────────────────────────────── */
 
 /**
- * Persist all builder output to Cosmos DB.
+ * Persist all builder output to PostgreSQL.
  * Wraps writes in try/catch per phase so a single failure doesn't lose partial data silently.
  */
 export async function persistBuildResults(facts: FactVersion[], bullets: BulletMapping[]): Promise<void> {
@@ -403,7 +437,7 @@ export async function persistBuildResults(facts: FactVersion[], bullets: BulletM
 /** ── Azure AI Search indexing hooks ─────────────────────────────
  *
  * These are called by the orchestrator after persistence to keep
- * the search index in sync with Cosmos DB.
+ * the search index in sync with PostgreSQL.
  */
 
 let _searchKey = process.env.AZURE_SEARCH_API_KEY ?? '';

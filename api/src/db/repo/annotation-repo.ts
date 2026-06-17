@@ -11,27 +11,26 @@ export class AnnotationRepo extends Repo<Annotation> {
 
   /** Recent annotations for a factVersion. */
   async byFactVersion(factVersionId: string, limit = 50): Promise<Annotation[]> {
-    const docs = await this.query({
-      sql: 'SELECT TOP @lim * FROM c WHERE c.targetFactVersionId = @f ORDER BY c.createdAt DESC',
-      parameters: [{ name: '@f', value: factVersionId }, { name: '@lim', value: limit }],
-    });
-    return (docs as unknown as Annotation[]);
+    return this.findDocs<Annotation>(
+      "data->>'targetFactVersionId' = $1",
+      [factVersionId],
+      { orderBy: 'createdAt', desc: true, limit },
+    );
   }
 
   /** Recent annotations for a person. */
   async byPerson(personId: string, limit = 100): Promise<Annotation[]> {
-    const docs = await this.query({
-      sql: 'SELECT TOP @lim * FROM c WHERE c.personId = @p ORDER BY c.createdAt DESC',
-      parameters: [{ name: '@p', value: personId }, { name: '@lim', value: limit }],
-    });
-    return (docs as unknown as Annotation[]);
+    return this.findDocs<Annotation>(
+      "data->>'personId' = $1",
+      [personId],
+      { orderBy: 'createdAt', desc: true, limit },
+    );
   }
 
   async createMany(annotations: Partial<Annotation>[]): Promise<void> {
-    const c = await (this as any).getContainer();
     for (const a of annotations) {
-      const doc = { ...a, partitionKey: (a as any).id! } as unknown as Annotation;
-      await c.items.upsert(doc);
+      if (!a.id) throw new Error('Annotation must have id');
+      await this.upsert(a as Annotation);
     }
   }
 
