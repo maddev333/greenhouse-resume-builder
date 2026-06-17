@@ -35,22 +35,25 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
   const tenantId = input.tenantId || 'tenant-default';
   const log = (msg: string) => { if (!df.isReplaying) context.log(msg); };
 
-  log('[Orchestrator] Starting ingestion for run ' + runId);
+  log(`[Orchestrator] ▶ Starting ingestion run=${runId} tenant=${tenantId} webUrls=${input.webUrls?.length ?? 0}`);
 
   // Mark the run in_progress so the UI can reflect live status.
   yield df.callActivity('UpdateExtractionRunStatus', { runId, status: 'in_progress' });
 
   // ── Gate 1: Process uploads + fetch web sources ──
   const uploadResult = yield df.callActivity('StoreUploadsAndExtract', { runId });
+  log(`[Orchestrator] Gate-1: uploads → ${uploadResult?.sourceDocs?.length ?? 0} source doc(s), ${uploadResult?.textBlocks?.length ?? 0} text block(s)`);
   const webUrlsFromDocs = (uploadResult?.sourceDocs || [])
     .filter((d: any) => d.uri && d.sourceType === 'web')
     .map((d: any) => d.uri);
   const webInputUrls = input.webUrls ?? [];
   const allWebUrls = [...new Set([...webUrlsFromDocs, ...webInputUrls.filter(Boolean)])];
 
+  if (allWebUrls.length > 0) log(`[Orchestrator] Gate-1: fetching ${allWebUrls.length} web source(s): ${allWebUrls.join(', ')}`);
   const snapshotResults: any[] = allWebUrls.length > 0
     ? yield df.callActivity('FetchAndSnapshotWebSources', { runId, webUrls: allWebUrls })
     : [];
+  if (allWebUrls.length > 0) log(`[Orchestrator] Gate-1: web fetch returned ${snapshotResults.length} snapshot(s)`);
 
   const normalizedTextBlocks: string[] = [...(uploadResult?.textBlocks ?? [])];
   if (snapshotResults.length > 0) {
@@ -59,17 +62,30 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
   }
 
   const sectionTexts = normalizeSections(normalizedTextBlocks);
+  log(`[Orchestrator] Gate-2: ${normalizedTextBlocks.length} text block(s) → sections experience:${sectionTexts.experience?.length ?? 0} skills:${sectionTexts.skills?.length ?? 0} education:${sectionTexts.education?.length ?? 0}`);
 
-  // ── Gate 2A-C: Section agents in parallel (experience, skills, education) ──
+  // ── Gate 2A-C: Section agents in parallel (experience, skills, education) + full-text profile ──
   const sectionTasks = [
     df.callActivity('ExtractMvpExperienceSegment', { runId, textBlocks: sectionTexts.experience ?? [] }),
     df.callActivity('ProcessMvpSkillsSection', { runId, textBlocks: sectionTexts.skills ?? [] }),
     df.callActivity('ProcessEducationSection', { runId, textBlocks: sectionTexts.education ?? [] }),
+    df.callActivity('ExtractProfile', { runId, textBlocks: normalizedTextBlocks }),
   ];
-  const [experienceResult, skillsList, educationResult] = yield df.Task.all(sectionTasks);
+  const [experienceRaw, skillsRaw, educationRaw, profile] = yield df.Task.all(sectionTasks);
+
+  // Merge the résumé-section results with anything the full-text profile pass found in prose,
+  // so biographical pages (about/leadership/faculty bios) populate experience/skills/education too.
+  const experienceResult = mergeExperience(experienceRaw || [], profile?.experience || []);
+  const skillsList = mergeSkills(skillsRaw || [], profile?.skills || []);
+  const educationResult = mergeEducation(educationRaw || [], profile?.education || []);
+  log(`[Orchestrator] Gate-2: extracted ${experienceResult.length} experience, ${skillsList.length} skills, ${educationResult.length} education` +
+      ` (profile pass added exp:${profile?.experience?.length ?? 0} skills:${profile?.skills?.length ?? 0} edu:${profile?.education?.length ?? 0})`);
+  const profileExtraCount = (profile?.achievements?.length ?? 0) + (profile?.affiliations?.length ?? 0) + (profile?.links?.length ?? 0) +
+      (profile?.headline ? 1 : 0) + (profile?.currentTitle ? 1 : 0) + (profile?.location ? 1 : 0);
+  if (profileExtraCount > 0) log(`[Orchestrator] Gate-2: profile detail → headline:${profile?.headline ? 'y' : 'n'} role:${profile?.currentTitle ? 'y' : 'n'} location:${profile?.location ? 'y' : 'n'} achievements:${profile?.achievements?.length ?? 0} affiliations:${profile?.affiliations?.length ?? 0} links:${profile?.links?.length ?? 0}`);
 
   // ── Gate 3: Person dedup ──
-  const nameMatch = extractNameFromText(normalizedTextBlocks);
+  const nameMatch = extractNameFromText(normalizedTextBlocks) || profile?.name || null;
   let personId = input.personOverride;
   let dedupStatus: 'system_matched' | 'recruiter_selected' | 'needs_review' =
     input.personOverride ? 'recruiter_selected' : 'needs_review';
@@ -95,6 +111,7 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
   }
 
   // ── Gate 4: Normalize extracted shapes for the builder agent ──
+  log(`[Orchestrator] Gate-3: person resolved → ${personId} (${dedupStatus})`);
   const experienceSegs = (experienceResult || []) as Array<{
     employerName: string; jobTitle: string; startDate?: string; endDate?: string;
   }>;
@@ -112,6 +129,7 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
       skills: skItems,
       education: educationResult || [],
     });
+    if (summaryPayload?.summary) log(`[Orchestrator] Gate-4a: summary generated (${summaryPayload.summary.length} chars)`);
   } catch (err: any) {
     log(`[Orchestrator] Summary generation failed (non-fatal): ${err?.message || err}`);
   }
@@ -119,6 +137,7 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
   const sourceDocumentIds = (uploadResult?.sourceDocs ?? []).map((d: any) => d.id);
 
   // ── Gate 4b: Builder-agent stage (resume building) ──
+  log(`[Orchestrator] Gate-4b: building resume (${experienceSegs.length} exp, ${skillsResults.length} skills, ${eduResults.length} edu)…`);
   const builderOutput = yield df.callActivity('ResumeBuilderAgent', {
     runId,
     tenantId,
@@ -129,8 +148,17 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
       skills: skillsResults.map((s, i) => ({ name: s.name || `skill_${i}`, proficiency: s.proficiency, evidence: s.evidence })),
       education: eduResults,
     },
-    summaryText: summaryPayload?.summary,
+    summaryText: summaryPayload?.summary || profile?.summary,
     summaryMetadata: summaryPayload?.metadata,
+    profile: profile ? {
+      headline: profile.headline,
+      currentTitle: profile.currentTitle,
+      currentOrganization: profile.currentOrganization,
+      location: profile.location,
+      achievements: profile.achievements,
+      affiliations: profile.affiliations,
+      links: profile.links,
+    } : undefined,
   });
 
   log(`[Orchestrator] Builder-agent complete - ${builderOutput.stats.factCount} facts, ${builderOutput.stats.bulletCount} bullets`);
@@ -154,6 +182,7 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
   try {
     const employersForInference = experienceSegs.map(e => e.employerName).filter(Boolean);
     if (employersForInference.length > 0) {
+      log(`[Orchestrator] Gate-6: inferring relationships from ${employersForInference.length} employer(s)`);
       yield df.callActivity('InferRelationshipsForMatchingPersons', {
         runId,
         personId,
@@ -218,6 +247,56 @@ const normalizeEmployerName = (name: string): string => {
 
 function normalizeString(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+// ===== Merge helpers: combine section-extractor output with the full-text profile pass =====
+// Deterministic (pure) so they are safe to run inside the replayed orchestrator body.
+
+function mergeExperience(
+  base: Array<{ employerName: string; jobTitle?: string; startDate?: string | null; endDate?: string | null; location?: string | null }>,
+  extra: Array<{ employerName: string; jobTitle?: string; startDate?: string | null; endDate?: string | null; location?: string | null }>,
+): any[] {
+  const seen = new Set(base.map(e => `${normalizeEmployerName(e.employerName || '')}|${normalizeString(e.jobTitle || '')}`));
+  const merged = [...base];
+  for (const e of extra) {
+    if (!e?.employerName) continue;
+    const key = `${normalizeEmployerName(e.employerName)}|${normalizeString(e.jobTitle || '')}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(e);
+  }
+  return merged;
+}
+
+function mergeEducation(
+  base: Array<{ schoolName: string; degree?: string }>,
+  extra: Array<{ schoolName: string; degree?: string }>,
+): any[] {
+  const seen = new Set(base.map(e => `${normalizeString(e.schoolName || '')}|${normalizeString(e.degree || '')}`));
+  const merged = [...base];
+  for (const e of extra) {
+    if (!e?.schoolName) continue;
+    const key = `${normalizeString(e.schoolName)}|${normalizeString(e.degree || '')}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(e);
+  }
+  return merged;
+}
+
+function mergeSkills(
+  base: Array<{ name: string; proficiency?: string; evidence?: string }>,
+  extraNames: string[],
+): any[] {
+  const seen = new Set(base.map(s => normalizeString(s.name || '')));
+  const merged = [...base];
+  for (const name of extraNames) {
+    const norm = normalizeString(name || '');
+    if (!norm || seen.has(norm)) continue;
+    seen.add(norm);
+    merged.push({ name: name.trim(), evidence: name.trim() });
+  }
+  return merged;
 }
 
 // ── PersistBuilderOutput activity (Task 1.2 — all I/O outside orchestrator) ──

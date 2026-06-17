@@ -28,6 +28,13 @@ router.post('/', async (req: any, res: any) => {
   const tenantId = input.tenantId || req.user?.tenantId || req.tenantId || 'tenant-default';
   const requestedByUserId = req.user?.id || req.userId || 'system';
 
+  const webCount = input.sourceDocuments.filter((d) => d.sourceType === 'web').length;
+  const uploadCount = input.sourceDocuments.length - webCount;
+  console.log(
+    `[Ingestion] Request received: tenant=${tenantId} user=${requestedByUserId} ` +
+      `sources=${input.sourceDocuments.length} (web=${webCount}, upload=${uploadCount})`,
+  );
+
   // ── Idempotency check ────────────────────────────────────────────────
   const contentHash = computeContentHash(input.sourceDocuments);
   const recentRuns = await extractionRunRepo.activeByTenant(tenantId);
@@ -39,6 +46,7 @@ router.post('/', async (req: any, res: any) => {
       name: sd.mimeType || 'unknown', mimeType: sd.mimeType, blobPath: sd.blobPath, uri: sd.uri,
     })) as CreateIngestionRequestInput['sourceDocuments']);
     if (runHash === contentHash) {
+      console.log(`[Ingestion] Deduplicated → returning existing run ${r.id} (within ${DEDUP_WINDOW_MS / 60000}min window)`);
       return res.status(200).json({
         runId: r.id,
         status: 'queued' as const,
@@ -86,9 +94,17 @@ router.post('/', async (req: any, res: any) => {
     } satisfies IngestionRunResponse);
 
     const fnHost = process.env.FUNCTIONS_HOST || 'http://localhost:7071';
+    const orchestratorUrl = `${fnHost}/api/orchestrators/IngestCandidateOrchestrator`;
+    // Forward web source URLs to the orchestrator. The pipeline fetches/normalizes these from the
+    // input payload; they are NOT otherwise recoverable inside the pipeline (storeUploadsAndExtract
+    // only handles uploaded blobs), so omitting them yields a run with 0 fetched content / 0 facts.
+    const webUrls = input.sourceDocuments
+      .filter((d) => d.sourceType === 'web' && d.uri)
+      .map((d) => d.uri as string);
+    console.log(`[Ingestion] Run ${run.id} created with ${sourceDocIds.length} source doc(s) (${webUrls.length} web URL(s)) → triggering orchestrator at ${fnHost}`);
     void (async () => {
       const authHeaders = await getServiceAuthHeaders(process.env.FUNCTIONS_TOKEN_SCOPE, req.accessToken);
-      await fetch(`${fnHost}/api/orchestrators/IngestCandidateOrchestrator`, {
+      const resp = await fetch(orchestratorUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -96,9 +112,26 @@ router.post('/', async (req: any, res: any) => {
           'x-tenant-id': tenantId,
           ...authHeaders,
         },
-        body: JSON.stringify({ runId: run.id, tenantId, requestedByUserId }),
+        body: JSON.stringify({ runId: run.id, tenantId, requestedByUserId, webUrls }),
       });
-    })().catch(e => console.error('[Ingestion] Orchestrator failed:', e));
+      if (!resp.ok) {
+        const detail = await resp.text().catch(() => '');
+        throw new Error(
+          `Orchestrator start returned ${resp.status} ${resp.statusText} from ${orchestratorUrl}: ${detail.slice(0, 500)}`,
+        );
+      }
+      console.log(`[Ingestion] Orchestrator started for run ${run.id} (HTTP ${resp.status})`);
+    })().catch(async (e) => {
+      console.error(`[Ingestion] Failed to start orchestrator for run ${run.id}:`, e?.message ?? e);
+      // Surface the failure to the UI instead of leaving the run stuck "in_progress" forever.
+      try {
+        await extractionRunRepo.updateStatus(run.id, 'failed', {
+          failedReason: `Failed to start ingestion pipeline: ${e?.message ?? e}`,
+        } as Partial<ExtractionRun>);
+      } catch (markErr) {
+        console.error(`[Ingestion] Could not mark run ${run.id} as failed:`, markErr);
+      }
+    });
 
   } catch (err) {
     console.error('[Ingestion] Error:', err);

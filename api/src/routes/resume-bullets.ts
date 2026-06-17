@@ -13,7 +13,7 @@ const router = Router();
 router.get('/:personId/bullet-mappings', async (req: any, res: any) => {
   const personId = req.params.personId;
   const section = (req.query.section as string | undefined)
-                || ['summary', 'experience', 'skills', 'education'];
+                || ['summary', 'experience', 'skills', 'education', 'profile'];
   const sections: string[] = Array.isArray(section) ? section : [section];
 
   // Return a flat array aligned with ResumeBulletResponse DTO
@@ -35,7 +35,7 @@ router.get('/:personId/bullet-mappings', async (req: any, res: any) => {
 router.get('/:personId/facts', async (req: any, res: any) => {
   const personId = req.params.personId;
   const section = (req.query.section as string | undefined)
-               || ['summary', 'experience', 'skills', 'education'];
+               || ['summary', 'experience', 'skills', 'education', 'profile'];
   const secList: string[] = Array.isArray(section) ? section : [section];
 
   // Return FactVersionResponse-aligned shapes per-section

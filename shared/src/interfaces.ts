@@ -60,7 +60,7 @@ export interface FactVersion {
   tenantId: string;
   personId: string;
   extractionRunId: string;
-  sectionId: 'summary' | 'experience' | 'skills' | 'education';
+  sectionId: 'summary' | 'experience' | 'skills' | 'education' | 'profile';
   factKey: string; // e.g., 'employment.employer_name'
   factValue: string | object;
   normalizedValue: string;
@@ -76,7 +76,7 @@ export interface BulletMapping {
   tenantId: string;
   personId: string;
   extractionRunId: string;
-  sectionId: 'summary' | 'experience' | 'skills' | 'education';
+  sectionId: 'summary' | 'experience' | 'skills' | 'education' | 'profile';
   bulletText: string;
   bulletSignature: string; // stable hash for diffing
   citationFactVersionIds: string[];

@@ -22,6 +22,15 @@ export interface BuilderAgentInput {
   };
   summaryText?: string;
   summaryMetadata?: Record<string, any>;
+  profile?: {
+    headline?: string | null;
+    currentTitle?: string | null;
+    currentOrganization?: string | null;
+    location?: string | null;
+    achievements?: string[];
+    affiliations?: string[];
+    links?: string[];
+  };
 }
 
 export interface BuilderAgentOutput {
@@ -194,7 +203,48 @@ function buildEducationArtifacts(
   return { facts, bullets };
 }
 
-// ── Public entry point ─────────────────────────────────────────────────────
+function buildProfileArtifacts(
+  tenantId: string, personId: string, extractionRunId: string,
+  sourceDocumentIds: string[], profile: NonNullable<BuilderAgentInput['profile']>,
+): { facts: FactVersion[]; bullets: BulletMapping[] } {
+  const facts: FactVersion[] = [];
+  const bullets: BulletMapping[] = [];
+  const sourceDocRefs = sourceDocumentIds.slice(0, 1);
+
+  const addFactBullet = (factKey: string, value: string, bulletText: string, confidence = 0.7) => {
+    const trimmed = (value ?? '').trim();
+    if (!trimmed) return;
+    const fact = makeFact(
+      tenantId, personId, extractionRunId, 'profile', factKey, trimmed,
+      normalizeString(trimmed), sourceDocRefs, confidence);
+    facts.push(fact);
+    bullets.push(makeBullet(
+      tenantId, personId, extractionRunId, 'profile', bulletText, [fact.id], sourceDocumentIds));
+  };
+
+  if (profile.headline) addFactBullet('profile.headline', profile.headline, profile.headline, 0.75);
+
+  if (profile.currentTitle || profile.currentOrganization) {
+    const role = [profile.currentTitle, profile.currentOrganization].filter(Boolean).join(' at ');
+    addFactBullet('profile.current_role',
+      JSON.stringify({ title: profile.currentTitle ?? null, organization: profile.currentOrganization ?? null }),
+      role, 0.75);
+  }
+
+  if (profile.location) addFactBullet('profile.location', profile.location, `Based in ${profile.location}`, 0.7);
+
+  for (const achievement of profile.achievements ?? []) {
+    addFactBullet('profile.achievement', achievement, achievement, 0.65);
+  }
+  for (const affiliation of profile.affiliations ?? []) {
+    addFactBullet('profile.affiliation', affiliation, affiliation, 0.65);
+  }
+  for (const link of profile.links ?? []) {
+    addFactBullet('profile.link', link, link, 0.6);
+  }
+
+  return { facts, bullets };
+}
 
 export function buildResumeArtifacts(input: BuilderAgentInput): BuilderAgentOutput {
   const tenantId = input.tenantId ?? 'tenant-default';
@@ -204,6 +254,9 @@ export function buildResumeArtifacts(input: BuilderAgentInput): BuilderAgentOutp
   const expArtifacts  = buildExperienceArtifacts(tenantId, input.personId, input.runId, sourceDocumentIds, extracted.experience ?? []);
   const skillArtifacts = buildSkillsArtifacts(tenantId, input.personId, input.runId, sourceDocumentIds, extracted.skills ?? []);
   const eduArtifacts   = buildEducationArtifacts(tenantId, input.personId, input.runId, sourceDocumentIds, extracted.education ?? []);
+  const profileArtifacts = input.profile
+    ? buildProfileArtifacts(tenantId, input.personId, input.runId, sourceDocumentIds, input.profile)
+    : { facts: [] as FactVersion[], bullets: [] as BulletMapping[] };
 
   // Optional summary facts + bullet.
   let summaryFacts: FactVersion[] = [];
@@ -226,9 +279,9 @@ export function buildResumeArtifacts(input: BuilderAgentInput): BuilderAgentOutp
     }
   }
 
-  const allFacts = [...expArtifacts.facts, ...skillArtifacts.facts, ...eduArtifacts.facts, ...summaryFacts];
+  const allFacts = [...expArtifacts.facts, ...skillArtifacts.facts, ...eduArtifacts.facts, ...profileArtifacts.facts, ...summaryFacts];
   const allBullets: BulletMapping[] = [
-    ...expArtifacts.bullets, ...skillArtifacts.bullets, ...eduArtifacts.bullets,
+    ...expArtifacts.bullets, ...skillArtifacts.bullets, ...eduArtifacts.bullets, ...profileArtifacts.bullets,
   ];
 
   if (input.summaryText?.trim()) {

@@ -326,6 +326,7 @@ export function CandidateProfilePage() {
         <main style={{ flex: 1, marginRight: activeTab === 'annotations' ? 0 : 280 }}>
           {activeTab === 'bullets' && (
             <>
+              <SectionCard title="Profile"    bullets={bulletMappings['profile'] ?? []} />
               <SectionCard title="Experience" bullets={bulletMappings['experience'] ?? []} />
               <SectionCard title="Skills"     bullets={bulletMappings['skills'] ?? []} />
               <SectionCard title="Education"  bullets={bulletMappings['education'] ?? []} />
@@ -445,17 +446,19 @@ export function LandingPage() {
           .catch(() => null);
 
         if (status) {
-          setRuns(prev => [status, ...prev.filter(r => r.id !== runId)].slice(0, 21));
+          // The status endpoint returns `runId` (not `id`); normalize so list keys/dedup work.
+          const normalized: ExtractionRun = { ...status, id: status.id ?? (status as any).runId ?? runId };
+          setRuns(prev => [normalized, ...prev.filter(r => r.id !== normalized.id)].slice(0, 21));
 
-          if (status.status === 'completed' && status.personId) {
+          if (normalized.status === 'completed' && normalized.personId) {
             // Navigate to candidate profile automatically
-            window.history.pushState({}, '', `?personId=${status.personId}`);
+            window.history.pushState({}, '', `?personId=${normalized.personId}`);
             (window as any).dispatchEvent(new PopStateEvent('popstate'));
             return;
           }
-          if (status.status === 'failed') {
+          if (normalized.status === 'failed') {
             setIngestStatus('error');
-            setErrorMessage((status as any).failedReason || 'Ingestion failed');
+            setErrorMessage((normalized as any).failedReason || 'Ingestion failed');
             return;
           }
         }
@@ -539,7 +542,7 @@ export function LandingPage() {
         ) : (
           runs.map(r => (
             <div
-              key={r.id}
+              key={r.id ?? (r as any).runId}
               onClick={() => {
                   if (r.personId) {
                     window.history.pushState({}, '', `?personId=${encodeURIComponent(r.personId!)}`);

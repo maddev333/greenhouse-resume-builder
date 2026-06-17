@@ -86,7 +86,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           tools: toolSpec.length ? toolSpec : undefined,
           tool_choice: toolSpec.length ? 'auto' : undefined,
           temperature: 0,
-          max_tokens: 1800,
+          // GPT-4o and GPT-5-class deployments require max_completion_tokens; max_tokens is rejected.
+          max_completion_tokens: 1800,
         }),
         signal: controller.signal,
       });
