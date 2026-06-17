@@ -54,3 +54,6 @@ coverage/
 .functions/
 .netlify/
 *.pem
+
+__blobstorage__/
+__azurite*

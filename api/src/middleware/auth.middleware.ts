@@ -10,17 +10,16 @@ import { jwtVerify, createRemoteJWKSet } from 'jose';
  * issuer, audience, and expiration claims — all handled by jose internally.
  */
 
-const AZURE_AD_JWKS_URI = process.env.AZURE_AD_JWKS_URI ?? ''; // Azure AD JWKS discovery URL
-const AZURE_AD_CLIENT_ID = process.env.AZURE_AD_CLIENT_ID ?? ''; // API's app registration client ID
+const AZURE_AD_JWKS_URI = process.env.AZURE_AD_JWKS_URI ?? '';
+const AZURE_AD_CLIENT_ID = process.env.AZURE_AD_CLIENT_ID ?? '';
 
 // Explicit, local-dev-only opt-in for the no-crypto bypass. Production must leave this unset.
 const ALLOW_DEV_AUTH_BYPASS = process.env.ALLOW_DEV_AUTH_BYPASS === 'true';
 
-// Accepted issuer prefixes. Defaults to Azure Commercial; override with a comma-separated
-// AZURE_AD_ISSUER_PREFIXES for Azure Government / DoD (e.g. https://login.microsoftonline.us/).
+// Accept both Azure Commercial and USGov issuer prefixes (covers all deployment targets).
 const AAD_ISSUER_PREFIXES = process.env.AZURE_AD_ISSUER_PREFIXES
   ? process.env.AZURE_AD_ISSUER_PREFIXES.split(',').map((s) => s.trim()).filter(Boolean)
-  : ['https://sts.windows.net/', 'https://login.microsoftonline.com/'];
+  : ['https://sts.windows.net/', 'https://login.microsoftonline.com/', 'https://login.microsoftonline.us/'];
 
 /** Remote JWKS key resolver with automatic caching (jose caches keys for cooldownDuration). */
 let _azureKeySet: ReturnType<typeof createRemoteJWKSet> | null = null;
@@ -90,29 +89,47 @@ async function validateTokenClaimsProd(accessToken: string): Promise<{ userId: s
 
 export const authMiddleware: RequestHandler = async (req, res, next) => {
   const authHeader = req.header('Authorization') ?? '';
-
-  if (!authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing or invalid Authorization header (expected Bearer token)' });
-  }
-
-  const accessToken = authHeader.slice(7);
+  let accessToken = ''; // default to empty for dev bypass mode
   let claims: { userId: string; tenantId: string };
 
-  try {
-    if (AZURE_AD_JWKS_URI) {
-      // Production: jose cryptographically verifies RSA signature + JWKS key resolution
-      claims = await validateTokenClaimsProd(accessToken);
-    } else if (ALLOW_DEV_AUTH_BYPASS) {
-      // Dev-only: placeholder mode — no crypto verification. Requires explicit opt-in.
-      claims = await validateTokenClaimsDev(accessToken);
+  // ── Verbose logging so we always know which path was taken ──
+  console.error('[authMiddleware] AZURE_AD_JWKS_URI=', JSON.stringify(AZURE_AD_JWKS_URI));
+  console.error('[authMiddleware] ALLOW_DEV_AUTH_BYPASS=', ALLOW_DEV_AUTH_BYPASS);
+  console.error('[authMiddleware] hasAuthHeader=', !!authHeader);
+
+  if (!AZURE_AD_JWKS_URI?.trim()) {
+    // ── Dev mode: no JWKS configured → accept without verification ──
+    if (ALLOW_DEV_AUTH_BYPASS) {
+      // DEV BYPASS: ANY request passes, even with zero headers. No network calls.
+      console.error('[authMiddleware] → dev bypass accepted (any request).');
+      claims = { userId: 'dev-placeholder', tenantId: 'developer-tenant' };
+    } else if (!authHeader.toLowerCase().startsWith('bearer ')) {
+      // Dev without bypass requires a Bearer header
+      const msg = 'Dev auth requires: EITHER set ALLOW_DEV_AUTH_BYPASS=true OR send an Authorization: Bearer <token>.';
+      console.error('[authMiddleware] → reject: ' + msg);
+      return res.status(401).json({ error: msg });
     } else {
-      // Fail closed: never accept unverified tokens unless dev bypass is explicitly enabled.
-      return res.status(401).json({
-        error: 'Authentication not configured: set AZURE_AD_JWKS_URI (or ALLOW_DEV_AUTH_BYPASS=true for local dev only)',
-      });
+      // Dev with validation: accepts Bearer but doesn't verify crypto
+      accessToken = authHeader.slice(7);
+      claims = await validateTokenClaimsDev(accessToken);
+      console.error('[authMiddleware] → dev accepted, userId=' + claims.userId);
     }
-  } catch (err) {
-    return res.status(401).json({ error: `Invalid Bearer token: ${(err as Error).message}` });
+  } else if (AZURE_AD_JWKS_URI) {
+    // ── Production: must have valid Bearer ──
+    if (!authHeader.toLowerCase().startsWith('bearer ')) {
+      return res.status(401).json({ error: 'Missing or invalid Authorization header (expected Bearer token)' });
+    }
+    accessToken = authHeader.slice(7);
+    try {
+      claims = await validateTokenClaimsProd(accessToken);
+      console.error('[authMiddleware] → prod verified userId=' + claims.userId);
+    } catch (err: any) {
+      console.error('[authMiddleware] → prod verify failed:', err.message);
+      return res.status(401).json({ error: 'Invalid Bearer token: ' + err.message });
+    }
+  } else {
+    // Catch-all: shouldn't reach here but fail closed
+    return res.status(401).json({ error: 'Authentication mode unknown. Set AZURE_AD_JWKS_URI or ALLOW_DEV_AUTH_BYPASS=true.' });
   }
 
   // Type-safe assignment via unknown intermediate to satisfy TypeScript no-overlap check
@@ -121,6 +138,7 @@ export const authMiddleware: RequestHandler = async (req, res, next) => {
   authenticatedReq.tenantId = claims.tenantId;
   // Carry the validated token so handlers can exchange it On-Behalf-Of the user (no shared secret).
   authenticatedReq.accessToken = accessToken;
+
   next();
 };
 
@@ -129,3 +147,7 @@ export const authMiddleware: RequestHandler = async (req, res, next) => {
  * Usage: `app.use('/api/v1', authMiddleware);`
  */
 export const authenticated = () => authMiddleware;
+
+// MODULE-LOAD DIAGNOSTIC (remove after debugging)
+console.error('[auth-mw-diag] ALLOW_DEV_AUTH_BYPASS=', process.env.ALLOW_DEV_AUTH_BYPASS ?? '(UNSET)');
+console.error('[auth-mw-diag] AZURE_AD_JWKS_URI=', JSON.stringify(process.env.AZURE_AD_JWKS_URI));

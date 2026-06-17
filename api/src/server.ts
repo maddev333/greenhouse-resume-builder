@@ -1,9 +1,15 @@
 /** Greenhouse Resume Builder MVP — Express API Server Entry Point */
+
+// ── Load dotenv synchronously at the top of the file.
+// (tsx respects tsconfig — module: CommonJS means no top-level await — so we keep
+//  this as a plain import/require pattern rather than an `await import('dotenv')`).
+import { config } from 'dotenv';
+
+const dotA = config({ path: '/Users/nick/repos/greenhouse-resume-builder/.env' });
+const dotB = config({ path: '/Users/nick/repos/greenhouse-resume-builder/.env.local' });
+
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 const app = express();
 app.use(cors());
@@ -118,6 +124,7 @@ app.get('/health', (_req, res) => {
 // ── Health + Listen ───────────────────────────────────────────────
 
 const PORT = Number(process.env.PORT ?? 3001);
+console.log('[Server] PGHOST=' + process.env.PGHOST + ' PGUSER=' + process.env.PGUSER + ' PGPASSWORD_len=' + (process.env.PGPASSWORD?.length ?? 0));
 app.listen(PORT, () => {
   console.log(`[Server] MVP Express API ready on port ${PORT}, NODE_ENV=${process.env.NODE_ENV ?? 'not set'}`);
 });
