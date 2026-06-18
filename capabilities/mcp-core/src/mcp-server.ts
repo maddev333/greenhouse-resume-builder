@@ -81,22 +81,65 @@ function verifyBearer(request: HttpRequest): boolean {
 }
 
 /**
- * Register an MCP capability server as a single POST {route} Azure Function.
- * Call at import time (Functions v4 model).
+ * Resolve CORS headers for a browser request. The MCP UI Apps call these servers directly when
+ * running standalone (cross-origin: Vite dev server -> Functions host), so the server must answer
+ * the preflight. In IL5 the gateway/APIM owns CORS; this is a dev/edge convenience controlled by
+ * `MCP_CORS_ALLOWED_ORIGINS`:
+ *   - unset -> reflect localhost/127.0.0.1 origins only (local-dev default)
+ *   - '*'   -> reflect any origin
+ *   - csv   -> reflect an origin only when it is in the comma-separated allow-list
+ * Returns {} (no CORS headers) for non-browser requests or disallowed origins.
+ */
+function corsHeaders(request: HttpRequest): Record<string, string> {
+  const origin = request.headers.get('origin');
+  if (!origin) return {};
+  const configured = (process.env.MCP_CORS_ALLOWED_ORIGINS || '').trim();
+  let allowed: boolean;
+  if (configured === '*') {
+    allowed = true;
+  } else if (configured) {
+    allowed = configured.split(',').map((s) => s.trim()).filter(Boolean).includes(origin);
+  } else {
+    allowed = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+  }
+  if (!allowed) return {};
+  return {
+    'Access-Control-Allow-Origin': origin,
+    Vary: 'Origin',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers':
+      request.headers.get('access-control-request-headers') || 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '600',
+  };
+}
+
+/** Merge extra headers (e.g. CORS) into a response without dropping any it already carries. */
+function withHeaders(res: HttpResponseInit, headers: Record<string, string>): HttpResponseInit {
+  if (Object.keys(headers).length === 0) return res;
+  const existing = (res.headers ?? {}) as Record<string, string>;
+  return { ...res, headers: { ...existing, ...headers } };
+}
+
+/**
+ * Register an MCP capability server as a single {route} Azure Function. Handles POST (JSON-RPC)
+ * plus an OPTIONS CORS preflight for browser-based MCP UI Apps. Call at import time (Functions v4).
  */
 export function registerMcpServer(server: McpServerDef, opts: { functionName: string; route?: string }): void {
   const route = opts.route || `mcp/${server.name}`;
   app.http(opts.functionName, {
     route,
-    methods: ['POST'],
+    methods: ['POST', 'OPTIONS'],
     authLevel: 'anonymous',
     handler: async (request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> => {
-      if (!verifyBearer(request)) return rpcError(null, -32001, 'Unauthorized');
+      const cors = corsHeaders(request);
+      // CORS preflight: answer before auth/body handling (preflight requests carry no credentials).
+      if (request.method === 'OPTIONS') return { status: 204, headers: cors };
+      if (!verifyBearer(request)) return withHeaders(rpcError(null, -32001, 'Unauthorized'), cors);
       let body: JsonRpcRequest;
       try {
         body = (await request.json()) as JsonRpcRequest;
       } catch {
-        return rpcError(null, -32700, 'Parse error');
+        return withHeaders(rpcError(null, -32700, 'Parse error'), cors);
       }
       const ctx: ToolCallContext = {
         tenantId: request.headers.get('x-tenant-id') || undefined,
@@ -105,7 +148,7 @@ export function registerMcpServer(server: McpServerDef, opts: { functionName: st
       };
       const res = await handleRpc(server, body, ctx);
       // Notifications -> 202 Accepted with no body.
-      return res ?? { status: 202 };
+      return withHeaders(res ?? { status: 202 }, cors);
     },
   });
 }

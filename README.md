@@ -9,10 +9,11 @@
 1. **Read the [Setup Summary](./SETUP_SUMMARY.md)** for a quick overview of recent changes
 2. **Follow the [Development Guide](./DEVELOPMENT.md)** for detailed setup instructions
 3. **Run the quick start script**:
+
    ```bash
    # Windows
    quick-start.bat
-   
+
    # Linux/Mac
    chmod +x quick-start.sh && ./quick-start.sh
    ```
@@ -40,9 +41,12 @@ cd functions && npm run start:dev
 # Functions run on http://localhost:7071
 ```
 
+Get-Content "$env:TEMP\grb_func.log" -Wait -Tail 80
+
 ### VS Code Debugging
 
 Press `F5` in VS Code and select:
+
 - **Debug Full Stack** - Run API + UI with debugger attached
 - **Debug API Server** - Debug the Express API
 - **Debug Azure Functions** - Debug Functions runtime
@@ -52,31 +56,34 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for complete debugging guide.
 ## Architecture Overview
 
 ### Data Layer
+
 - **PostgreSQL** — structured store for persons, source docs, extraction runs, fact versions, bullet mappings, annotations, and relationships (auto-provisioned tables on startup)
 - **Azure AI Search** — full-text indexing of resume facts and bullets
 - **Azure Blob Storage** — raw document staging container (`raw` by default)
 
 ### Services
-| Service | Description |
-|---------|---|
-| **API** (`api/`) | Express REST layer — ingestion, bullets/facts, annotations, relationships, search |
-| **Functions** (`functions/`) | Durable Functions orchestration: extraction, deduplication, builder, persistence, indexing |
-| **UI** (`ui/`) | React 18 + Vite — landing flow, candidate profile, diff, annotation, relationship, and search views |
+
+| Service                      | Description                                                                                         |
+| ---------------------------- | --------------------------------------------------------------------------------------------------- |
+| **API** (`api/`)             | Express REST layer — ingestion, bullets/facts, annotations, relationships, search                   |
+| **Functions** (`functions/`) | Durable Functions orchestration: extraction, deduplication, builder, persistence, indexing          |
+| **UI** (`ui/`)               | React 18 + Vite — landing flow, candidate profile, diff, annotation, relationship, and search views |
 
 ### Capability Modules (`capabilities/`)
 
 Each capability is a self-contained, independently deployable unit for IL5 compliance:
 
-| Capability | MCP Servers | UI App |
-|------------|-------------|---------|
-| [Ingestion](./capabilities/ingestion) | `acquisition`, `extraction` | Ingestion Console |
-| [Quality](./capabilities/quality) | `quality` | Review Queue |
-| [Relationships](./capabilities/relationships) | `relationships` | Relationship Confirmation |
-| [Temporal](./capabilities/temporal) | `temporal` | Prediction Review |
-| [Geospatial](./capabilities/geospatial) | `geospatial` | Map Pins |
-| [Discovery](./capabilities/discovery) | `search` | Resume + Diff |
+| Capability                                    | MCP Servers                 | UI App                    |
+| --------------------------------------------- | --------------------------- | ------------------------- |
+| [Ingestion](./capabilities/ingestion)         | `acquisition`, `extraction` | Ingestion Console         |
+| [Quality](./capabilities/quality)             | `quality`                   | Review Queue              |
+| [Relationships](./capabilities/relationships) | `relationships`             | Relationship Confirmation |
+| [Temporal](./capabilities/temporal)           | `temporal`                  | Prediction Review         |
+| [Geospatial](./capabilities/geospatial)       | `geospatial`                | Map Pins                  |
+| [Discovery](./capabilities/discovery)         | `search`                    | Resume + Diff             |
 
 Each module bundles:
+
 - **1–2 MCP capability servers** (`mcp/<server>/`) — IL5 Azure Functions apps over Streamable HTTP
 - **Agent framework runtime** (`agent/`) — self-hosted Azure OpenAI tool-calling loop
 - **MCP UI App** (`ui/`) — recruiter surface (hybrid web + MCP App)
@@ -115,20 +122,20 @@ greenhouse-resume-builder/
 
 ## REST API Endpoints
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| `POST` | `/api/v1/ingestion-requests` | Submit source doc(s) for ingestion |
-| `GET`  | `/api/v1/ingestion-requests/:runId/status` | Poll ingestion status |
-| `GET`  | `/api/v1/ingestion-requests` | List/filter ingestion runs |
-| `GET`  | `/api/v1/insights/:personId/bullet-mappings` | Get resume bullets with citations |
-| `GET`  | `/api/v1/insights/:personId/facts` | Get extracted fact versions |
-| `GET`  | `/api/v1/insights/:personId/differences` | Get bullet-level diffs between runs |
-| `PUT/PATCH/DELETE` | `/api/v1/annotations/:id` | Annotation CRUD |
-| `GET`  | `/api/v1/inferences/:personId/suggested` | Relationship suggestions |
-| `PATCH` | `/api/v1/inferences/:relationshipId` | Confirm/reject relationship suggestions |
-| `POST` | `/api/v1/search` | Search bullets/facts (Azure AI Search) |
-| `GET`  | `/api/v1/stats` | Runtime document counts and status |
-| `GET`  | `/health` | Health probe |
+| Method             | Endpoint                                     | Purpose                                 |
+| ------------------ | -------------------------------------------- | --------------------------------------- |
+| `POST`             | `/api/v1/ingestion-requests`                 | Submit source doc(s) for ingestion      |
+| `GET`              | `/api/v1/ingestion-requests/:runId/status`   | Poll ingestion status                   |
+| `GET`              | `/api/v1/ingestion-requests`                 | List/filter ingestion runs              |
+| `GET`              | `/api/v1/insights/:personId/bullet-mappings` | Get resume bullets with citations       |
+| `GET`              | `/api/v1/insights/:personId/facts`           | Get extracted fact versions             |
+| `GET`              | `/api/v1/insights/:personId/differences`     | Get bullet-level diffs between runs     |
+| `PUT/PATCH/DELETE` | `/api/v1/annotations/:id`                    | Annotation CRUD                         |
+| `GET`              | `/api/v1/inferences/:personId/suggested`     | Relationship suggestions                |
+| `PATCH`            | `/api/v1/inferences/:relationshipId`         | Confirm/reject relationship suggestions |
+| `POST`             | `/api/v1/search`                             | Search bullets/facts (Azure AI Search)  |
+| `GET`              | `/api/v1/stats`                              | Runtime document counts and status      |
+| `GET`              | `/health`                                    | Health probe                            |
 
 ## Authentication
 
@@ -155,6 +162,7 @@ Connection supports both password auth and AAD managed identity (default for IL5
 ## Current implementation guidance
 
 ### Verified moved-forward areas
+
 - Ingestion create responses are documented in current handoff docs as aligned around `sourceDocumentIds`.
 - Production auth is now documented as `jose`-based rather than manual/non-cryptographic parsing.
 - Builder bullet IDs are documented as including `personId`.
@@ -162,6 +170,7 @@ Connection supports both password auth and AAD managed identity (default for IL5
 - The previously noted duplicate `searchConfigured` stats-field bug is no longer an active top-level issue.
 
 ### Highest-value remaining work
+
 1. Run build/type verification across packages and record exact blockers.
 2. Validate the landing-page ingestion workflow end to end:
    - submit ingestion requests with auth headers

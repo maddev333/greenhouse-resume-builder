@@ -96,12 +96,72 @@ export const geospatialTools: McpTool[] = [
   }),
   defineTool({
     name: 'project_map_pins',
-    description: 'Project location-bearing records for a person into normalized map pins.',
+    description:
+      "Project a person's location-bearing records into normalized map pins by geocoding each " +
+      'supplied location (coarse city/region precision). Pins are projections over source records, not facts.',
     inputSchema: {
       type: 'object',
-      properties: { personId: { type: 'string' } },
+      properties: {
+        personId: { type: 'string' },
+        locations: {
+          type: 'array',
+          description: 'Location records to plot. Each item is a string, or an object { label?, location }.',
+          items: {},
+        },
+      },
       required: ['personId'],
     },
-    handler: () => toolResult('Map-pin projection stub.', { pins: [] }),
+    handler: async (args: any) => {
+      const personId = String(args?.personId ?? '');
+      const rawList: any[] = Array.isArray(args?.locations) ? args.locations : [];
+      // Normalize each record to { label, query }; drop blanks and cap to keep the call bounded.
+      const records = rawList
+        .map((item) => {
+          if (typeof item === 'string') return { label: item.trim(), query: item.trim() };
+          const query = String(item?.location ?? item?.query ?? '').trim();
+          return { label: String(item?.label ?? query).trim(), query };
+        })
+        .filter((r) => r.query.length > 0)
+        .slice(0, 25);
+
+      if (!isMapsConfigured()) {
+        return toolResult(
+          `Azure Maps not configured (set AZURE_MAPS_KEY); cannot project ${records.length} location(s).`,
+          { personId, pins: [], count: 0, mapsConfigured: false },
+        );
+      }
+      if (records.length === 0) {
+        return toolResult(`No locations supplied for ${personId || '(unknown person)'}.`, {
+          personId,
+          pins: [],
+          count: 0,
+          mapsConfigured: true,
+        });
+      }
+
+      const settled = await Promise.allSettled(records.map((r) => geocodeLocation(r.query)));
+      const pins = settled
+        .map((res, i) => {
+          if (res.status !== 'fulfilled' || !res.value) return null;
+          const g = res.value;
+          return {
+            label: records[i].label || g.formattedAddress || g.city || records[i].query,
+            query: records[i].query,
+            address: g.formattedAddress,
+            city: g.city,
+            region: g.region,
+            country: g.country,
+            latitude: g.latitude,
+            longitude: g.longitude,
+            locationConfidence: g.locationConfidence,
+          };
+        })
+        .filter((p): p is NonNullable<typeof p> => p !== null);
+
+      return toolResult(
+        `Projected ${pins.length}/${records.length} pin(s) for ${personId || '(unknown person)'}.`,
+        { personId, pins, count: pins.length, requested: records.length, mapsConfigured: true },
+      );
+    },
   }),
 ];

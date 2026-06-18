@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@azure/functions": "^4.16.0",
-    "@greenhouse-resume-builder/mcp-core": "*"
+    "@greenhouse-resume-builder/mcp-core": "*",
+    "dotenv": "^16.4.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

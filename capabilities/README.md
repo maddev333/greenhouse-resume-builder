@@ -58,3 +58,6 @@ See each module's README. Common variables:
 - `AZURE_OPENAI_API_KEY` (local dev only; omit for IL5 managed identity)
 - `MCP_TOKEN_SCOPE` (agent → MCP server bearer token; IL5)
 - `MCP_REQUIRE_BEARER` (`true` to require a bearer locally)
+- `MCP_CORS_ALLOWED_ORIGINS` — browser CORS for the standalone MCP UI Apps. Unset reflects
+  `localhost`/`127.0.0.1` origins (local-dev default); set to `*` or a comma-separated allow-list
+  otherwise. In IL5 the gateway/APIM owns CORS.

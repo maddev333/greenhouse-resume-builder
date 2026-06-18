@@ -10,5 +10,9 @@
     "capabilities/*/mcp/*",
     "capabilities/*/agent",
     "capabilities/*/ui"
-  ]
+  ],
+  "dependencies": {
+    "@mcp-ui/server": "^6.1.0",
+    "@modelcontextprotocol/ext-apps": "^1.7.4"
+  }
 }
