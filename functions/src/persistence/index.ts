@@ -528,8 +528,21 @@ let _searchSvc = process.env.AZURE_SEARCH_SERVICE ?? '';
 
 function shouldIndex(): boolean {
   if (process.env.NODE_ENV === 'test') return false;
-  if (!_searchSvc || !_searchKey) return false;
-  return true;
+  // Indexing only needs a configured service. Auth is admin-key when provided,
+  // else Microsoft Entra (managed identity) — same model as the rest of the stack.
+  return !!_searchSvc;
+}
+
+/**
+ * Normalize AZURE_SEARCH_SERVICE into a full endpoint URL. Accepts a bare service
+ * name (svc), a fully-qualified host (svc.search.windows.net), or a full URL.
+ */
+function searchEndpoint(): string {
+  const suffix = process.env.AZURE_SEARCH_ENDPOINT_SUFFIX ?? 'search.windows.net';
+  const raw = _searchSvc.trim().replace(/\/+$/, '');
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (raw.includes('.')) return `https://${raw}`;
+  return `https://${raw}.${suffix}`;
 }
 
 /** Convert a FactVersion into an Azure AI Search document. */
@@ -572,8 +585,9 @@ export async function indexFactsToSearch(facts: FactVersion[]): Promise<void> {
   if (!shouldIndex() || !facts.length) return;
 
   const { SearchClient, AzureKeyCredential } = await import('@azure/search-documents');
-  const endpoint = `https://${_searchSvc}.search.windows.net`;
-  const client   = new SearchClient('resume-facts', endpoint, new AzureKeyCredential(_searchKey), {});
+  // Admin key when provided, else Entra (managed identity) via DefaultAzureCredential.
+  const credential = _searchKey ? new AzureKeyCredential(_searchKey) : new DefaultAzureCredential();
+  const client = new SearchClient(searchEndpoint(), 'resume-facts', credential);
 
   const docs = facts.map(toSearchDocFact);
   // Use mergeOrUploadDocuments for safe first-write + existing-doc handling.
@@ -588,8 +602,9 @@ export async function indexBulletsToSearch(bullets: BulletMapping[]): Promise<vo
   if (!shouldIndex() || !bullets.length) return;
 
   const { SearchClient, AzureKeyCredential } = await import('@azure/search-documents');
-  const endpoint = `https://${_searchSvc}.search.windows.net`;
-  const client   = new SearchClient('resume-facts', endpoint, new AzureKeyCredential(_searchKey), {});
+  // Admin key when provided, else Entra (managed identity) via DefaultAzureCredential.
+  const credential = _searchKey ? new AzureKeyCredential(_searchKey) : new DefaultAzureCredential();
+  const client = new SearchClient(searchEndpoint(), 'resume-facts', credential);
 
   for (const bullet of bullets) {
     // mergeOrUploadDocuments handles both first-write and existing-doc safely.

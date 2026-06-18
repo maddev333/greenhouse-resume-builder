@@ -1,5 +1,5 @@
 /** Greenhouse Resume Builder - Landing page entry */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { ExtractionRun, BulletDiff, RelationshipEdge, AnnotationItem } from './api';
 import { MapView } from './MapView';
 import { extractLocationRecords } from './geo';
@@ -464,6 +464,31 @@ export function LandingPage() {
     }
   }, [loadRuns]);
 
+  // Collapse the runs list into a person-centric view: multiple completed ingestions
+  // of the same candidate fold into a single row (with a ×N badge) so repeated runs of
+  // one person no longer look like unmerged duplicates. In-progress / failed runs (which
+  // have no person yet) stay as individual rows. Mirrors the person-level dedup.
+  const displayRuns = useMemo(() => {
+    const byPerson = new Map<string, { run: ExtractionRun; count: number }>();
+    const standalone: Array<{ run: ExtractionRun; count: number }> = [];
+    for (const r of runs) {
+      if (r.status === 'completed' && r.personId) {
+        const existing = byPerson.get(r.personId);
+        if (!existing) {
+          byPerson.set(r.personId, { run: r, count: 1 });
+        } else {
+          existing.count += 1;
+          if (new Date(r.createdAt).getTime() > new Date(existing.run.createdAt).getTime()) existing.run = r;
+        }
+      } else {
+        standalone.push({ run: r, count: 1 });
+      }
+    }
+    return [...standalone, ...byPerson.values()].sort(
+      (a, b) => new Date(b.run.createdAt).getTime() - new Date(a.run.createdAt).getTime(),
+    );
+  }, [runs]);
+
   const doSubmit = async () => {
     if (!sourceInput.trim() && !selectedFiles?.length) return;
     setIngestStatus('submitting');
@@ -630,7 +655,7 @@ export function LandingPage() {
         {runs.length === 0 ? (
           <p style={{ color: '#9ca3af', fontSize: '13px' }}>No runs yet.</p>
         ) : (
-          runs.map(r => (
+          displayRuns.map(({ run: r, count }) => (
             <div
               key={r.id ?? (r as any).runId}
               onClick={() => {
@@ -642,7 +667,7 @@ export function LandingPage() {
               style={{ padding: '8px 12px', background: '#f9fafb', borderRadius: 6, marginTop: 4, cursor: r.personId ? 'pointer' : 'default', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
             >
               <span style={{ fontSize: '13px', color: r.status === 'completed' ? '#059669' : r.status === 'failed' ? '#dc2626' : '#6b7280' }}>
-                {r.status === 'completed' && r.personId ? (<>✓ {r.personName || r.personId}</>) : r.status || '—'}
+                {r.status === 'completed' && r.personId ? (<>✓ {r.personName || r.personId}{count > 1 ? <span title={`${count} ingestion runs merged into one candidate`} style={{ color: '#6b7280', fontWeight: 600 }}> ×{count}</span> : null}</>) : r.status || '—'}
               </span>
               <span style={{ color: '#9ca3af', fontSize: '12px' }}>{new Date(r.createdAt).toLocaleDateString()}</span>
             </div>

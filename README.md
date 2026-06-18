@@ -92,6 +92,32 @@ All capabilities share [`mcp-core`](./capabilities/mcp-core/) for IL5 identity, 
 
 > See `capabilities/README.md` for per-module build/run instructions.
 
+### How MCP servers source their data
+
+MCP clients (the agent loop or a UI App) call a capability server with a JSON-RPC `tools/call`
+over Streamable HTTP. Each tool handler returns a `ToolResult` whose `structuredContent` is the
+JSON payload the client consumes (`mcpToolCaller` unwraps `result.structuredContent ?? result`).
+That payload comes from one of three sources:
+
+| Pattern | How the handler gets data | Examples |
+| ------- | ------------------------- | -------- |
+| **Caller-supplied args** | The agent/UI passes data in (`text`, `locations`, `documents`, `facts`); the handler transforms and returns it. | `acquisition.normalize_text`, `geospatial.project_map_pins` |
+| **Live external service** | The handler calls a real backend over HTTPS. **Only `geospatial` today** — it geocodes via the Azure Maps Geocoding API (subscription key or managed identity). | `geospatial.geocode`, `geospatial.normalize_location` |
+| **Backing stores** (designed, currently stubbed) | Typed handlers meant to wrap the real `functions/src/activities` (PostgreSQL, Azure AI Search, Azure OpenAI, Document Intelligence/Blob). They return placeholder `structuredContent` for now. | `extraction.*`, `discovery.search_facts`, `quality.*`, `relationships.*`, `temporal.*` |
+
+This reflects **two data planes**:
+
+- **Live plane** — UI → Express **API** → Durable **Functions** pipeline → **activities** →
+  PostgreSQL (canonical facts) + Azure AI Search (indexes) + Azure OpenAI (extraction) +
+  Document Intelligence/Blob (ingest) + Azure Maps (geo). The UI reads back through the API.
+- **MCP / agent plane** (`capabilities/`) — exposes those same capabilities as MCP tools,
+  intended to wrap the same activities/stores. Mostly stubs today, with `geospatial` the live exception.
+
+> Even where the backing store is stubbed, the security envelope is real: `discovery.search_facts`
+> applies a fail-closed tenant filter and sensitive-attribute redaction from the caller's verified
+> Entra claims (`buildFactSecurityFilter`), and `index_upsert` tenant-stamps writes. Wiring a real
+> store swaps only the query, not the identity/trimming contract.
+
 ## Directory Layout
 
 ```bash

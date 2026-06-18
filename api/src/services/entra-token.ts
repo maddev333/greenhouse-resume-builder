@@ -80,10 +80,21 @@ export async function getOboToken(userAssertionToken: string, scope: string): Pr
   return token.token;
 }
 
-export async function getServiceAuthHeaders(scope?: string, userAssertionToken?: string): Promise<Record<string, string>> {
-  if (!scope) return {};
+/**
+ * Acquire a raw Microsoft Entra ID access token for a scope using the shared credential
+ * precedence: On-Behalf-Of when a user assertion is supplied and OBO is configured,
+ * otherwise managed identity via DefaultAzureCredential. The MSAL-backed @azure/identity
+ * credentials cache and refresh tokens internally, so this is safe to call per request or
+ * per database connection.
+ */
+export async function getEntraAccessToken(scope: string, userAssertionToken?: string): Promise<string> {
   const credential = getCredentialForUser(userAssertionToken);
   const token = await credential.getToken(scope);
   if (!token?.token) throw new Error(`Failed to acquire Entra token for scope ${scope}`);
-  return { Authorization: `Bearer ${token.token}` };
+  return token.token;
+}
+
+export async function getServiceAuthHeaders(scope?: string, userAssertionToken?: string): Promise<Record<string, string>> {
+  if (!scope) return {};
+  return { Authorization: `Bearer ${await getEntraAccessToken(scope, userAssertionToken)}` };
 }

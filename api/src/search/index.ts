@@ -15,7 +15,12 @@ const INDEX_NAME: string        = 'resume-facts';
 const SEARCH_ENDPOINT_SUFFIX: string = process.env.AZURE_SEARCH_ENDPOINT_SUFFIX ?? 'search.windows.net';
 
 function searchEndpoint(): string {
-  return `https://${SEARCH_SERVICE_NAME}.${SEARCH_ENDPOINT_SUFFIX}`;
+  const raw = SEARCH_SERVICE_NAME.trim().replace(/\/+$/, '');
+  // Accept any of: a full URL (https://svc.search.windows.net), a fully-qualified
+  // host (svc.search.windows.net), or a bare service name (svc).
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (raw.includes('.')) return `https://${raw}`;
+  return `https://${raw}.${SEARCH_ENDPOINT_SUFFIX}`;
 }
 
 /**
@@ -79,7 +84,18 @@ export async function ensureSearchIndex(): Promise<void> {
         { name: 'normalizedValue', type: 'Edm.String' } as any,
         { name: 'createdAt',  type: 'Edm.DateTimeOffset' } as any,
       ],
-      semanticSearch: { configurations: [{ name: 'semantic-config' }] } as any,
+      semanticSearch: {
+        configurations: [{
+          name: 'semantic-config',
+          // prioritizedFields must be a defined object (the SDK serializer reads
+          // titleField/contentFields off it directly); fields referenced here must
+          // be searchable string fields — only factValue & bulletText qualify.
+          prioritizedFields: {
+            titleField: { name: 'factValue' },
+            contentFields: [{ name: 'bulletText' }],
+          },
+        }],
+      } as any,
     });
     console.log('[Search] Created index:', INDEX_NAME);
   } else {
@@ -98,7 +114,7 @@ export async function upsertSearchDocument(doc: Record<string, unknown>): Promis
 
   const endpoint = searchEndpoint();
   // @ts-ignore -- constructor signatures vary by SDK version
-  const searchClient = new ((globalThis as any)?.SearchClient || (require('@azure/search-documents')?.SearchClient))(endpoint, getSearchCredential());
+  const searchClient = new ((globalThis as any)?.SearchClient || (require('@azure/search-documents')?.SearchClient))(endpoint, INDEX_NAME, getSearchCredential());
 
   await searchClient.mergeOrUploadDocuments([doc]);
 }
@@ -109,7 +125,7 @@ export async function bulkUpsertSearchDocuments(docs: Record<string, unknown>[])
 
   const endpoint = searchEndpoint();
   // @ts-ignore
-  const searchClient = new ((globalThis as any)?.SearchClient || (require('@azure/search-documents')?.SearchClient))(endpoint, getSearchCredential());
+  const searchClient = new ((globalThis as any)?.SearchClient || (require('@azure/search-documents')?.SearchClient))(endpoint, INDEX_NAME, getSearchCredential());
 
   for (const doc of docs) {
     if (!doc.id) continue;

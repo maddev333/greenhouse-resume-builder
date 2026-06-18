@@ -47,12 +47,17 @@ type SupportedSection = FactVersion['sectionId'];
 
 // ── Deterministic identity helpers (Task 2.1 — idempotent builder outputs) ───
 
-/** Produce a stable, content-based fact ID for idempotent upserts. */
+/**
+ * Produce a stable, content-based fact ID for idempotent upserts.
+ * Deliberately excludes extractionRunId so that re-ingesting the same résumé
+ * (or merging duplicate persons) collapses identical facts onto one row in
+ * Postgres and one document in the search index instead of duplicating them.
+ */
 function deterministicFactId(
-  personId: string, extractionRunId: string,
+  personId: string,
   sectionId: SupportedSection, factKey: string, valueString: string,
 ): string {
-  const raw = `${personId}|${extractionRunId}|${sectionId}|${factKey}|${valueString}`;
+  const raw = `${personId}|${sectionId}|${factKey}|${valueString}`;
   return `f_${createHash('sha256').update(raw).digest('hex').slice(0, 16)}`;
 }
 
@@ -73,7 +78,7 @@ function makeFact(
 ): FactVersion {
   const valueString = typeof factValue === 'string' ? factValue : JSON.stringify(factValue);
   return {
-    id: deterministicFactId(personId, extractionRunId, sectionId, factKey, valueString),
+    id: deterministicFactId(personId, sectionId, factKey, valueString),
     tenantId, personId, extractionRunId, sectionId,
     factKey, factValue, normalizedValue,
     extractedAt: new Date().toISOString(),

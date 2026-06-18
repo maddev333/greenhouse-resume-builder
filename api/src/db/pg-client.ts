@@ -1,5 +1,5 @@
 import { Pool, type PoolConfig } from 'pg';
-import { DefaultAzureCredential } from '@azure/identity';
+import { getEntraAccessToken } from '../services/entra-token';
 
 // ━━━ Singleton pool lifecycle (MVP: one global connection pool) ━━━━━━━━
 
@@ -43,19 +43,30 @@ function buildPoolConfig(): PoolConfig {
     max: Number(process.env.PG_POOL_MAX ?? 10),
   };
 
-  // IL5 / production: when no password is supplied, authenticate with Microsoft Entra ID.
-  // node-postgres evaluates a function password per new connection, so AAD tokens refresh
-  // automatically as the pool opens new connections.
+  // IL5 / production: when no password is supplied, authenticate with Microsoft Entra ID using the
+  // shared MSAL-backed credential helper (services/entra-token.ts) — the same auth model the API
+  // uses for Azure AI Search and other downstream services (On-Behalf-Of when a user assertion is
+  // available, otherwise managed identity). node-postgres evaluates this function per new connection
+  // and @azure/identity caches/refreshes the token, so every connection gets a valid AAD token.
   const password = process.env.PGPASSWORD ?? '';
   if (password) {
     config.password = password;
   } else {
-    const credential = new DefaultAzureCredential();
-    config.password = async () => {
-      const token = await credential.getToken(AAD_SCOPE);
-      if (!token?.token) throw new Error('Failed to acquire AAD token for PostgreSQL');
-      return token.token;
-    };
+    // The pool is a process-wide singleton with no per-request user context, so it authenticates as
+    // the app/managed identity (getEntraAccessToken with no user assertion), mirroring the shared
+    // singleton Azure AI Search client.
+    if ((config.user ?? 'postgres') === 'postgres') {
+      // Azure PostgreSQL validates an Entra token only for a username that is a provisioned Entra
+      // principal; the built-in "postgres" role is password-only and will return 28P01. Make that
+      // misconfiguration obvious instead of surfacing a bare "password authentication failed".
+      console.warn(
+        '[pg] PGPASSWORD is empty, so connecting with a Microsoft Entra (MSAL) token — but PGUSER is ' +
+          '"postgres". Azure Database for PostgreSQL rejects Entra tokens for the built-in "postgres" role. ' +
+          'Set PGUSER to your Entra principal (your az-login UPN/email, or the managed-identity/group name) ' +
+          'that is provisioned on the server, or set PGPASSWORD to use password auth.',
+      );
+    }
+    config.password = () => getEntraAccessToken(AAD_SCOPE);
   }
 
   return config;
