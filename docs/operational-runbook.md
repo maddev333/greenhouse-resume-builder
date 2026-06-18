@@ -1,185 +1,209 @@
-# Operational Runbook — Greenhouse Resume Builder MVP
+# Operational Runbook - Greenhouse Resume Builder MVP
 
 ## 1. Architecture Overview
 
+```text
+React UI / MCP UI Apps
+        |
+        | HTTPS + Entra token
+        v
+Express API (App Service or approved IL5 compute)
+        |
+        +--> PostgreSQL JSONB metadata/control store
+        |    - persons, source_documents, extraction_runs
+        |    - fact_versions, bullet_mappings, annotations, relationships
+        |
+        +--> Azure AI Search resume-facts index
+        |
+        +--> Durable Functions ingestion pipeline
+                 |
+                 +--> Blob Storage / Document Intelligence / Azure OpenAI
+                 +--> PostgreSQL JSONB persistence
+                 +--> Azure AI Search best-effort indexing
+
+Capability MCP servers run as independently deployable Functions/App Service/AKS/ACI workloads behind APIM. Geospatial is currently the most complete capability and projects map pins through Azure Maps.
 ```
-┌─────────────┐     HTTPS      ┌──────────────────┐     HTTP      ┌─────────────────┐
-│   React UI   │ ◄────────────► │ Express API (    │ ◄────────────► │ Cosmos DB       │
-│             │  :3001/443     │  Azure App Service)│              │                 │
-│ (Vite prod) │                │                  │               │ 7 Containers     │
-└─────────────┘                │ /api/v1/* routes   │               │ + index schemas  │
-                               └────────┬───────────┘               └─────────────────┘
-                                        │ POST /search
-                                        ▼
-                              ┌──────────────────┐     HTTP      ┌─────────────────┐
-                              │  Azure AI Search  │◄─────────────│ Resume Facts DB │
-                              │                  │              └─────────────────┘
-                              └────────┬─────────┘
-                                       │
-                    ┌──────────────────▼───────────────┐
-                    │ Durable Functions (Azure Fn App) │
-                    │ IngestCandidateOrchestrator       │
-                    │ Pipeline: fetch→normalize→agents →│
-                    │   dedup → builder → persist +search│
-                    └──────────────────────────────────┘
-```
+
+For petabyte-scale storage, do not expand JSONB payloads indefinitely. Follow `TOBE_ARCHITECTURE.md`: immutable artifacts in Blob/ADLS-style storage, PostgreSQL metadata/manifests, lineage, and rebuildable serving indexes.
 
 ## 2. Deployment Checklist
 
 ### 2.1 Prerequisites
-- [ ] Azure subscription with access to: App Service, Functions (v4), Cosmos DB, Key Vault, AI Search
-- [ ] Microsoft Entra ID app registration for both API and UI
-- [ ] Domain/Certificate for HTTPS (or use Azure's .azurewebsites.net default)
+
+- [ ] Node.js 20+
+- [ ] PostgreSQL database or approved PostgreSQL hosting for the target boundary
+- [ ] Azure Functions v4 runtime
+- [ ] Microsoft Entra ID app registrations for UI, API, and optionally Functions
+- [ ] Azure AI Search service for search runtime validation
+- [ ] Blob Storage for raw artifacts/uploads
+- [ ] Document Intelligence for PDF/image/document parsing
+- [ ] Azure OpenAI deployment for model-backed activities/agents
+- [ ] Azure Maps account for geospatial projection and browser map rendering
+- [ ] Key Vault or approved secret/configuration store
+- [ ] Log Analytics / Azure Monitor / approved audit sink
 
 ### 2.2 Required Resource Creation Order
-1. **Resource Group** (`rg-greenhouse-resume`)
-2. **Key Vault** (`kv-greenhouse` — all secrets go here, NOT env vars directly)
-3. **Cosmos DB** (SQL API, RU target: ~800–1500 read / ~400 write baseline, scaleable)
-   - 7 containers (auto-created on boot via `ensureMVPContainersExist`)
-4. **Azure AI Search** — Standard tier, replica count≥2 for reliability
-5. **App Service plan** — Linux consumption or premium (B1+)
-6. **Functions app** — Linux consumption (v4 isolated)
-7. **Log Analytics workspace** — linked to App Service and Functions
 
-### 2.3 Environment Variables per Service
+1. Resource group and network boundary.
+2. Key Vault/configuration store.
+3. PostgreSQL database and identity/RBAC setup.
+4. Storage account/containers for raw uploads, web snapshots, and future artifacts.
+5. Azure AI Search service and permissions.
+6. Azure OpenAI, Document Intelligence, and Azure Maps resources.
+7. App Service/Functions/AKS/ACI hosts for API, Functions, and MCP capability servers.
+8. Monitoring/audit sinks and alerts.
 
-| Variable | API (App Service) | Functions App | Key Vault Reference |
-|----------|-------------------|---------------|---------------------|
-| `COSMOS_ENDPOINT` | ✅ required | ✅ required | `kv-greenhouse/cosmos/endpoint` |
-| `COSMOS_AUTH_KEY` | ✅ required | ✅ required | `kv-greenhouse/cosmos/key` |
-| `AZURE_SEARCH_SERVICE` | ✅ production | ✅ (best-effort) | `kv-greenhouse/search/service` |
-| `AZURE_SEARCH_API_KEY` | ✅ production | ✅ | `kv-greenhouse/search/api-key` |
-| `AZURE_AD_JWKS_URI` | ✅ production | — N/A | `kv-greenhouse/aad/jwks-uri` |
-| `AAD_ISSUER` | ✅ production | — | — |
-| `AZURE_AD_CLIENT_ID` | ✅ production | — | `kv-greenhouse/app-registration/api-client-id` |
-| `ENABLE_EXTERNAL_GUEST_ACCOUNTS` | ⚠️ dev-only | — | — |
+For IL5 deployments, verify the selected PostgreSQL hosting pattern is approved for the target environment. The code supports PostgreSQL; the accreditation boundary decides the exact managed or self-managed hosting option.
 
-### 2.4 Deployment Steps
+## 3. Environment Variables
+
+The root `.env.example` is the canonical template. Important production settings include:
+
+| Area                  | Variables                                                                                                                                 |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| PostgreSQL            | `DATABASE_URL` or `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE`, `PG_AAD_SCOPE`                                   |
+| API auth              | `AZURE_TENANT_ID`, `AZURE_AD_CLIENT_ID`, `AZURE_AD_JWKS_URI`, `AZURE_AD_VALID_AUDIENCES`, `AZURE_AD_ISSUER_PREFIXES`                      |
+| Local dev auth        | `ALLOW_DEV_AUTH_BYPASS=true` only outside production                                                                                      |
+| OBO                   | `AZURE_OBO_TENANT_ID`, `AZURE_OBO_CLIENT_ID`, `AZURE_OBO_CERTIFICATE_PATH` or federated managed identity settings                         |
+| Functions boundary    | `FUNCTIONS_HOST`, `FUNCTIONS_TOKEN_SCOPE`, `FUNCTIONS_AUTH_AUDIENCE`, `FUNCTIONS_AUTH_ALLOWED_CALLERS`                                    |
+| Blob Storage          | `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCOUNT_KEY` or managed identity, `AZURE_STORAGE_CONTAINER`, `AZURE_STORAGE_ENDPOINT_SUFFIX` |
+| Search                | `AZURE_SEARCH_SERVICE`, `AZURE_SEARCH_API_KEY` or managed identity, `AZURE_SEARCH_ENDPOINT_SUFFIX`                                        |
+| Document Intelligence | `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`, optional `AZURE_DOCUMENT_INTELLIGENCE_KEY`, `AZURE_DOCUMENT_INTELLIGENCE_AUDIENCE`                |
+| Azure OpenAI          | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION`, `AZURE_OPENAI_TOKEN_SCOPE`                                |
+| Azure Maps            | `AZURE_MAPS_KEY` for local dev or `AZURE_MAPS_CLIENT_ID` for managed identity, `AZURE_MAPS_ENDPOINT`, `AZURE_MAPS_TOKEN_SCOPE`            |
+
+Keys and connection strings are local-dev conveniences. IL5/prod posture should use managed identity or OBO where the service supports it.
+
+## 4. Build And Startup
+
+### 4.1 Build
+
 ```bash
-# 1. Deploy API
-npm ci  && npm run build
-az appservice plan create --name asp --resource-group $RG \
-    --sku B1 --is-linux
-az webapp create --name resume-api --plan asp --resource-group $RG \
-    --deployment-local-git
-git remote add azure <deploy-url>
-git push azure main  # or use CI/CD pipeline
-
-# 2. Deploy Functions (use func CLI or Azure portal)
-cd functions && npm ci && npm run build
-func azure functionapp publish resume-funcs --build remote
-
-# 3. Configure Key Vault references in Azure Portal → App Service / Function → Configuration
+npm ci
+npm run build --workspaces
 ```
 
-## 3. Health Checks & Readiness
+The full workspace build passed on 2026-06-18. Main UI and geospatial UI may emit Vite chunk-size warnings; those are performance warnings, not build failures.
 
-### 3.1 HTTP Probes
-| Endpoint | Purpose | Expected Response |
-|----------|---------|-------------------|
-| `GET /health` | Server up+ready (Cosmos containers verified) | `200 {"status":"ready","timestamp":"..."}` |
-| `POST      /api/v1/search` | Search service health (body `{"query":"test"}`)  | `200 {"results":[],"total":0}` ✅ OR `503 "search not configured"` |
-| `GET       /api/v1/stats`    | Runtime document counts                       | `200 {"factsTotal":N,"bulletsTotal":N,...}`          |
+### 4.2 Local startup
 
-### 3.2 Cosmos DB Container Verification
-On every API server start, `ensureMVPContainersExist()` verifies:
-- All 7 containers exist (persons, sourceDocuments, extractionRuns, factVersions, bulletMappings, annotations, relationships)
-- Creates any missing ones before routes are mounted
-- Logs warning and continues if connection fails (graceful degradation for local dev)
-
-### 3.3 Search Index Verification
-On every API server start, `ensureSearchIndex()` verifies:
-- Index `resume-facts` exists with correct fields
-- Creates it automatically if missing
-- No-op if `AZURE_SEARCH_*` env vars unset (dev mode)
-
-## 4. Monitoring & Alerting
-
-### 4.1 Metrics to Track (Azure Monitor / Application Insights)
-
-| Metric | Source | Alert Threshold |
-|--------|--------|-----------------|
-| HTTP 5xx errors | App Service | >0 in 5 min → PagerDuty |
-| HTTP response p95 latency | App Service | >2s slow query risk |
-| Cosmos DB RU consumed/second | Cosmos DB | >70% provisioned capacity |
-| Cosmos DB quota error code 429 | Cosmos DB | Any = scale up RU |
-| Durable Function orchestrator rehistory size | Functions App | >10MB → investigate payload blow-up |
-| Failed function invocations | Functions App | >3 in 5 min → trigger investigation |
-| Search indexing errors (warn log) | App Service logs | Check if env vars configured correctly |
-| Stale runs count | Custom query | `status IN ('queued','in_progress')` older than 6h |
-
-### 4.2 Log Query Examples (KQL — Log Analytics Workspace)
-
-```kql
-// Recent failed ingested candidates
-traces
-| where message contains "Error" or level == "Error"
-| order by timestamp desc
-| project timestamp, message, cloud_RoleName
-
-// Orchestration pipeline duration
-traces
-| where message startswith "[Orchestrator]"
-| extend msg = extractjson("$msg", tostring(customDimensions), typeof(string))
-| project timestamp, message
-
-// HTTP latency histogram
-requests
-| summarize count(), avg(durationMs) by bin(timestamp, 5m)
-| render timechart
-
-// Search queries (full-text)
-traces
-| where message startswith "[Orchestrator] search" or level == "Warning"
-// Actually captured in logs as 'Search indexing complete' / failed upserts
-```
-
-### 4.3 Custom Alert Rules
-1. **"Failed Orchestration Runs"** — Function App → Alerts → Condition: `FailedInvocations` > 0 × window 5 min
-2. **"Cosmos RU Saturation"** — Cosmos DB → Alerts → Condition: `Total RU Consumed / Provisioned RU > 80%` × window 10 min  
-3. **"Search Index Missing"** — App Service trace filter: `[Orchestrator] search indexing failed` appears in last hour
-4. **"Stale Ingestion Runs Over 6h"** — Custom metric query counting runs with status `queued`/`in_progress` older than 6 hours
-
-## 5. Known Operations Procedures
-
-### 5.1 Scaling
-- **API tier:** B1 → S1 for concurrent load; switch to P2v3 if >50 RPS sustained
-- **Functions consumption:** scales automatically from 0–200 instances per plan limits
-- **Cosmos DB:** auto-pilot recommended for MVP, disable auto-pilot if you need precise cost control
-
-### 5.2 Data Migration (Cosmos)
 ```bash
-# Export all Person records
-az cosmosdb sql database execute-migration \
-    --name resumeBuilder --resource-group $RG \
-    --container-name persons --output-file backup-persons.json
+# Terminal 1
+cd api
+npm run dev
 
-# Restore from backup
-# ... via Azure Portal → "Import/Export" feature or cosmos-cli tooling
+# Terminal 2
+cd functions
+npm run start:dev
+
+# Terminal 3
+cd ui
+npm run dev
 ```
 
-### 5.3 Index Rebuild (Azure AI Search)
-If the `resume-facts` index diverges from Cosmos DB state:
-1. Delete old index in Azure Portal
-2. Restart API pod — `ensureSearchIndex()` will recreate it on startup
-3. Trigger a re-ingestion of affected candidates via the ingestion API
+API defaults to port `3001`, Functions to `7071`, and UI to `5173` unless overridden.
 
-### 5.4 Emergency Reset
-If pipeline is stuck in an infinite loop:
-1. Check `ExtractionRun` status for hung runs (`queued`/`in_progress` > 6h)
-2. Manual intervention: `PATCH /api/v1/ingestion-requests/{runId}/status` with status=`failed` and `{ reason: "manual-reset" }`
-3. The cleanup orchestrator (runs every 6h) will auto-cleanup after the window
+## 5. Health Checks And Readiness
 
-## 6. Runbook FAQ
+| Check                            | Expected result                                                                         |
+| -------------------------------- | --------------------------------------------------------------------------------------- |
+| `GET /health`                    | `200` with `{ "status": "ready", "timestamp": "..." }`                                  |
+| API startup logs                 | `PostgreSQL tables verified`; Search may report no-op when not configured               |
+| `GET /api/v1/stats`              | Counts from PostgreSQL plus `searchConfigured`                                          |
+| `POST /api/v1/search`            | Results when Search is configured; empty array when no matching records or Search no-op |
+| `GET /api/v1/ingestion-requests` | Recent PostgreSQL-backed runs                                                           |
 
-### Q: Why are some search queries returning nothing?
-**Check:** Is `AZURE_SEARCH_SERVICE` set in production API? If yes, verify the `resume-facts` index exists in portal and has data documents.
+### PostgreSQL verification
 
-### Q: How do I find why an ingestion run failed?
-**Check:** `GET /api/v1/ingestion-requests/{runId}/status` — look for `failedReason`. Also check Functions App logs: `[Orchestrator] Pipeline complete or [Orchestrator] Persistence failed (non-fatal)`
+On API startup, `ensureMVPTablesExist()` creates/verifies:
 
-### Q: What's the max payload size per ingestion?
-Approximately 5MB of source document content (PDFs + text). The orchestrator batches them as text blocks passed to section agents. Durable Function history limit applies at ~10–20MB for the whole orchestration payload.
+- `persons`
+- `source_documents`
+- `extraction_runs`
+- `fact_versions`
+- `bullet_mappings`
+- `annotations`
+- `relationships`
 
-### Q: How do I rotate secrets?
-All secrets in Key Vault. Update `kv-greenhouse` entries, then restart App Service+Function App instances (they pick up ref changes automatically).
+Functions independently ensure the same table set when the persistence helper initializes.
+
+### Search verification
+
+On API startup, `ensureSearchIndex()` creates or verifies the `resume-facts` index when `AZURE_SEARCH_SERVICE` is configured. Search runtime still needs smoke testing against a real service after any schema/document changes.
+
+## 6. Monitoring And Alerts
+
+Track these first:
+
+| Metric                             | Source               | Suggested alert                                         |
+| ---------------------------------- | -------------------- | ------------------------------------------------------- |
+| API 5xx errors                     | App Service/API host | Any sustained increase over 5 minutes                   |
+| API p95 latency                    | App Service/API host | >2s sustained                                           |
+| PostgreSQL connections             | PostgreSQL           | Near pool/database limit                                |
+| PostgreSQL CPU/storage             | PostgreSQL           | Sustained high CPU or disk pressure                     |
+| Failed Functions invocations       | Functions App        | >3 in 5 minutes                                         |
+| Durable orchestration history size | Functions App        | Investigate payload blow-up                             |
+| Search indexing warnings/errors    | API/Functions logs   | Any repeated indexing failure                           |
+| Stale ingestion runs               | PostgreSQL query     | `queued`/`in_progress` older than the cleanup threshold |
+| Governance denies/errors           | Audit sink           | Unexpected deny spike or policy evaluation errors       |
+
+Example stale-run query pattern:
+
+```sql
+SELECT id, data->>'status' AS status, data->>'createdAt' AS created_at
+FROM extraction_runs
+WHERE data->>'status' IN ('queued', 'in_progress')
+  AND data->>'createdAt' < to_char(now() - interval '6 hours', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+```
+
+## 7. Operations Procedures
+
+### 7.1 Search index rebuild
+
+If the `resume-facts` index diverges from PostgreSQL state:
+
+1. Snapshot or export the current Search index definition if needed.
+2. Delete the stale `resume-facts` index in the dev/test service.
+3. Restart the API so `ensureSearchIndex()` recreates it.
+4. Re-ingest affected candidates or run a future index rebuild job once implemented.
+
+### 7.2 Failed ingestion run
+
+1. Query `GET /api/v1/ingestion-requests/{runId}/status`.
+2. Check `failedReason` first; API starter failures are now written back to the run.
+3. Check Functions logs for `[Orchestrator]` messages and activity failures.
+4. If the run is stuck, use the cleanup orchestration or a controlled PostgreSQL update through the repository/admin path. Avoid ad hoc manual edits except during break-glass recovery.
+
+### 7.3 Secret/key rotation
+
+1. Prefer managed identity/OBO over rotating long-lived keys.
+2. For unavoidable local/dev keys, rotate in Key Vault/config store.
+3. Restart API/Functions/MCP hosts that cache SDK clients or credentials.
+4. Confirm health checks and one search/geospatial/ingestion smoke test.
+
+### 7.4 PostgreSQL backup and restore
+
+Use the approved backup mechanism for the selected PostgreSQL host. For MVP local/dev, `pg_dump`/`pg_restore` is sufficient:
+
+```bash
+pg_dump "$DATABASE_URL" --format custom --file backup-resume-builder.dump
+pg_restore --clean --if-exists --dbname "$DATABASE_URL" backup-resume-builder.dump
+```
+
+## 8. FAQ
+
+### Why did an ingestion run stay in progress?
+
+Check whether the API could reach `FUNCTIONS_HOST`, whether Functions accepted the service token if configured, and whether the orchestrator wrote a later failed/completed status.
+
+### Why are search queries empty?
+
+Confirm `AZURE_SEARCH_SERVICE` is set, the `resume-facts` index exists, documents have been indexed, and the caller has a verified tenant claim. The query helper fails closed when no tenant is available.
+
+### Why is the Map tab missing?
+
+The candidate page only shows the Map tab when facts include keys ending in `.location`. The map also depends on the geospatial MCP endpoint and Azure Maps configuration.
+
+### What is the current largest architecture risk?
+
+Inline upload bytes still travel through the MVP orchestration path. The next storage slice should stage bytes to Blob/artifact manifests and pass only source/artifact IDs to Durable Functions.

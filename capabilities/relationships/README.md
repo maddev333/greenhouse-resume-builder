@@ -3,11 +3,11 @@
 Inferred and recruiter-authored relationship edges. Bundles one MCP server, the
 agent-framework runtime, and the Relationship Confirmation UI App.
 
-| Part | Path | Role |
-|------|------|------|
+| Part       | Path                | Role                                                                          |
+| ---------- | ------------------- | ----------------------------------------------------------------------------- |
 | MCP server | `mcp/relationships` | `infer_relationships`, `confirm_relationship`, `upsert_explicit_relationship` |
-| Agent | `agent` | self-hosted Azure OpenAI inference loop |
-| UI App | `ui` | Relationship Confirmation (hybrid web + MCP App) |
+| Agent      | `agent`             | self-hosted Azure OpenAI inference loop                                       |
+| UI App     | `ui`                | Relationship Confirmation (hybrid web + MCP App)                              |
 
 ## Run locally
 
@@ -25,4 +25,4 @@ npm run dev -w @greenhouse-resume-builder/cap-relationships-ui
 
 - Recruiter-authored edges are authoritative over inference and stay activity/API-bound.
 - Managed identity by default; deploy `mcp/relationships` behind API Management (not Container Apps).
-- Cosmos remains the source of truth; introduce a graph DB only if multi-hop traversal becomes a requirement.
+- PostgreSQL JSONB remains the MVP source of truth; introduce a graph DB only if multi-hop traversal becomes a requirement.

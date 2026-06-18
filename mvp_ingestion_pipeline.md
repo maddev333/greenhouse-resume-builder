@@ -1,23 +1,28 @@
 # MVP Ingestion & Agentic Extraction Pipeline
 
 ## 1. Pipeline overview
+
 The ingestion pipeline is async, versioned, evidence-grounded, and human-reviewable.
 
 ### Entry point
+
 `POST /api/v1/ingestion-requests` (web API)
+
 - stores an `ExtractionRun`
 - creates `SourceDocument` entries
 - kicks off Durable orchestration with `runId`
 
 ## 2. Durable Functions orchestrator
+
 **Orchestrator:** `IngestCandidateOrchestrator(runId)`
 
 The orchestrator should only coordinate activities. All side effects belong in activities:
+
 - model calls
 - HTTP fetches
 - Blob Storage writes
 - Document Intelligence calls
-- Cosmos DB writes
+- PostgreSQL JSONB writes
 - Azure AI Search indexing
 
 ## 3. Agentic workflow diagram
@@ -90,7 +95,7 @@ Ingestion request
               |
               v
 +-----------------------------+        +----------------------+
-| Cosmos DB                   |        | Azure AI Search      |
+| PostgreSQL JSONB            |        | Azure AI Search      |
 | - facts                     |        | - facts/bullets      |
 | - bullets                   |        | - relationships      |
 | - annotations               |        | - annotations        |
@@ -103,7 +108,7 @@ Ingestion request
 
 ## 4. Activities and richer-agent responsibilities
 
-1. `SourceTriageAgent` *(target new activity)*
+1. `SourceTriageAgent` _(target new activity)_
    - input: `runId`, source document metadata, content hashes
    - output:
      - source processing plan
@@ -143,11 +148,11 @@ Ingestion request
      - temporal metadata when a fact is dated or interval-based
      - warnings/review tasks
 
-6. `CitationGuardAgent` *(target new activity)*
+6. `CitationGuardAgent` _(target new activity)_
    - verifies every persisted fact and generated bullet has source support where possible
    - produces warnings for unsupported or weakly supported claims
 
-7. `ConflictQualityAgent` *(target new activity)*
+7. `ConflictQualityAgent` _(target new activity)_
    - compares current facts with prior latest facts
    - flags contradictory employers, titles, dates, education, or skills
    - creates review tasks for recruiter attention
@@ -175,49 +180,49 @@ Ingestion request
       - `Relationship` edges with `status=suggested`
       - evidence FactVersions and SourceDocuments
 
-11. `TemporalEventAgent` *(target new activity)*
+11. `TemporalEventAgent` _(target new activity)_
     - extracts observed dated events from section findings and source text
     - examples:
-       - conference presentations
-       - publications
-       - certifications
-       - awards
-       - role changes
-       - education milestones
+      - conference presentations
+      - publications
+      - certifications
+      - awards
+      - role changes
+      - education milestones
     - output:
-       - `TemporalEvent` records
-       - normalized recurrence keys
-       - evidence FactVersions and SourceDocuments
+      - `TemporalEvent` records
+      - normalized recurrence keys
+      - evidence FactVersions and SourceDocuments
 
-12. `TemporalPatternAgent` *(target new activity)*
+12. `TemporalPatternAgent` _(target new activity)_
     - groups TemporalEvents by person and recurrence key
     - detects recurring patterns such as annual conference presentations
     - computes:
-       - cadence
-       - observed date window
-       - occurrence count
-       - regularity score
-       - recency score
-       - confidence
+      - cadence
+      - observed date window
+      - occurrence count
+      - regularity score
+      - recency score
+      - confidence
     - output:
-       - `EventPattern` records
+      - `EventPattern` records
 
-13. `EventPredictionAgent` *(target new activity)*
+13. `EventPredictionAgent` _(target new activity)_
     - predicts likely future events from EventPatterns
     - outputs:
-       - predicted event name/type
-       - predicted date window
-       - confidence score and confidence band
-       - rationale
-       - evidence links
-       - expiration/review window
+      - predicted event name/type
+      - predicted date window
+      - confidence score and confidence band
+      - rationale
+      - evidence links
+      - expiration/review window
 
-14. `RecruiterAlertAgent` *(target new activity)*
+14. `RecruiterAlertAgent` _(target new activity)_
     - creates recruiter-facing alerts only when predictions are actionable
     - suggested MVP behavior:
-       - alert for medium/high confidence predictions
-       - keep low confidence predictions searchable but not proactively alerted
-       - avoid repeating alerts that a recruiter dismissed
+      - alert for medium/high confidence predictions
+      - keep low confidence predictions searchable but not proactively alerted
+      - avoid repeating alerts that a recruiter dismissed
 
 15. `PersistBuilderOutput`
     - writes facts, bullets, warnings/review-task outputs as applicable
@@ -230,6 +235,7 @@ Ingestion request
     - upserts temporal events and event predictions
 
 ## 5. Agent output shape
+
 Every richer agent should return a schema-compatible payload:
 
 ```text
@@ -255,6 +261,7 @@ AgentResult
 ```
 
 Temporal prediction output:
+
 ```text
 EventPrediction
   predictedEventType
@@ -271,9 +278,11 @@ EventPrediction
 ```
 
 ## 6. Diff strategy
+
 MVP recommended: **bullet-level diffs**.
 
 For each `personId + sectionId`:
+
 - get previous latest bullet set
 - compare by `bulletSignature`
 - classify bullets as:
@@ -282,6 +291,7 @@ For each `personId + sectionId`:
   - changed (bulletText or citations changed)
 
 ## 7. Evidence & citations
+
 - Each `FactVersion` references `sourceDocumentIds[]`.
 - BulletMappings store:
   - `citationFactVersionIds[]`
@@ -300,6 +310,7 @@ Resume UI uses BulletMappings to render each bullet plus citations.
 MVP recommended: **pattern-based prediction with transparent confidence**, not black-box forecasting.
 
 For each `personId + recurrenceKey`:
+
 - collect observed `TemporalEvents`
 - require at least two observations before creating a recurring pattern
 - estimate cadence:
@@ -316,6 +327,7 @@ For each `personId + recurrenceKey`:
 - generate recruiter alerts only for actionable medium/high predictions
 
 Example:
+
 ```text
 Observed events:
   2022: Presented at ContosoConf
@@ -333,6 +345,7 @@ Prediction:
 ```
 
 ## 9. Failure handling
+
 - Every activity can update or contribute to `ExtractionRun.status`.
 - Durable Functions retry transient failures.
 - Agent validation failures should be visible as warnings/review tasks.
@@ -343,6 +356,7 @@ Prediction:
 ---
 
 # Web vs upload extraction notes
+
 - Uploads use Document Intelligence.
 - Public web sources:
   - use snapshot capture + text cleaning pipeline

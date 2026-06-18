@@ -3,12 +3,12 @@
 Turns raw sources into evidence-grounded facts. Bundles two MCP servers, the
 agent-framework runtime, and the Ingestion Console UI App.
 
-| Part | Path | Role |
-|------|------|------|
-| MCP server | `mcp/acquisition` | `triage_sources`, `fetch_web_snapshot`, `extract_document`, `normalize_text` |
-| MCP server | `mcp/extraction` | `extract_experience`, `extract_skills`, `extract_education`, `generate_summary` |
-| Agent | `agent` | self-hosted Azure OpenAI loop driving the two servers |
-| UI App | `ui` | Ingestion Console (hybrid web + MCP App) |
+| Part       | Path              | Role                                                                            |
+| ---------- | ----------------- | ------------------------------------------------------------------------------- |
+| MCP server | `mcp/acquisition` | `triage_sources`, `fetch_web_snapshot`, `extract_document`, `normalize_text`    |
+| MCP server | `mcp/extraction`  | `extract_experience`, `extract_skills`, `extract_education`, `generate_summary` |
+| Agent      | `agent`           | self-hosted Azure OpenAI loop driving the two servers                           |
+| UI App     | `ui`              | Ingestion Console (hybrid web + MCP App)                                        |
 
 ## Run locally
 
@@ -35,4 +35,4 @@ npm run dev -w @greenhouse-resume-builder/cap-ingestion-ui
 - Set `AZURE_OPENAI_TOKEN_SCOPE` and `MCP_TOKEN_SCOPE` for Government/DoD clouds.
 - Deploy each `mcp/*` as its own Functions app behind API Management; never Container Apps.
 - Handlers are typed stubs; wire them to the real `functions/src/activities` (inside the
-  durable boundary) so canonical Cosmos writes stay activity-bound.
+  durable boundary) so canonical PostgreSQL writes stay activity-bound.
