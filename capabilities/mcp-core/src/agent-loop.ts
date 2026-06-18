@@ -152,6 +152,14 @@ export interface McpToolCallerOptions {
   /** Signed-in user's access token for OBO-capable MCP service calls. */
   userAssertionToken?: string;
   tenantId?: string;
+  /** Verified caller subject (Entra `oid`/`sub`) to propagate for security trimming. */
+  userId?: string;
+  /** Verified Entra app roles (`roles` claim). */
+  roles?: string[];
+  /** Verified Entra security-group object IDs (`groups` claim). */
+  groups?: string[];
+  /** Verified Entra delegated scopes (`scp` claim). */
+  scopes?: string[];
   traceId?: string;
 }
 
@@ -161,6 +169,10 @@ export function mcpToolCaller(serverUrl: string, options: McpToolCallerOptions =
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     const scope = process.env.MCP_TOKEN_SCOPE;
     if (options.tenantId) headers['x-tenant-id'] = options.tenantId;
+    if (options.userId) headers['x-user-oid'] = options.userId;
+    if (options.roles?.length) headers['x-user-roles'] = options.roles.join(',');
+    if (options.groups?.length) headers['x-user-groups'] = options.groups.join(',');
+    if (options.scopes?.length) headers['x-user-scopes'] = options.scopes.join(',');
     if (options.traceId) headers['x-trace-id'] = options.traceId;
     if (scope) {
       headers.Authorization = options.userAssertionToken && isOboConfigured()

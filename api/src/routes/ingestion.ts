@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { CreateIngestionRequestInput, ExtractionRun, IngestionRunResponse } from '@greenhouse-resume-builder/shared';
-import { extractionRunRepo, sourceDocRepo } from '../db/repo';
+import { extractionRunRepo, sourceDocRepo, personRepo } from '../db/repo';
 import { getServiceAuthHeaders } from '../services/entra-token';
 
 import crypto from 'crypto';
@@ -148,9 +148,14 @@ router.get('/:runId/status', async (req: any, res: any) => {
   try {
     const run = await extractionRunRepo.getById(req.params.runId);
     if (!run) return res.status(404).json({ error: 'Run not found' });
+    const personId = (run as any).personId || null;
+    let personName: string | null = null;
+    if (personId) {
+      try { personName = (await personRepo.getById(personId))?.canonicalName ?? null; } catch { /* name is best-effort */ }
+    }
     res.json({ runId: run.id, status: run.status, createdAt: run.createdAt,
       completedAt: run.completedAt ?? null, failedReason: run.failedReason ?? null,
-      personId: (run as any).personId || null });
+      personId, personName });
   } catch (err) {
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -166,11 +171,24 @@ router.get('/', async (_req: any, res: any) => {
       docs = await extractionRunRepo.recentAll(50);
     }
 
-    const result = docs.map(r => ({
-      id: r.id, status: r.status, createdAt: r.createdAt, updatedAt: r.updatedAt,
-      personId: (r as any).personId || null,
-      sourceDocumentCount: (r.sourceDocumentIds?.length ?? 0),
+    // Resolve candidate display names so the UI can show names instead of raw personIds.
+    // De-duplicate personIds (runs often share a candidate) to bound the lookups.
+    const personIds = [...new Set(docs.map(r => (r as any).personId).filter(Boolean) as string[])];
+    const nameById = new Map<string, string | null>();
+    await Promise.all(personIds.map(async (pid) => {
+      try { nameById.set(pid, (await personRepo.getById(pid))?.canonicalName ?? null); }
+      catch { nameById.set(pid, null); }
     }));
+
+    const result = docs.map(r => {
+      const personId = (r as any).personId || null;
+      return {
+        id: r.id, status: r.status, createdAt: r.createdAt, updatedAt: r.updatedAt,
+        personId,
+        personName: personId ? (nameById.get(personId) ?? null) : null,
+        sourceDocumentCount: (r.sourceDocumentIds?.length ?? 0),
+      };
+    });
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: 'Internal server error' });

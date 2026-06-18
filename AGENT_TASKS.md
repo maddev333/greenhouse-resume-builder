@@ -1,353 +1,279 @@
 # AGENT_TASKS.md
 
-## Objective
-Provide an updated, prioritized coding-agent handoff for the current Greenhouse Resume Builder repository based on the code that actually exists today. The next implementation pass should focus on correcting mismatches, hardening the MVP path, and finishing the most important incomplete integrations.
+## Current Handoff
 
-## Current project state snapshot
+**Status reviewed:** 2026-06-18
+**Build verification:** `npm run build --workspaces` passes across API, Functions, shared, UI, MCP core, all capability MCP servers, agents, and capability UIs.
+**Target architecture source:** `TOBE_ARCHITECTURE.md` remains the north-star document for tenant cells, governed MCP tools, artifact manifests, lineage, and PostgreSQL as metadata/control plane.
 
-### What is materially implemented
-- Monorepo layout exists across `api`, `functions`, `shared`, and `ui`.
-- Shared DTOs/types are present and already referenced by multiple packages.
-- The main Durable Functions pipeline exists in `functions/src/pipeline/orchestrator.ts`.
-- Section extraction activities exist for experience, skills, education, summary, dedup, relationships, and version diffing.
-- Builder artifact generation exists in `functions/src/activities/builder-agent.ts` and now uses deterministic content-based IDs.
-- Functions-side Cosmos persistence helpers exist in `functions/src/persistence/index.ts`.
-- API-side Cosmos repositories and route scaffolding exist under `api/src/db/repo` and `api/src/routes`.
-- Search setup and query helpers exist in `api/src/search/index.ts`, and search indexing hooks exist in `functions/src/persistence/index.ts`.
-- The UI and typed API client exist in `ui/src/app.tsx` and `ui/src/api.ts`.
-- Root workspaces appear to be configured via the top-level `package.json`.
+The repository is no longer a Cosmos-based MVP scaffold. The code now uses PostgreSQL JSONB document tables for the MVP control/data store, managed identity credential precedence for Azure services, a build-clean Durable Functions ingestion pipeline, MSAL/Entra API auth, MCP capability packages, optional governance gating, and a working geospatial MCP projection surface.
 
-### What is implemented but still risky or incomplete
-- The Durable orchestrator currently performs direct imports/calls to persistence code and contains ordinary `console` logging; it needs a replay-safety and activity-boundary review.
-- The orchestrator references activity names such as `StoreUploadsAndExtract`, `FetchAndSnapshotWebSources`, and `UpdateExtractionRunStatus`; these need to be confirmed as actually registered and triggerable.
-- Builder IDs are now deterministic, but artifact timestamps are still generated at runtime, and bullet identity ignores `personId` despite accepting it as a parameter.
-- Functions persistence is present but container creation, partitioning, query shape, and point-read assumptions need explicit validation.
-- Search integration exists in two places (`api/src/search/index.ts` and `functions/src/persistence/index.ts`) and likely diverges in schema, client construction, and upsert behavior.
-- Search document upserts currently use merge semantics and may fail for first-write scenarios if the document does not already exist.
-- Auth middleware exists, but the production path is still a lightweight/manual JWT parser rather than a robust signature-verifying implementation.
-- API/UI surfaces exist, but the end-to-end happy path still needs a verification pass against the actual backend contracts.
-- Repo docs still overstate completion in several places and are not fully trustworthy as status documents.
+## Current Project State Snapshot
 
-### What looks contradictory in the current repo
-- `README.md` and `IMPLEMENTATION_STATUS.md` describe several areas as complete that still appear scaffolded, partially implemented, or internally inconsistent.
-- `IMPLEMENTATION_STATUS.md` contains conflicting statements within the same document about retry policies, idempotency, search completeness, and activity maturity.
-- The architecture docs are useful as intent, but the codebase should now be treated as the primary truth source.
+### Implemented and build-clean
 
----
+- Monorepo workspaces are configured and build successfully.
+- API routes are wired for ingestion, insights, annotations, relationships, persons, search, stats, and health.
+- API persistence uses `api/src/db/pg-client.ts` plus JSONB repositories under `api/src/db/repo`.
+- Functions persistence uses `functions/src/persistence/index.ts` with the same JSONB table model.
+- Durable orchestrator coordinates activity calls, uses replay-guarded logging, and keeps persistence/indexing I/O behind activities.
+- Builder artifacts use deterministic fact IDs and person-aware deterministic bullet IDs.
+- Auth middleware verifies Entra tokens with `jose` when configured, fails closed otherwise, and exposes the validated token for OBO-capable downstream calls.
+- API service credentials support OBO or managed identity. Azure services use keys only when explicitly supplied for local/dev convenience.
+- Search code builds, creates/uses the `resume-facts` index, applies tenant filtering, and redacts sensitive facts unless caller claims permit them.
+- Main UI consumes the current API contracts, including flat bullet responses and `/insights/:personId/differences`.
+- Geospatial MCP `project_map_pins` geocodes supplied location records and the main UI can render map pins for location-bearing facts.
+- MCP capability package layout exists for ingestion, quality, relationships, temporal, geospatial, and discovery.
+- `capabilities/mcp-core` includes identity helpers and optional governance wrappers.
 
-## Guidance for the coding agent
-1. **Use the current codebase as the source of truth.** Update docs to reflect code, not the reverse.
-2. **Do not redesign the architecture first.** Finish and harden the existing MVP slice.
-3. **Preserve working scaffolding where possible.** Prefer targeted fixes over broad rewrites.
-4. **Close vertical gaps.** When fixing a workflow, align `shared` types, Functions, API, UI, and docs together.
-5. **Prioritize correctness over breadth.** Determinism, replay-safety, and runnable flows matter more than new features.
+### Implemented but not runtime-verified end to end
 
----
+- Landing page ingestion creation, polling, recent runs, and candidate navigation against a real running API + Functions + PostgreSQL stack.
+- Function starter protection and API-to-Functions service token behavior in the intended hosting environment.
+- Azure AI Search index creation, document upsert, OData filters, tenant trimming, and redaction against a real service.
+- Document Intelligence/Blob upload behavior for non-text files with real Azure credentials.
+- Azure Maps browser auth for production. Local map rendering can still depend on a build-time subscription key.
 
-## Priority 0 — Reconcile repository truth
+### Target/scaffolded only
 
-### Task 0.1 — Rewrite status docs to match the actual codebase
+- Temporal event extraction, recurrence detection, predictions, recruiter alerts.
+- Petabyte-scale immutable artifact lake, artifact manifests, lineage records, tenant-cell routing, and bounded MCP excerpt/cursor/job contracts.
+- Most non-geospatial capability MCP handlers are still scaffolds or thin boundaries awaiting real activity/API integration.
+
+## Guidance For The Next Coding Agent
+
+1. Treat `IMPLEMENTATION_STATUS.md` and this file as the current MVP handoff.
+2. Treat `TOBE_ARCHITECTURE.md` as the scaling and governance target.
+3. Preserve the build-clean baseline. Run the workspace build after edits that touch TypeScript, package wiring, or Vite config.
+4. Keep the Durable orchestrator coordinate-only. Put network calls, model calls, PostgreSQL writes, Blob writes, Search writes, and clocks inside activities/services.
+5. Do not reintroduce Cosmos-specific tasks. The current MVP store is PostgreSQL JSONB; the next scale step is an artifact/control-plane split, not a return to Cosmos.
+6. Prefer vertical fixes that align shared types, API, Functions, UI, MCP handlers, and docs together.
+
+## Priority 0 - Runtime Smoke Test The MVP Path
+
+### Task 0.1 - Start the local stack and record exact runtime blockers
+
 **Why**
-The repo currently has a credibility problem: the status docs and README overclaim maturity in several places. This will misdirect the next coding pass unless corrected immediately.
+The repo builds, but a build pass does not prove the live ingestion workflow.
 
-**Files to review/update**
-- `README.md`
-- `IMPLEMENTATION_STATUS.md`
-- `mvp_architecture.md`
-- `mvp_implementation_plan.md`
-- `mvp_search_indexes.md`
+**Primary surfaces**
 
-**Actions**
-- Reclassify each major subsystem as one of:
-  - implemented
-  - partially implemented
-  - scaffolded
-  - not verified
-- Remove contradictory claims around:
-  - search readiness
-  - orchestration hardening
-  - auth completeness
-  - API/UI end-to-end readiness
-  - persistence maturity
-- Add a short “verified current state” summary tied to specific code locations.
-
-**Acceptance criteria**
-- A new engineer can read the docs and not be misled about what actually works.
-- README and implementation docs no longer conflict on major subsystem status.
-
----
-
-## Priority 1 — Make the Durable Functions path correct and replay-safe
-
-### Task 1.1 — Review the orchestrator for Durable Functions correctness
-**Why**
-The ingestion pipeline exists, but the current orchestrator should be treated as functionally promising rather than fully hardened. Durable Functions has strict replay/determinism expectations, and this path is the backbone of the product.
-
-**Primary file**
+- `api/src/server.ts`
+- `api/src/routes/ingestion.ts`
 - `functions/src/pipeline/orchestrator.ts`
+- `ui/src/app.tsx`
+- `LOCAL_DEV_SETUP.md`
 
 **Actions**
-- Verify that all referenced activities are actually registered with the same names the orchestrator calls.
-- Confirm the orchestrator is not performing work that should live in activities.
-- Remove or refactor patterns that are risky in orchestrators, including:
-  - direct persistence calls/imports inside the orchestrator
-  - non-replay-safe logging patterns
-  - dynamic imports used as runtime side effects
-- Confirm whether `Promise.all([...df.callActivity(...)])` is appropriate in the current Durable Functions model, or replace with the framework’s preferred fan-out/fan-in pattern.
-- Validate error handling and decide which failures are fatal versus best-effort.
-- Confirm run status transitions are always written on success and failure paths.
+
+- Start PostgreSQL with a reachable `resume_builder` database.
+- Start API with local auth bypass only in non-production.
+- Start Functions host with required local settings.
+- Start UI and submit at least one web URL ingestion request.
+- Poll run status until `completed` or `failed` and navigate to the resolved candidate.
+- Repeat with a small text upload.
+- Record exact failures in `IMPLEMENTATION_STATUS.md` if any remain.
 
 **Acceptance criteria**
-- The orchestration flow follows Durable Functions replay/determinism rules.
-- Every called activity name maps to a real registered function.
-- Success/failure status handling is explicit and consistent.
 
-### Task 1.2 — Move all external side effects behind activities where needed
+- A recruiter can submit a source, watch status, and land on a candidate profile, or the blockers are documented with exact failing command/output and file owner.
+
+### Task 0.2 - Verify run failure handling
+
 **Why**
-The orchestrator currently appears to reach into persistence and indexing logic directly. Even if parts happen to work, this makes correctness and replay behavior harder to reason about.
+The API now marks runs failed if the Function starter cannot be reached, but that path needs runtime proof.
 
 **Actions**
-- Audit persistence, indexing, and relationship inference side effects currently triggered from the orchestrator.
-- Move any non-orchestrator-safe I/O behind dedicated activities.
-- Use clear contracts for:
-  - persist build results
-  - update extraction run status
-  - sync search documents
-  - infer and persist relationships
+
+- Submit ingestion with `FUNCTIONS_HOST` unavailable.
+- Confirm the API returns a run immediately.
+- Confirm the run later moves to `failed` with a useful `failedReason`.
 
 **Acceptance criteria**
-- Orchestrator code coordinates steps only.
-- External I/O and mutation live in activities with explicit inputs/outputs.
 
----
+- Failed orchestration starts do not leave runs stuck in `in_progress`.
 
-## Priority 2 — Validate persistence contracts and idempotency
+## Priority 1 - Move Ingestion Toward The TO-BE Artifact Pattern
 
-### Task 2.1 — Audit Cosmos entity identity, partitioning, and point-read behavior
+### Task 1.1 - Stop passing large upload bytes through Durable input
+
 **Why**
-Persistence code exists on both the API and Functions sides, but the repo still needs a clean, explicit contract for IDs, partition keys, and query expectations.
+The MVP path sends base64 upload bytes inline to the orchestrator. That is acceptable for a small demo but conflicts with the TO-BE artifact-lake pattern and Durable history limits.
 
-**Primary files**
-- `functions/src/persistence/index.ts`
-- `api/src/db/cosmos-client.ts`
-- `api/src/db/repo/*.ts`
+**Primary surfaces**
+
+- `api/src/routes/ingestion.ts`
+- `functions/src/pipeline/orchestrator.ts`
+- `functions/src/activities/document-intelligence.ts`
+- `TOBE_ARCHITECTURE.md`
+- `mvp_ingestion_pipeline.md`
 
 **Actions**
-- Document the intended ID and partition key for each entity type:
-  - Person
-  - SourceDocument
-  - ExtractionRun
-  - FactVersion
-  - BulletMapping
-  - Annotation
-  - Relationship
-- Verify that container creation matches the point-read patterns being used.
-- Confirm whether the current use of `partitionKey: id` is deliberate and consistent across packages.
-- Check whether query-heavy access patterns need different partition strategies or explicit acknowledgment as MVP tradeoffs.
-- Reconcile any mismatch between API repo assumptions and Functions persistence assumptions.
+
+- Stage uploads to Blob Storage before starting the Durable orchestration.
+- Create or extend source document metadata with artifact/blob handles.
+- Pass `sourceDocumentIds` and artifact handles to the orchestrator instead of raw bytes.
+- Keep a bounded text-only local shortcut only if it is explicit and documented.
 
 **Acceptance criteria**
-- Each entity has a documented, consistent identity and partition strategy.
-- API and Functions layers agree on how data is written and read.
-- Reruns/retries do not create uncontrolled duplicates.
 
-### Task 2.2 — Confirm builder/persistence idempotency on rerun
+- Durable orchestration input stays small and contains IDs/handles, not large raw file payloads.
+
+### Task 1.2 - Add artifact manifest metadata for raw and normalized text
+
 **Why**
-Deterministic IDs were introduced in the builder, but rerun safety depends on the full write path, not just ID generation.
-
-**Primary files**
-- `functions/src/activities/builder-agent.ts`
-- `functions/src/persistence/index.ts`
-- related repo/query code in `api/src/db/repo`
+`TOBE_ARCHITECTURE.md` defines artifact manifests and lineage as the next storage boundary. Add this before more large-data features appear.
 
 **Actions**
-- Validate that deterministic fact and bullet IDs are sufficient for upsert behavior.
-- Review whether `latestForBullet` semantics remain correct across reruns.
-- Confirm whether repeated runs should overwrite, supersede, or coexist with earlier artifacts.
-- Review created/extracted timestamps and decide whether they should be activity-generated, persistence-generated, or model-driven.
+
+- Add MVP JSONB-backed artifact manifest records or a typed metadata table/repository.
+- Record raw document artifact, normalized text artifact, source document linkage, content hash, size, MIME type, and status.
+- Keep facts and bullets referencing source document/artifact IDs for provenance.
 
 **Acceptance criteria**
-- Replaying or rerunning the same logical input does not produce accidental duplication.
-- Latest/current artifact semantics are explicit and correct.
 
----
+- New ingestion outputs can be traced from run to source document to raw/derived artifact IDs.
 
-## Priority 3 — Finish builder-output correctness and provenance
+## Priority 2 - Search Runtime Hardening
 
-### Task 3.1 — Tighten builder artifact semantics
+### Task 2.1 - Smoke-test Azure AI Search with a real service
+
 **Why**
-The builder is farther along than the old AGENT_TASKS implied, but it still needs a quality pass on identity, ordering, traceability, and output semantics.
+The TypeScript build passes, but Search SDK behavior depends on real service/schema compatibility.
 
-**Primary file**
-- `functions/src/activities/builder-agent.ts`
+**Primary surfaces**
 
-**Actions**
-- Review deterministic ID helpers for facts and bullets.
-- Confirm whether bullet IDs should incorporate `personId` and/or `extractionRunId` to avoid cross-person collisions.
-- Standardize ordering of generated facts and bullets so equivalent inputs yield stable output ordering.
-- Validate provenance fields:
-  - `citationFactVersionIds`
-  - `citationSourceDocumentIds`
-  - `factKey`
-  - `normalizedValue`
-- Confirm summary fact and bullet generation behavior is consistent with other sections.
-
-**Acceptance criteria**
-- Equivalent normalized inputs produce stable IDs and stable ordering.
-- Every bullet can be traced back to supporting fact IDs and source document IDs.
-- Artifact semantics are documented and consistent across sections.
-
----
-
-## Priority 4 — Unify and repair Azure AI Search behavior
-
-### Task 4.1 — Reconcile search schema, client usage, and sync behavior
-**Why**
-Search is no longer “missing,” but it is still not reliable enough to be treated as done. The implementation is split across API and Functions code and likely diverges.
-
-**Primary files**
 - `api/src/search/index.ts`
 - `functions/src/persistence/index.ts`
-- `mvp_search_indexes.md`
 
 **Actions**
-- Compare the API-side index definition to the Functions-side search document shape.
-- Confirm field names, types, and capabilities line up for:
-  - facts
-  - bullets
-  - summary records
-  - any annotation/relationship plans that docs still mention
-- Fix any SDK usage errors or invalid option shapes in search client setup.
-- Decide whether search sync belongs in API, Functions, or a dedicated indexing layer, and simplify toward one source of truth.
-- Replace any unsafe first-write merge semantics with an upsert pattern that works for new documents.
-- Verify filter/query construction in API search helpers.
+
+- Create/ensure the `resume-facts` index in a dev Search service.
+- Ingest sample facts/bullets and confirm `mergeOrUploadDocuments` writes first-time documents.
+- Query by tenant, person, section, and factKey.
+- Confirm missing tenant rejects/fails closed.
+- Confirm sensitive fact keys are redacted without privileged roles/scopes.
 
 **Acceptance criteria**
-- Search document shape matches the configured index schema.
-- First-time indexing works.
-- Search responsibilities are no longer split ambiguously across multiple implementations.
 
----
+- Search works against a real service or the exact incompatibility is documented and fixed.
 
-## Priority 5 — Verify the actual MVP happy path across API and UI
+### Task 2.2 - Consolidate search schema and document construction
 
-### Task 5.1 — Audit the API surface against real shared contracts
 **Why**
-The API has meaningful scaffolding and likely several real endpoints, but it still needs a deliberate compatibility pass with `shared` types and the current UI.
-
-**Primary files**
-- `api/src/routes/ingestion.ts`
-- `api/src/routes/resume-bullets.ts`
-- `api/src/routes/annotations.ts`
-- `api/src/routes/relationships.ts`
-- `api/src/server.ts`
-- `shared/src/interfaces.ts`
+Search schema, write documents, and query filters should not drift across API and Functions.
 
 **Actions**
-- Verify that documented endpoints actually exist and return the expected shapes.
-- Reconcile route payloads/responses with shared DTOs.
-- Confirm the ingestion kickoff path, status path, facts path, bullet path, diff path, annotation path, and relationship path all align.
-- Remove dead placeholders or explicitly mark them as non-MVP.
+
+- Move shared schema/document helpers into a shared server-only package or a single module consumed by API and Functions.
+- Keep the browser-imported `shared` package free of Node/server-only dependencies.
 
 **Acceptance criteria**
-- API responses match shared contracts or the contracts are updated to match reality.
-- The UI can call the documented endpoints without ad hoc shape fixes.
 
-### Task 5.2 — Verify the UI uses the real backend flow
+- There is one source for index field definitions, document projection, and filter escaping.
+
+## Priority 3 - Production Identity And IL5 Readiness
+
+### Task 3.1 - Verify Entra/OBO flows in deployment config
+
 **Why**
-The UI exists, but the next coding pass should confirm that it is exercising the real pipeline rather than only rendering isolated scaffolding.
-
-**Primary files**
-- `ui/src/app.tsx`
-- `ui/src/api.ts`
+The code supports token verification and OBO, but app registration setup decides whether it works.
 
 **Actions**
-- Map every UI data dependency to an actual backend route.
-- Confirm the UI supports the core MVP path:
-  - start ingestion
-  - view run status
-  - view facts/bullets/diffs
-  - manage annotations
-  - review relationship suggestions
-- Add or tighten loading, empty, and failure states where missing.
+
+- Confirm API accepted audiences and issuer settings in Commercial and Gov patterns.
+- Confirm UI token audience matches API settings.
+- Confirm API can request a Functions token with OBO or managed identity.
+- Confirm Azure OpenAI/Search calls use OBO where intended and managed identity otherwise.
 
 **Acceptance criteria**
-- A single user can exercise one coherent MVP workflow through the UI.
-- UI state transitions reflect real backend responses and failures.
 
----
+- A signed-in user can call the API, trigger Functions, and access allowed downstream Azure services without shared secrets.
 
-## Priority 6 — Fix auth and developer-operability gaps
+### Task 3.2 - Replace production browser Maps key handling
 
-### Task 6.1 — Replace the fragile production auth path with a real JWT validation approach
 **Why**
-The middleware has the right intent, but the current production implementation is still lightweight and risky.
-
-**Primary file**
-- `api/src/middleware/auth.middleware.ts`
+The current browser map can use a Vite-baked subscription key. Production should not ship long-lived keys.
 
 **Actions**
-- Replace manual payload parsing with robust JWT signature verification against JWKS.
-- Validate issuer, audience, expiration, and tenant/user claims using a supported library and explicit rules.
-- Keep dev-mode bypass behavior, but clearly isolate it from production behavior.
-- Update docs with exact required env vars.
+
+- Use Azure Maps AAD anonymous auth or another approved browser-safe auth flow.
+- Keep the geospatial MCP server using managed identity/key precedence server-side.
+- Document local-dev key behavior separately from production.
 
 **Acceptance criteria**
-- Production auth performs actual signature verification.
-- Required claims and env vars are documented and enforced clearly.
 
-### Task 6.2 — Verify local startup and package-script reliability
+- Production map rendering does not require a baked subscription key.
+
+## Priority 4 - MCP Capability Depth
+
+### Task 4.1 - Wire non-geospatial MCP handlers to real logic
+
 **Why**
-The repo appears more runnable than before, but docs and scripts still need a trustworthiness pass.
-
-**Primary files**
-- root `package.json`
-- `api/package.json`
-- `functions/package.json`
-- `ui/package.json`
-- `shared/package.json`
-- `README.md`
+The capability layout builds, but several handlers are still scaffolds.
 
 **Actions**
-- Verify install/build/dev scripts for each package.
-- Confirm the local startup order and dependency expectations.
-- Document what requires cloud services versus what gracefully no-ops in local dev.
-- Fix stale commands and misleading setup guidance.
+
+- Start with ingestion acquisition/extraction tools because they map directly to existing activities.
+- Keep canonical facts/bullets writes inside Durable/API persistence boundaries.
+- Return bounded, governed tool outputs: excerpts, citations, handles, cursors, and job IDs instead of bulk raw data.
 
 **Acceptance criteria**
-- Another engineer can follow the README and start the main services with minimal guesswork.
-- Cloud-service prerequisites and optional no-op paths are clearly documented.
 
----
+- At least one non-geospatial capability server delegates to the real activity/API logic and has a local smoke path.
 
-## Recommended execution order
-1. Fix documentation truthfulness.
-2. Harden the Durable orchestrator and activity boundaries.
-3. Validate Cosmos identity/partition/idempotency contracts.
-4. Tighten builder artifact semantics and provenance.
-5. Reconcile and repair Azure AI Search integration.
-6. Verify API/UI happy-path compatibility.
-7. Replace fragile production auth and clean up developer setup docs.
+### Task 4.2 - Route governance audit to an approved sink
 
----
+**Why**
+The governance layer exists, but console audit is not enough for production.
 
-## Non-goals for the next pass
-Do not prioritize these until the above is complete:
-- Re-architecting the monorepo or replacing Durable Functions.
-- Adding broad new product features beyond the current MVP slice.
-- Advanced scaling/performance work before correctness is proven.
-- Full enterprise-grade authorization/security trimming beyond current MVP needs.
-- Large UI redesigns unrelated to the existing workflow.
+**Actions**
 
----
+- Add an audit sink for Azure Monitor or the approved IL5 audit stream.
+- Preserve the hash-chain/tamper-evident semantics.
+- Document environment flags and failure behavior.
 
-## Definition of done for the next coding pass
-This handoff should be considered executed successfully when:
-- Repo docs accurately describe verified implementation status.
-- The orchestrator follows Durable Functions correctness rules and only coordinates activities.
-- Persistence contracts are explicit and consistent across API and Functions.
-- Builder artifacts are deterministic, stable, and traceable.
-- Search indexing/query behavior is unified and reliable.
-- API and UI together support one demonstrable MVP happy path.
-- Production auth is no longer based on manual JWT parsing.
-- Local setup guidance is trustworthy.
+**Acceptance criteria**
+
+- Governance decisions can be retained outside process logs in the target environment.
+
+## Priority 5 - Temporal Intelligence
+
+### Task 5.1 - Implement observed temporal events before predictions
+
+**Why**
+Predictions must never masquerade as observed facts.
+
+**Actions**
+
+- Add `TemporalEvent` persistence/projection first.
+- Extract observed dated events from facts/text with evidence links.
+- Add API/UI review surfaces before generating future predictions.
+
+**Acceptance criteria**
+
+- Observed events have evidence, confidence, status, and provenance, and are queryable without any prediction logic.
+
+### Task 5.2 - Add event patterns and predictions behind review status
+
+**Why**
+Predictions need confidence, rationale, expiration, and recruiter feedback loops.
+
+**Actions**
+
+- Implement patterns from observed events.
+- Create predictions with status `suggested`, confidence band, rationale, evidence, and review/expiration windows.
+- Add accept/snooze/dismiss flows without converting predictions into observed facts.
+
+**Acceptance criteria**
+
+- Recruiters can review predictions as suggestions, and the system keeps observed data separate from speculative output.
+
+## Current Definition Of Done
+
+For the next implementation pass, success means:
+
+1. The workspace still builds with `npm run build --workspaces`.
+2. At least one real runtime smoke path is completed or exact blockers are documented.
+3. Any new ingestion/storage work moves toward artifact handles and lineage, not larger Durable payloads.
+4. Docs stay aligned with the verified state.

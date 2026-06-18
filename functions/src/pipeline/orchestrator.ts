@@ -111,9 +111,9 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
 
     const dedupResult = yield df.callActivity('ResumeBuilderCandidateMatches', {
       extractionRunId: runId,
+      tenantId,
       extractedName: nameMatch ?? '',
       extractedEmployers: employers,
-      existingCandidates: [],
     });
 
     if (dedupResult?.personId) {
@@ -193,6 +193,25 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
     bullets: builderOutput.bullets,
   });
   log(`[Orchestrator] Gate-5 persisted ${persistResult?.factsPersisted ?? 0} facts + ${persistResult?.bulletsPersisted ?? 0} bullets, person=${persistResult?.personPersisted}`);
+
+  // ── Gate 5.5: Deconflict same-name duplicates (merge into one canonical person) ──
+  // Multiple person records that share a name are almost certainly the same individual.
+  // Merge any such duplicates of the just-resolved person into a single canonical record so
+  // the relationship graph (and the resume) anchor to one person rather than several.
+  try {
+    const deconflict = yield df.callActivity('DeconflictDuplicatePersons', {
+      tenantId,
+      preferredPersonId: personId,
+    });
+    if (deconflict?.remappedTo && deconflict.remappedTo !== personId) {
+      log(`[Orchestrator] Gate-5.5: person ${personId} merged → ${deconflict.remappedTo}`);
+      personId = deconflict.remappedTo;
+    } else if ((deconflict?.personsMerged ?? 0) > 0) {
+      log(`[Orchestrator] Gate-5.5: merged ${deconflict.personsMerged} duplicate(s) into ${personId}`);
+    }
+  } catch (err: any) {
+    log(`[Orchestrator] Deconfliction failed (non-fatal): ${err?.message || err}`);
+  }
 
   // ── Gate 6: Relationship inference for matching persons (non-fatal) ──
   try {
@@ -376,8 +395,33 @@ export async function persistBuilderOutput(
   if (input.person?.id) {
     const now = new Date().toISOString();
     const existing = await persist.getPerson(input.person.id);
+
+    // When dedup reused an existing person, accumulate names instead of clobbering them:
+    // union aliases across runs and keep a real canonical name over the 'Unknown Candidate'
+    // placeholder so the merged profile retains every observed spelling of the name.
+    const isRealName = (n?: string) => !!n && n.trim() !== '' && n.trim() !== 'Unknown Candidate';
+    const aliases = Array.from(
+      new Set(
+        [
+          ...(existing?.aliases ?? []),
+          ...(input.person.aliases ?? []),
+          input.person.canonicalName,
+          existing?.canonicalName,
+        ]
+          .map((s) => (s ?? '').trim())
+          .filter((s) => isRealName(s)),
+      ),
+    );
+    const canonicalName = isRealName(input.person.canonicalName)
+      ? input.person.canonicalName
+      : isRealName(existing?.canonicalName)
+        ? (existing!.canonicalName as string)
+        : input.person.canonicalName;
+
     await persist.upsertPerson({
       ...input.person,
+      canonicalName,
+      aliases,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     } as any);

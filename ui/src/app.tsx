@@ -423,13 +423,46 @@ export function LandingPage() {
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   const [ingestStatus, setIngestStatus] = useState<'idle' | 'submitting' | 'polling' | 'done' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [deconflicting, setDeconflicting] = useState(false);
+  const [deconflictMsg, setDeconflictMsg] = useState<string | null>(null);
 
-  // Load recent runs on mount (with auth header)
-  useEffect(() => {
+  // Load recent runs on mount, then refresh periodically so the list reflects background
+  // run progress (queued → in_progress → completed) without a manual page reload.
+  const loadRuns = useCallback(() => {
     json<ExtractionRun[]>('GET', '/ingestion-requests?tenantId=tenant-dev')
-      .then(data => setRuns(Array.isArray(data) ? data.reverse().slice(0, 20) : []))
+      .then(data => setRuns(Array.isArray(data) ? data.slice(0, 20) : []))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    loadRuns();
+    const interval = setInterval(loadRuns, 5000);
+    const onVisible = () => { if (document.visibilityState === 'visible') loadRuns(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVisible); };
+  }, [loadRuns]);
+
+  // Merge person records that share a name (likely the same individual) into one canonical
+  // profile, then refresh the list so the deduplicated names show up immediately.
+  const runDeconflict = useCallback(async () => {
+    setDeconflicting(true);
+    setDeconflictMsg(null);
+    try {
+      const r = await json<{ groupsFound: number; personsMerged: number }>('POST', '/persons/deconflict', { tenantId: 'tenant-dev' });
+      const merged = r?.personsMerged ?? 0;
+      const groups = r?.groupsFound ?? 0;
+      setDeconflictMsg(
+        merged > 0
+          ? `Merged ${merged} duplicate profile${merged === 1 ? '' : 's'} across ${groups} name group${groups === 1 ? '' : 's'}.`
+          : 'No same-name duplicates found.',
+      );
+      loadRuns();
+    } catch {
+      setDeconflictMsg('Deconfliction failed. Is the ingestion service running?');
+    } finally {
+      setDeconflicting(false);
+    }
+  }, [loadRuns]);
 
   const doSubmit = async () => {
     if (!sourceInput.trim() && !selectedFiles?.length) return;
@@ -578,7 +611,22 @@ export function LandingPage() {
 
       {/* Recent Runs */}
       <div style={{ marginTop: 24 }}>
-        <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: 8 }}>Recent Runs</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <h2 style={{ fontSize: '16px', fontWeight: 600, margin: 0 }}>Recent Runs</h2>
+          <button
+            onClick={runDeconflict}
+            disabled={deconflicting}
+            title="Merge person records that share a name into one profile"
+            style={{ fontSize: '12px', padding: '6px 12px', background: deconflicting ? '#e5e7eb' : '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 6, cursor: deconflicting ? 'default' : 'pointer' }}
+          >
+            {deconflicting ? 'Deconflicting…' : 'Deconflict duplicates'}
+          </button>
+        </div>
+        {deconflictMsg && (
+          <div style={{ marginBottom: 8, padding: '6px 10px', background: '#eff6ff', borderRadius: 6, fontSize: '12px', color: '#2563eb' }}>
+            {deconflictMsg}
+          </div>
+        )}
         {runs.length === 0 ? (
           <p style={{ color: '#9ca3af', fontSize: '13px' }}>No runs yet.</p>
         ) : (
@@ -594,7 +642,7 @@ export function LandingPage() {
               style={{ padding: '8px 12px', background: '#f9fafb', borderRadius: 6, marginTop: 4, cursor: r.personId ? 'pointer' : 'default', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
             >
               <span style={{ fontSize: '13px', color: r.status === 'completed' ? '#059669' : r.status === 'failed' ? '#dc2626' : '#6b7280' }}>
-                {r.status === 'completed' && r.personId ? (<>✓ {r.personId}</>) : r.status || '—'}
+                {r.status === 'completed' && r.personId ? (<>✓ {r.personName || r.personId}</>) : r.status || '—'}
               </span>
               <span style={{ color: '#9ca3af', fontSize: '12px' }}>{new Date(r.createdAt).toLocaleDateString()}</span>
             </div>

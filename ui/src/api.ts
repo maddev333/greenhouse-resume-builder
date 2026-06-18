@@ -8,7 +8,7 @@ async function json<T>(method: string, path: string, body?: unknown): Promise<T>
   return jsonWithAuth<T>(method, path, body);
 }
 
-export type ExtractionRun = { id: string; status: string; createdAt: string; completedAt?: string | null; personId?: string };
+export type ExtractionRun = { id: string; status: string; createdAt: string; updatedAt?: string; completedAt?: string | null; personId?: string; personName?: string | null };
 export type BulletMapping = { bulletId: string; bulletText: string; sectionId: string; citationFactVersionIds: string[]; citationSourceDocumentIds: string[]; createdAt: string };
 export type FactVersion = { factVersionId: string; sectionId: string; factKey: string; factValue: any; extractedAt: string; confidence?: number; status: string };
 export type AnnotationItem = { id: string; commentText: string; targetFactVersionId: string; status: 'open' | 'resolved'; createdAt: string; createdByUserId: string; personId?: string };
@@ -81,6 +81,22 @@ export const apiRelationships = {
   /** Update relationship status (confirm / reject). */
   updateStatus: (relId: string, body: { status: 'confirmed' | 'rejected'; fromPersonId?: string; toPersonId?: string }) =>
     json<{ updated: boolean }>(`PATCH`, `/inferences/${relId}`, body),
+};
+
+// ── Persons ─────────────────────────────────────────────────
+
+export interface DeconflictSummary {
+  tenantId: string;
+  groupsFound: number;
+  personsMerged: number;
+  edgesRemoved: number;
+  survivors: Array<{ survivorId: string; survivorName: string; mergedIds: string[] }>;
+  remappedTo?: string;
+}
+
+export const apiPersons = {
+  /** Merge same-name duplicate person records for a tenant into one canonical person each. */
+  deconflict: (tenantId: string) => json<DeconflictSummary>('POST', '/persons/deconflict', { tenantId }),
 };
 
 // ── Search ────────────────────────────────────────────────────

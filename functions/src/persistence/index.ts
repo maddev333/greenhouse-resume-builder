@@ -248,6 +248,47 @@ export const searchPersonsByName = async (nameSearch: string): Promise<Person[]>
     [nameSearch],
   );
 
+/** All persons in a tenant (used for dedup candidate matching + deconfliction). */
+export const listPersonsByTenant = async (tenantId: string): Promise<Person[]> =>
+  findDocs<Person>(TABLES.persons, "data->>'tenantId' = $1", [tenantId]);
+
+/** Delete a person document by id. */
+export const deletePersonDoc = async (personId: string): Promise<void> => {
+  await deleteDoc(TABLES.persons, personId);
+};
+
+/**
+ * Re-point every reference to `fromId` so it points at `toId` across all entity tables.
+ * Keyed purely on the personId fields (NOT tenant) so edges authored under a different
+ * tenantId are still re-pointed. Used when merging duplicate persons (deconfliction).
+ */
+export const reassignPersonReferences = async (fromId: string, toId: string): Promise<void> => {
+  if (fromId === toId) return;
+  const pool = await getPool();
+  // Tables with a scalar personId field.
+  for (const table of [
+    TABLES.factVersions,
+    TABLES.bulletMappings,
+    TABLES.sourceDocuments,
+    TABLES.annotations,
+    TABLES.extractionRuns,
+  ]) {
+    await pool.query(
+      `UPDATE ${table} SET data = jsonb_set(data, '{personId}', to_jsonb($2::text)) WHERE data->>'personId' = $1`,
+      [fromId, toId],
+    );
+  }
+  // Relationships carry two endpoints.
+  await pool.query(
+    `UPDATE ${TABLES.relationships} SET data = jsonb_set(data, '{fromPersonId}', to_jsonb($2::text)) WHERE data->>'fromPersonId' = $1`,
+    [fromId, toId],
+  );
+  await pool.query(
+    `UPDATE ${TABLES.relationships} SET data = jsonb_set(data, '{toPersonId}', to_jsonb($2::text)) WHERE data->>'toPersonId' = $1`,
+    [fromId, toId],
+  );
+};
+
 /** ── ExtractionRun ───────────────────────────────────────────────────────── */
 
 export const upsertExtractionRun = async (doc: Partial<ExtractionRun> & { id: string }): Promise<void> => {
@@ -358,6 +399,48 @@ export const edgeExists = async (personA: string, personB: string): Promise<bool
     { limit: 1 },
   );
   return docs.length > 0;
+};
+
+/**
+ * After a merge, tidy the survivor's edges: drop self-loops (from === to) and collapse
+ * duplicate edges (same unordered endpoint pair + relationshipType), keeping the most
+ * authoritative status (confirmed > suggested > rejected, then lowest id). Returns the
+ * number of relationship rows removed.
+ */
+export const cleanupRelationshipsForPerson = async (survivorId: string): Promise<number> => {
+  const pool = await getPool();
+  // 1) Self-loops created by collapsing two endpoints onto the survivor.
+  const selfDel = await pool.query(
+    `DELETE FROM ${TABLES.relationships} WHERE data->>'fromPersonId' = $1 AND data->>'toPersonId' = $1`,
+    [survivorId],
+  );
+
+  // 2) Duplicate edges touching the survivor.
+  const rels = await findDocs<Relationship>(
+    TABLES.relationships,
+    "data->>'fromPersonId' = $1 OR data->>'toPersonId' = $1",
+    [survivorId],
+  );
+  const rank = (s: string) => (s === 'confirmed' ? 0 : s === 'suggested' ? 1 : 2);
+  const best = new Map<string, Relationship>();
+  const toDelete: string[] = [];
+  for (const r of rels) {
+    const a = r.fromPersonId < r.toPersonId ? r.fromPersonId : r.toPersonId;
+    const b = r.fromPersonId < r.toPersonId ? r.toPersonId : r.fromPersonId;
+    const key = `${a}|${b}|${r.relationshipType}`;
+    const cur = best.get(key);
+    if (!cur) {
+      best.set(key, r);
+      continue;
+    }
+    const keepNew = rank(r.status) < rank(cur.status) || (rank(r.status) === rank(cur.status) && r.id < cur.id);
+    const winner = keepNew ? r : cur;
+    const loser = keepNew ? cur : r;
+    best.set(key, winner);
+    toDelete.push(loser.id);
+  }
+  for (const id of toDelete) await deleteDoc(TABLES.relationships, id);
+  return (selfDel.rowCount ?? 0) + toDelete.length;
 };
 
 /** ── Annotation ──────────────────────────────────────────────────────────── */

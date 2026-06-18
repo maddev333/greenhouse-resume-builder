@@ -12,3 +12,4 @@ export * from './identity';
 export * from './mcp-server';
 export * from './agent-loop';
 export * from './governance';
+export * from './security';

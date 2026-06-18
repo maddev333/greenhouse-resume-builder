@@ -1,6 +1,7 @@
 /** Person Dedup: compares extracted name + employment patterns against existing persons. */
 
 import { app } from 'durable-functions';
+import { listPersonsByTenant } from '../persistence/index';
 
 export interface DedupResult {
   personId?:          string;
@@ -105,10 +106,24 @@ export function resolvePersonDedup(
 
 app.activity('ResumeBuilderCandidateMatches', {
   handler: async (input: any, _context: any) => {
-    const { extractionRunId, extractedName = '', extractedEmployers = [], existingCandidates = [] } = input as any;
-    console.log(`[PersonDedup] Checking candidate matches for run: ${extractionRunId}`);
+    const { extractionRunId, tenantId, extractedName = '', extractedEmployers = [] } = input as any;
 
-    // In production: query Cosmos DB Persons container for aliases matching this name & employer pattern
+    // Load existing persons to match against. The orchestrator may pass them explicitly,
+    // but normally leaves it to this activity (which can do I/O) to fetch the tenant's persons.
+    // Without candidates, dedup can never match and every ingestion mints a brand-new person —
+    // which is exactly how same-name duplicates accumulate in the graph.
+    let existingCandidates: Array<{ id: string; canonicalName: string; aliases?: string[] }> = input.existingCandidates ?? [];
+    if (existingCandidates.length === 0 && tenantId && String(extractedName).trim()) {
+      try {
+        const persons = await listPersonsByTenant(tenantId);
+        existingCandidates = persons.map((p) => ({ id: p.id, canonicalName: p.canonicalName, aliases: p.aliases }));
+      } catch (err: any) {
+        console.warn('[PersonDedup] Failed to load existing candidates:', err?.message ?? err);
+        existingCandidates = [];
+      }
+    }
+
+    console.log(`[PersonDedup] Checking ${existingCandidates.length} candidate(s) for run: ${extractionRunId}`);
     return resolvePersonDedup(extractedName, extractedEmployers, existingCandidates);
   },
 });

@@ -121,30 +121,75 @@ export async function bulkUpsertSearchDocuments(docs: Record<string, unknown>[])
 
 export interface SearchQueryOptions {
   query:       string;
+  /** Verified Entra `tid` claim. Mandatory security trim — a query without it is rejected (fail closed). */
+  tenantId?:   string;
   sectionId?:  string;
   personId?:   string;
   factKey?:    string;
+  /** Verified Entra app roles (`roles` claim) — gate sensitive attributes. */
+  roles?:      string[];
+  /** Verified Entra delegated scopes (`scp` claim) — gate sensitive attributes. */
+  scopes?:     string[];
   top?:         number;
   skip?:        number;
   userAssertionToken?: string;
 }
 
-/** Full-text search across bullets and facts, with optional filters. */
+/** Escape a string literal for an OData filter (single quotes are doubled per the OData grammar). */
+function odataEscapeLiteral(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+/**
+ * Entra roles/scopes permitted to read sensitive attributes. Cloud-configurable so the privileged
+ * role/scope names match the app registration's appRoles / exposed API scopes.
+ */
+const SENSITIVE_READ_ROLES = (process.env.FACTS_SENSITIVE_READ_ROLES ?? 'ClearedReviewer,Admin')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+const SENSITIVE_READ_SCOPES = (process.env.FACTS_SENSITIVE_READ_SCOPES ?? 'Facts.ReadSensitive')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+
+/** factKeys treated as sensitive/need-to-know: temporal `event.*` facts and any precise `*.location` fact. */
+function isSensitiveFactKey(factKey: unknown): boolean {
+  return typeof factKey === 'string' && (factKey.startsWith('event.') || factKey.endsWith('.location'));
+}
+
+/** A caller may read sensitive attributes only with a privileged Entra app role or delegated scope. */
+function canReadSensitiveAttributes(roles?: string[], scopes?: string[]): boolean {
+  return (roles ?? []).some((r) => SENSITIVE_READ_ROLES.includes(r))
+    || (scopes ?? []).some((s) => SENSITIVE_READ_SCOPES.includes(s));
+}
+
+/**
+ * Full-text search across bullets and facts, security-trimmed by the caller's verified Entra claims.
+ *
+ * Enforcement:
+ *  - **Tenant isolation (row-level):** a mandatory `tenantId eq '<tid>'` OData filter; a query with no
+ *    verified tenant claim is rejected (fail closed), so one tenant can never read another's facts.
+ *  - **Attribute-level trim:** sensitive factKeys (temporal `event.*`, precise `*.location`) are redacted
+ *    unless the caller's Entra `roles`/`scp` include a privileged value.
+ *
+ * Optional `personId`/`sectionId`/`factKey` narrow within the tenant. All literals are OData-escaped, and
+ * `sectionId` is matched as a collection field (`Collection(Edm.String)` in the index schema).
+ */
 export async function searchResumeContents(options: SearchQueryOptions): Promise<Record<string, unknown>[]> {
   if (!SEARCH_SERVICE_NAME) return [];
 
-  const { query, top = 20, skip = 0, userAssertionToken, ...filters } = options;
+  const { query, tenantId, sectionId, personId, factKey, roles, scopes, top = 20, skip = 0, userAssertionToken } = options;
 
-  let filterParts: string[] = [];
-  for (const [key, value] of Object.entries(filters)) {
-    if (typeof value === 'string' && value) {
-      filterParts.push(`${key} eq '${value}'`);
-    } else if (Array.isArray(value)) {
-      const vals = (value as string[]).map((v: unknown) => `'${v}'`).join(', ');
-      filterParts.push(`any(f: f in ${key}, search.equals_any(f, [${vals}]))`);
-    }
+  // Fail closed: the attribute layer is tenant-scoped, so a missing/empty tenant claim must never
+  // widen to a cross-tenant query (the prior implementation applied no tenant filter at all).
+  if (!tenantId) {
+    console.warn('[Search] Rejected: no verified tenantId claim — attribute-layer queries must be tenant-trimmed.');
+    return [];
   }
-  const filter = filterParts.length ? ` and ${filterParts.join('\n')}` : '';
+
+  // Mandatory tenant trim first, then optional exact-match narrowing within the tenant.
+  const filterParts: string[] = [`tenantId eq '${odataEscapeLiteral(tenantId)}'`];
+  if (personId) filterParts.push(`personId eq '${odataEscapeLiteral(personId)}'`);
+  if (factKey) filterParts.push(`factKey eq '${odataEscapeLiteral(factKey)}'`);
+  if (sectionId) filterParts.push(`sectionId/any(s: s eq '${odataEscapeLiteral(sectionId)}')`);
+  const filter = filterParts.join(' and ');
 
   const endpoint = searchEndpoint();
   // @ts-ignore -- SearchClient constructor/signature compatibility
@@ -157,7 +202,7 @@ export async function searchResumeContents(options: SearchQueryOptions): Promise
       top: top,
       // @ts-ignore -- $count optional in some SDK versions
       count: true,
-      filter: filter || undefined,
+      filter,
     } as any);
   } catch {
     return [];
@@ -167,7 +212,13 @@ export async function searchResumeContents(options: SearchQueryOptions): Promise
   // @ts-ignore -- SearchResultIterator vs array varies by SDK version
   const allItems: any[] = Array.isArray(rawResults) ? rawResults : [];
 
-  return allItems.map((r: any) => ({
+  // Attribute-level trim: drop sensitive factKeys unless the caller's Entra claims permit them.
+  const allowSensitive = canReadSensitiveAttributes(roles, scopes);
+  const visible = allowSensitive
+    ? allItems
+    : allItems.filter((r: any) => !isSensitiveFactKey(r.document?.factKey));
+
+  return visible.map((r: any) => ({
     ...r.document,
     score: r.score || 0,
     highlights: (r.highlights as any)?.bulletText ?? null,

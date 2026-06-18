@@ -53,6 +53,7 @@ AzureWebJobsStorage=UseDevelopmentStorage=true
 ### 3. Set Up PostgreSQL
 
 **Option A: Local PostgreSQL**
+
 ```bash
 # Install PostgreSQL locally
 # Create database
@@ -62,6 +63,7 @@ psql -U postgres -c "CREATE DATABASE resume_builder;"
 ```
 
 **Option B: Azure PostgreSQL**
+
 ```bash
 # Update .env with your Azure PostgreSQL connection
 PGHOST=<your-server>.postgres.database.azure.com
@@ -73,24 +75,30 @@ PGSSLMODE=require
 ### 4. Run the Stack
 
 #### Terminal 1: API Server
+
 ```bash
 cd api
 npm run dev
 ```
+
 The API will start on http://localhost:3001
 
 #### Terminal 2: UI (React + Vite)
+
 ```bash
 cd ui
 npm run dev
 ```
+
 The UI will start on http://localhost:5173
 
 #### Terminal 3: Azure Functions (Optional)
+
 ```bash
 cd functions
 npm run start:dev
 ```
+
 Functions will start on http://localhost:7071
 
 ## VS Code Debugging
@@ -117,6 +125,7 @@ The project includes pre-configured debug configurations in `.vscode/launch.json
 ### Development Mode (Default)
 
 The `.env` file has `ALLOW_DEV_AUTH_BYPASS=true` by default, which:
+
 - Accepts any request without validating tokens
 - Sets placeholder `userId` and `tenantId`
 - **Never use in production**
@@ -131,6 +140,7 @@ To enable real Azure AD authentication:
    - Note the Application (client) ID and Tenant ID
 
 2. **Update .env**
+
    ```bash
    AZURE_TENANT_ID=<your-tenant-id>
    AZURE_AD_CLIENT_ID=<your-client-id>
@@ -139,6 +149,7 @@ To enable real Azure AD authentication:
    ```
 
 3. **Get an Access Token**
+
    ```bash
    # Using Azure CLI
    az login
@@ -224,11 +235,13 @@ greenhouse-resume-builder/
 ## Common Tasks
 
 ### Build Everything
+
 ```bash
 npm run build --workspaces
 ```
 
 ### Build Specific Workspace
+
 ```bash
 npm run build -w @greenhouse-resume-builder/api
 npm run build -w @greenhouse-resume-builder/ui
@@ -236,17 +249,20 @@ npm run build -w @greenhouse-resume-builder/azure-functions
 ```
 
 ### Clean Build Artifacts
+
 ```bash
 # Remove all dist/ and node_modules/
 npm run clean --workspaces --if-present
 ```
 
 ### Test API Health
+
 ```bash
 curl http://localhost:3001/health
 ```
 
 ### Test With Auth Bypass
+
 ```bash
 # Any Bearer token works in dev mode
 curl -H "Authorization: Bearer dev-token" http://localhost:3001/api/v1/stats
@@ -255,6 +271,7 @@ curl -H "Authorization: Bearer dev-token" http://localhost:3001/api/v1/stats
 ## Troubleshooting
 
 ### "Cannot find module" errors
+
 ```bash
 # Rebuild shared package first
 npm run build -w @greenhouse-resume-builder/shared
@@ -262,6 +279,7 @@ npm ci
 ```
 
 ### PostgreSQL connection errors
+
 ```bash
 # Check PostgreSQL is running
 psql -U postgres -c "SELECT version();"
@@ -271,6 +289,7 @@ echo $PGHOST $PGPORT $PGDATABASE $PGUSER
 ```
 
 ### Environment variables not loading
+
 ```bash
 # Verify .env exists at project root
 ls -la .env
@@ -280,6 +299,7 @@ cat .env
 ```
 
 ### Functions not starting
+
 ```bash
 # Install Azure Functions Core Tools
 npm install -g azure-functions-core-tools@4
@@ -293,6 +313,7 @@ func start --verbose
 ```
 
 ### Authentication failing
+
 ```bash
 # For local dev, ensure bypass is enabled
 grep ALLOW_DEV_AUTH_BYPASS .env
@@ -305,11 +326,13 @@ grep AZURE_AD_JWKS_URI .env
 ## Azure Deployment
 
 ### Prerequisites
+
 - Azure subscription
 - Azure CLI installed and logged in
 - Resource group created
 
 ### Deploy API (App Service)
+
 ```bash
 # Build first
 npm run build -w @greenhouse-resume-builder/api
@@ -319,6 +342,7 @@ az webapp up --name <app-name> --resource-group <rg-name> --runtime "NODE:20-lts
 ```
 
 ### Deploy Functions
+
 ```bash
 # Build
 npm run build -w @greenhouse-resume-builder/azure-functions
@@ -329,6 +353,7 @@ func azure functionapp publish <function-app-name>
 ```
 
 ### Configure App Settings
+
 ```bash
 # Set environment variables in Azure
 az webapp config appsettings set \
@@ -341,6 +366,7 @@ az webapp config appsettings set \
 ```
 
 ### Enable Managed Identity
+
 ```bash
 # Enable system-assigned managed identity
 az webapp identity assign --name <app-name> --resource-group <rg-name>
@@ -356,7 +382,7 @@ az postgres flexible-server ad-admin set \
 
 - [README.md](./README.md) - Project overview
 - [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) - Current implementation status
-- [NEXT_AGENT.md](./NEXT_AGENT.md) - Next steps and priorities
+- [AGENT_TASKS.md](./AGENT_TASKS.md) - Current next steps and priorities
 - [Azure Functions Documentation](https://docs.microsoft.com/azure/azure-functions/)
 - [Azure PostgreSQL Documentation](https://docs.microsoft.com/azure/postgresql/)
 - [Microsoft Entra ID Documentation](https://docs.microsoft.com/entra/identity/)
@@ -364,6 +390,7 @@ az postgres flexible-server ad-admin set \
 ## Support
 
 For issues or questions:
+
 1. Check existing documentation in `docs/`
 2. Review implementation status in `IMPLEMENTATION_STATUS.md`
 3. Check the codebase for inline comments

@@ -68,6 +68,11 @@ app.get('/health', (_req, res) => {
   app.use('/api/v1/inferences',         relationshipRoutes);
 })();
 
+(async () => {
+  const personRoutes = await import('./routes/persons').then(m => m.default);
+  app.use('/api/v1/persons',            personRoutes);
+})();
+
 // ── Search endpoint (real-time full-text across facts + bullets) ──
 
 (async () => {
@@ -80,8 +85,11 @@ app.get('/health', (_req, res) => {
       }
       const results = await search.searchResumeContents({
         query: query.trim(),
+        tenantId: req.tenantId,
         sectionId,
         personId,
+        roles: req.user?.roles,
+        scopes: req.user?.scopes,
         top: parseInt(req.body.top as string) || 20,
         skip: parseInt(req.body.skip as string) || 0,
         userAssertionToken: req.accessToken,

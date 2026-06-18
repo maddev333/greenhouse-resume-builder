@@ -68,6 +68,12 @@ export interface AuthenticatedUser {
   tenantId: string;
   username?: string;
   name?: string;
+  /** Entra app roles (`roles` claim) — primary RBAC signal for attribute-layer authorization. */
+  roles?: string[];
+  /** Entra security-group object IDs (`groups` claim) — need-to-know / program membership filtering. */
+  groups?: string[];
+  /** Entra delegated scopes (`scp` claim, space-delimited) granted to the calling app. */
+  scopes?: string[];
   claims?: JWTPayload;
 }
 
@@ -155,6 +161,11 @@ function claimsToUser(payload: JWTPayload): AuthenticatedUser {
         ? payload.upn
         : undefined,
     name: typeof payload.name === 'string' ? payload.name : undefined,
+    // Entra authorization claims, surfaced for attribute-layer security trimming. `roles`/`groups`
+    // arrive as arrays; `scp` is a single space-delimited string of delegated scopes.
+    roles: Array.isArray(payload.roles) ? payload.roles.map(String) : undefined,
+    groups: Array.isArray(payload.groups) ? payload.groups.map(String) : undefined,
+    scopes: typeof payload.scp === 'string' ? payload.scp.split(' ').filter(Boolean) : undefined,
     claims: payload,
   };
 }

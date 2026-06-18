@@ -80,6 +80,13 @@ function verifyBearer(request: HttpRequest): boolean {
   return /^Bearer\s+.+/i.test(auth);
 }
 
+/** Parse a comma/space-delimited header (e.g. roles/scopes/groups) into a trimmed string list. */
+function parseListHeader(value: string | null): string[] | undefined {
+  if (!value) return undefined;
+  const items = value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  return items.length ? items : undefined;
+}
+
 /**
  * Resolve CORS headers for a browser request. The MCP UI Apps call these servers directly when
  * running standalone (cross-origin: Vite dev server -> Functions host), so the server must answer
@@ -142,7 +149,14 @@ export function registerMcpServer(server: McpServerDef, opts: { functionName: st
         return withHeaders(rpcError(null, -32700, 'Parse error'), cors);
       }
       const ctx: ToolCallContext = {
+        // In IL5 the gateway (APIM + Entra) validates the JWT and propagates verified claims as
+        // headers to this Private Link-fronted, anonymous Function. We trust those headers here;
+        // they must be stripped from any public ingress so a client cannot spoof them.
         tenantId: request.headers.get('x-tenant-id') || undefined,
+        userId: request.headers.get('x-user-oid') || request.headers.get('x-user-id') || undefined,
+        roles: parseListHeader(request.headers.get('x-user-roles')),
+        groups: parseListHeader(request.headers.get('x-user-groups')),
+        scopes: parseListHeader(request.headers.get('x-user-scopes')),
         traceId: request.headers.get('x-trace-id') || undefined,
         invocation: context,
       };

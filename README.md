@@ -63,10 +63,10 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for complete debugging guide.
 
 ### Services
 
-| Service                      | Description                                                                                         |
-| ---------------------------- | --------------------------------------------------------------------------------------------------- |
-| **API** (`api/`)             | Express REST layer — ingestion, bullets/facts, annotations, relationships, search                   |
-| **Functions** (`functions/`) | Durable Functions orchestration: extraction, deduplication, builder, persistence, indexing          |
+| Service                      | Description                                                                                              |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **API** (`api/`)             | Express REST layer — ingestion, bullets/facts, annotations, relationships, search                        |
+| **Functions** (`functions/`) | Durable Functions orchestration: extraction, deduplication, builder, persistence, indexing               |
 | **UI** (`ui/`)               | React 18 + Vite — landing flow, candidate profile, map, diff, annotation, relationship, and search views |
 
 ### Capability Modules (`capabilities/`)
@@ -105,7 +105,7 @@ greenhouse-resume-builder/
 ├── functions/src/
 │   ├── pipeline/             # Durable Functions orchestrator + HTTP trigger
 │   ├── activities/           # Section extraction, builder, dedup, summary, diff
-│   ├── persistence/          # Cosmos → PG sync helper
+│   ├── persistence/          # PostgreSQL JSONB persistence + search sync helper
 │   └── services/             # Agent runtime bridge
 ├── capabilities/
 │   ├── mcp-core/             # Shared MCP server + IL5 identity helpers
@@ -171,29 +171,29 @@ Connection supports both password auth and AAD managed identity (default for IL5
 
 ### Highest-value remaining work
 
-1. Run build/type verification across packages and record exact blockers.
-2. Validate the landing-page ingestion workflow end to end:
+1. Validate the landing-page ingestion workflow end to end:
    - submit ingestion requests with auth headers
    - poll run status against a running Functions host
    - navigate to resolved candidate state
    - show loading/error states under real failures
    - populate recent runs from `GET /api/v1/ingestion-requests`
    - stage uploaded files before Document Intelligence processing
+2. Move large uploads toward the TO-BE artifact pattern: Blob/artifact manifest first, Durable receives IDs/handles.
 3. Wire MCP server handlers in each capability module to the real `functions/src/activities` logic.
-4. Validate search implementation (Azure AI Search query/filter behavior) with a fresh build/type pass.
+4. Runtime-test Azure AI Search index creation, upsert, tenant filtering, and sensitive-fact redaction with a real service.
 5. Harden the Azure Maps map for production: the candidate-profile **Map** tab now renders location-bearing facts (geocoded via the geospatial MCP `project_map_pins`). Before deploying, swap the local-dev subscription key for Azure Maps AAD anonymous auth.
 
 ## Known constraints
 
-- Search integration should not be treated as fully validated until a fresh build/type pass confirms current client usage and query/filter behavior.
+- Full workspace build/type validation passed on 2026-06-18. Search integration should still be runtime-tested against a real Azure AI Search service before it is treated as production-ready.
 - The UI landing page is partially wired — upload staging, auth/header behavior, runtime polling behavior, and recent-run behavior need end-to-end validation.
 - Temporal event extraction, recurrence detection, event prediction, and recruiter alerts are target architecture/implementation-plan items, not verified runtime behavior.
 - Azure Maps pins render on the candidate profile page's **Map** tab from location-bearing facts (`profile.location`, `employment.location`, `education.location`), geocoded on demand by the geospatial MCP `project_map_pins` tool. The browser map uses a local-dev subscription key baked in at build time; production should use Azure Maps AAD anonymous auth.
-- Some docs in the repo may lag behind `NEXT_AGENT.md` and `IMPLEMENTATION_STATUS.md`; use those two files first when directing the next coding pass.
+- For petabyte-scale MCP/storage work, use `TOBE_ARCHITECTURE.md` first; for the immediate implementation state and backlog, use `IMPLEMENTATION_STATUS.md` and `AGENT_TASKS.md`.
 
 ## Recommended docs to read first
 
-1. `NEXT_AGENT.md` — immediate handoff and current priorities
-2. `IMPLEMENTATION_STATUS.md` — code-aligned status by subsystem
-3. `AGENT_TASKS.md` — broader backlog and acceptance criteria
-4. `mvp_implementation_plan.md` — narrowed execution plan for the next implementation slice
+1. `TOBE_ARCHITECTURE.md` - target petabyte-scale, IL5-ready tenant-cell and MCP architecture
+2. `IMPLEMENTATION_STATUS.md` - code-aligned status by subsystem
+3. `AGENT_TASKS.md` - current backlog and acceptance criteria
+4. `mvp_implementation_plan.md` - broader MVP execution plan

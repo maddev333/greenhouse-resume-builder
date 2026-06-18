@@ -1,203 +1,183 @@
-# Greenhouse Resume Builder — Implementation Status
+# Greenhouse Resume Builder - Implementation Status
 
-**Last doc refresh:** 2026-06-14  
-Next-session handoff: `NEXT_AGENT.md`  
-Detailed prioritized task list: `AGENT_TASKS.md`
+**Last doc refresh:** 2026-06-18
+**Verification run:** `npm run build --workspaces` passed on 2026-06-18.
+**Architecture handoff:** use `TOBE_ARCHITECTURE.md` for the petabyte-scale tenant-cell and artifact-lake target.
 
-## Summary
+This file reflects the code that exists now. It intentionally replaces the older Cosmos-era status notes with the current PostgreSQL, managed-identity, MCP-capability, and geospatial implementation state.
 
-This document is intended to stay **code-aligned**. It reflects the repository state from the current source review, not older assumptions. Several previously logged gaps have now moved forward, so this status should direct the next coding agent toward the remaining work instead of re-opening already-addressed fixes.
-
----
-
-## 1. Foundations
+## 1. Current Source Of Truth
 
 ### Implemented
-- Monorepo workspace layout across `api`, `functions`, `shared`, and `ui`
-- Shared domain/data-transfer types in `shared/src/interfaces.ts`
-- Cosmos DB client bootstrap and repository pattern in `api/src/db/`
-- Core Express server wiring and route registration in `api/src/server.ts`
 
-### Known constraints
-- Cosmos containers are still provisioned with default `/id` partition keys.
-- Some Express route handlers still use broad request typing (`req: any` or equivalent loose typing).
-- Full build/type validation still needs to be rerun after the latest round of source changes.
+- The monorepo builds across API, Functions, shared, main UI, MCP core, all capability MCP servers, capability agents, and capability UIs.
+- The MVP data store is PostgreSQL JSONB, not Cosmos DB. API startup calls `ensureMVPTablesExist()` in `api/src/db/pg-client.ts`; Functions use their own PostgreSQL helper in `functions/src/persistence/index.ts`.
+- The implemented JSONB tables are `persons`, `source_documents`, `extraction_runs`, `fact_versions`, `bullet_mappings`, `annotations`, and `relationships`.
+- PostgreSQL auth supports local password auth and managed-identity/Entra auth. When `PGPASSWORD` is blank, the code uses `DefaultAzureCredential` with the PostgreSQL AAD scope.
 
----
+### Constraints
 
-## 2. Ingestion API
+- The JSONB table model preserves the former logical container names in code comments and mappings, but those names are compatibility labels only.
+- Temporal entities (`TemporalEvents`, `EventPatterns`, `EventPredictions`, `RecruiterAlerts`) remain target data-model concepts, not implemented database tables.
+- `TOBE_ARCHITECTURE.md` correctly describes the target split: PostgreSQL as metadata/control plane, large content in immutable artifacts, and rebuildable serving indexes.
 
-### Implemented / corrected
-- `POST /api/v1/ingestion-requests`
-- `GET /api/v1/ingestion-requests/:runId/status`
-- `GET /api/v1/ingestion-requests` listing/filter path
-- `api/src/routes/ingestion.ts` now returns `sourceDocumentIds: string[]` on both the created and deduplicated response paths, matching the current shared DTO expectation rather than the older mismatched shape.
+## 2. Build And Package Status
 
-### Remaining follow-up
-- The route still uses broad request typing and should be revisited if adjacent API contract work is taken on.
-- Runtime/build verification is still preferred over source inspection alone.
+### Verified
 
----
-
-## 3. Durable Functions pipeline
-
-### Implemented / corrected
-- Orchestrator stages are registered and mapped to activities.
-- Persistence is routed through `df.callActivity('PersistBuilderOutput', ...)` instead of direct persistence inside the orchestrator body.
-- `functions/index.ts` is now a clean stub instead of a corrupted merge artifact.
+- `npm run build --workspaces` passes.
+- The build includes:
+  - `@greenhouse-resume-builder/api`
+  - `@greenhouse-resume-builder/azure-functions`
+  - `@greenhouse-resume-builder/shared`
+  - `@greenhouse-resume-builder/ui`
+  - `@greenhouse-resume-builder/mcp-core`
+  - all capability MCP servers, agents, and UIs under `capabilities/`
 
 ### Remaining follow-up
-- Verify build/runtime health for the Functions package after the replay-safety and entry-point fixes.
-- Keep any future persistence or indexing I/O behind activity boundaries.
 
----
+- The build result is type/package validation only. It does not prove local runtime wiring, Azure service credentials, search query behavior, or end-to-end ingestion.
+- Main UI and geospatial UI production bundles exceed Vite's default 500 KB chunk warning because of Azure Maps and bundled app code. This is not a build failure, but code-splitting is a future performance task.
 
-## 4. Builder agent
-
-### Implemented / corrected
-- Deterministic fact generation is present.
-- Deterministic bullet IDs now include `personId`, reducing cross-person collision risk.
-- Section builders and citation-chain generation exist for the current MVP scope.
-
-### Remaining follow-up
-The builder output contract can still be widened later if the next slice requires richer downstream metadata:
-- `warnings`
-- `dedupedCounts`
-- `groups`
-- `buildVersion`
-- `metrics`
-
-This remains a lower-priority enhancement, not a correctness blocker.
-
----
-
-## 5. Search indexing
-
-### Implemented / corrected
-- Search helper code exists on both API and Functions sides.
-- Search indexing paths are documented and coded toward first-write-safe upsert behavior rather than merge-only semantics.
-
-### Remaining follow-up
-- Verify package/type compatibility around the current search client usage during the next build-validation pass.
-- Reconcile any remaining schema/client drift between API and Functions implementations.
-- Confirm the current query helper is building valid Azure Search filters/options before treating search as runtime-ready.
-- Preserve a single code-aligned story in docs if search implementation details change again.
-
----
-
-## 6. Authentication
-
-### Current status
-- Dev mode remains a permissive bearer-token bypass for local development.
-- Production auth is implemented with `jose`-based JWT verification against a remote JWKS set in `api/src/middleware/auth.middleware.ts`.
-
-### Remaining follow-up
-- If the next agent performs runtime verification, confirm issuer/audience/JWKS behavior works in the intended deployment environment.
-- Keep docs explicit that dev-mode bypass is for local development only.
-
----
-
-## 7. Relationships and annotations
+## 3. API
 
 ### Implemented
-- Annotation CRUD routes exist.
-- Relationship suggestion and update routes exist.
-- Several response-shape fixes were documented as already applied to improve DTO alignment.
+
+- Express API startup, route registration, CORS, JSON body limit, health probe, authenticated `/api/v1/*` surface.
+- Ingestion routes create PostgreSQL-backed `ExtractionRun` and `SourceDocument` records, return `sourceDocumentIds`, dedupe recent matching requests, trigger the Durable starter, and mark runs failed if the starter cannot be reached.
+- Resume insight routes return:
+  - flat `ResumeBulletResponse[]` from `/api/v1/insights/:personId/bullet-mappings`
+  - section-grouped facts from `/api/v1/insights/:personId/facts`
+  - bullet diffs from `/api/v1/insights/:personId/differences`
+- Annotation, relationship, person, search, stats, and health routes exist.
 
 ### Remaining follow-up
-- Keep an eye on any create/update branches that still rely on placeholder defaults or simplified persistence assumptions.
-- Re-verify route responses against shared DTOs if adjacent API work is performed.
 
----
+- Several routes still use broad `req: any` typing. This is not blocking the build, but it is a contract-hardening task.
+- The API triggers Functions asynchronously after responding to ingestion creation. Runtime validation should confirm the failure-marking path under real unavailable/unauthorized Function host conditions.
+
+## 4. Authentication And Identity
+
+### Implemented
+
+- API auth uses `jose` remote JWKS verification when Entra settings are configured.
+- The API fails closed when neither production token verification nor explicit local dev bypass is configured.
+- `ALLOW_DEV_AUTH_BYPASS=true` is local-only and ignored in production.
+- Verified user claims are surfaced as `req.user`, `req.tenantId`, `req.userId`, and raw validated `req.accessToken` for OBO-capable downstream calls.
+- API service auth supports On-Behalf-Of with certificate or federated managed-identity assertion, falling back to `DefaultAzureCredential` when OBO is not configured.
+
+### Remaining follow-up
+
+- Runtime test Entra issuer/audience/JWKS behavior in the intended Commercial/Gov deployment configuration.
+- Confirm the Functions starter protection settings (`FUNCTIONS_AUTH_AUDIENCE`, allowed callers, issuer settings) in the actual hosting environment.
+
+## 5. Durable Functions Pipeline
+
+### Implemented
+
+- `IngestCandidateOrchestrator` is a generator orchestrator that coordinates the workflow with `df.callActivity` and `df.Task.all`.
+- Orchestrator logging is guarded with `df.isReplaying`.
+- Persistence and indexing side effects are activity-bound through `PersistBuilderOutput`, not performed directly in the replayed orchestration body.
+- `UpdateExtractionRunStatus` is registered as an activity and handles status transitions.
+- The pipeline handles uploads, web snapshots, section extraction, profile extraction, dedup, summary, builder output, persistence, duplicate-person deconfliction, relationship inference, and run completion/failure status updates.
+
+### Remaining follow-up
+
+- End-to-end local runtime validation is still needed with PostgreSQL, API, Functions host, and UI running together.
+- Upload handling currently sends base64 file data inline to the orchestrator for the MVP path. The target architecture should move large bytes to Blob/artifact manifests before starting Durable work.
+
+## 6. Builder Agent And Persistence
+
+### Implemented
+
+- Builder artifacts are generated in `functions/src/activities/builder-agent.ts`.
+- Fact IDs are deterministic from person, run, section, key, and value.
+- Bullet IDs include `personId`, section, and normalized text to reduce cross-person collision risk.
+- Builder output includes profile, experience, skills, education, and summary facts/bullets with citation fact/source IDs.
+- Persistence uses upsert semantics in PostgreSQL, so reruns with stable IDs do not create uncontrolled duplicates.
+
+### Remaining follow-up
+
+- Timestamps are generated at activity time. This is replay-safe, but exact created/extracted timestamps can differ across logical reruns.
+- `latestForBullet` is written, but older bullets are not globally superseded in the current persistence helper. Treat latest/current semantics as MVP-level until hardened.
+
+## 7. Search
+
+### Implemented
+
+- API search index creation and query helpers exist in `api/src/search/index.ts`.
+- Functions persistence indexes facts and bullets best-effort after build output persistence.
+- Search credential precedence supports API key for local/dev and Entra/managed identity or OBO for IL5 posture.
+- Query helper applies a mandatory tenant filter and redacts sensitive fact keys unless roles/scopes permit access.
+
+### Remaining follow-up
+
+- Build validation passes, but runtime Azure AI Search behavior still needs a smoke test with a real index/service.
+- Search schema and document construction should continue moving toward a single shared source of truth, as already called out in `TOBE_ARCHITECTURE.md`.
 
 ## 8. UI
 
-### Implemented / corrected
-- `App()` conditionally renders `LandingPage` or `CandidateProfilePage` based on URL state.
-- Candidate profile, diff, annotation, relationship, and search views remain part of the current UI surface.
-- Landing page code includes submission, polling, recent-run, and candidate navigation paths, but these still need end-to-end runtime validation.
+### Implemented
+
+- The React/Vite app conditionally renders the landing ingestion flow or candidate profile based on URL state.
+- The candidate page handles the current flat bullet response by grouping it client-side.
+- Diff calls use `/api/v1/insights/:personId/differences`, matching the implemented route.
+- Facts, annotations, relationship suggestions, search, and optional map tab are wired into the candidate profile surface.
+- MSAL-based token acquisition is wired through the API client when UI auth is configured.
 
 ### Remaining follow-up
-- Landing page ingestion flow still needs end-to-end validation and hardening:
-  - upload file staging into Blob Storage before Document Intelligence
-  - auth/header behavior against the protected API
-  - polling behavior against a running Functions host
-  - loading / error / empty states under real failures
-  - recent runs from the ingestion list endpoint
-- The current candidate-page data contract is not yet fully aligned with the API:
-  - `ui/src/app.tsx` expects grouped bullet data under `sections`
-  - `api/src/routes/resume-bullets.ts` currently returns a flat bullet array
-  - the UI diff call still targets `/inferences/:personId/differences`, while the implemented route is under `/insights/:personId/differences`
 
-This is now one of the clearest visible MVP gaps in the UI/API integration surface.
+- Validate the landing page ingestion workflow end to end against running API + Functions + PostgreSQL.
+- Confirm recent-run listing, polling, failure display, and candidate navigation with real pipeline runs.
+- Replace inline upload-to-orchestrator bytes with artifact/blob staging as part of the target architecture slice.
 
----
+## 9. MCP Capabilities And Governance
 
-## 9. Temporal intelligence
+### Implemented
 
-### Target architecture / planned
-- `mvp_architecture.md`, `mvp_ingestion_pipeline.md`, `mvp_data_model.md`, `mvp_ontology.md`, and `mvp_search_indexes.md` now describe temporal intelligence as a target capability.
-- Planned concepts include `TemporalEvent`, `EventPattern`, `EventPrediction`, and `RecruiterAlert`.
-- Planned agent activities include temporal event extraction, recurrence/pattern detection, future-event prediction, and recruiter alerts.
+- Capability module structure exists for ingestion, quality, relationships, temporal, geospatial, and discovery.
+- `capabilities/mcp-core` contains shared MCP helpers, identity helpers, OBO/Azure OpenAI auth precedence, and optional governance wrappers.
+- Agent Governance Toolkit-compatible local policy/audit gating exists and is disabled by default.
+- The geospatial MCP server implements live Azure Maps-backed `normalize_location`, `geocode`, and `project_map_pins` tools.
 
-### Current status
-- This is not verified runtime behavior yet.
-- Predictions must remain separate from observed facts and include evidence, rationale, confidence, status, and expiration/review windows.
-- Recruiter feedback should update prediction/alert status but should not turn a prediction into an observed fact unless source evidence later confirms it.
+### Remaining follow-up
 
----
+- Several capability MCP handlers remain typed scaffolds or thin wrappers. Wire them progressively to the real Functions activities/API contracts.
+- Governance audit currently has a console sink by default; production should route it to the approved audit/monitoring sink.
 
-## 10. Azure Maps / geospatial UI
+## 10. Geospatial
 
-### Target architecture / planned
-- `mvp_architecture.md`, `mvp_implementation_plan.md`, `mvp_data_model.md`, and `mvp_search_indexes.md` now describe Azure Maps/map-pin support as a target capability.
-- Planned concepts include reusable location metadata and a `MapPin` projection over source records.
-- Planned UI behavior includes Azure Maps pins/clusters for database records with approved coordinates or geocodable public/professional locations.
+### Implemented
+
+- The main UI extracts facts whose keys end in `.location` and calls the geospatial MCP `project_map_pins` tool.
+- The candidate profile shows the Map tab only when location-bearing facts exist.
+- `project_map_pins` geocodes up to 25 supplied locations and returns coarse map pin projections. Pins are not stored as independent facts.
+
+### Remaining follow-up
+
+- Production map rendering should use Azure Maps AAD/anonymous auth rather than a Vite-baked subscription key.
+- Sensitive personal/home location handling should remain conservative: prefer city/region precision and evidence-backed public/professional locations.
+
+## 11. Temporal Intelligence
 
 ### Current status
-- This is not verified runtime behavior yet.
-- Map pins should remain projections over source records, not independent facts.
-- Exact personal/home locations should not be displayed by default; prefer coarse city/region display for sensitive candidate-provided locations.
 
----
+- Temporal intelligence is documented in MVP/TO-BE architecture, data model, and capability layout.
+- Runtime implementation of temporal extraction, recurrence detection, future-event prediction, and recruiter alerts is not yet present.
 
-## 11. Partition strategy note
+### Guardrail
 
-The current Cosmos setup uses `/id` partition keys for MVP simplicity. That keeps setup simple but makes several practical access patterns cross-partition, especially queries driven by `tenantId` or `personId`.
+- Keep observed facts/events separate from predictions. Predictions need evidence, rationale, confidence, status, expiration, and review windows.
 
-### Guidance
-- Keep this documented as an intentional MVP tradeoff.
-- Do not start a container migration unless that work is explicitly in scope.
-- If production scale becomes a near-term concern, revisit container-specific partition keys before optimizing query-heavy paths.
+## 12. Highest-Value Remaining Work
 
----
+1. Run an end-to-end local smoke test: PostgreSQL + API + Functions + UI, using both web URL and upload paths.
+2. Move large ingestion bytes toward the TO-BE artifact manifest pattern: Blob first, Durable receives IDs/handles.
+3. Runtime-test Azure AI Search index creation, upsert, tenant-filtered queries, and sensitive fact redaction.
+4. Replace production map key handling with Azure Maps AAD/anonymous auth.
+5. Wire capability MCP handlers to real activity/API contracts beyond geospatial.
+6. Implement temporal events/predictions behind the documented activity/MCP boundaries.
 
-## 12. Prioritized remaining work
+## Definition Of Done For The Next Coding Pass
 
-### P1
-1. Keep top-level docs aligned so already-fixed issues are not re-opened in the next pass.
-2. Reconcile the current UI/API contract for bullets and diffs.
-3. Validate and harden LandingPage → ingestion → polling → candidate navigation wiring.
-
-### P2
-4. Run build/type verification across workspace packages and record exact blockers.
-5. Reconfirm any search-client typing drift or repo typing issues surfaced by build validation.
-6. Keep partition-key tradeoffs documented accurately.
-7. Begin temporal-event/prediction implementation behind the planned agent/activity boundaries.
-8. Begin Azure Maps/map-pin implementation behind the planned API projection and UI boundaries.
-
-### P3
-9. Optionally widen the builder output contract if required by the next implementation slice.
-
----
-
-## Definition of done for the next coding pass
-
-The next pass should be considered successful if it does the following:
-- Leaves docs aligned with the verified code state.
-- Completes or materially advances the landing-page ingestion workflow.
-- Produces a concrete build/type verification result for the repo or clearly documents the blockers.
-
-Optional follow-on work:
-- Builder output enrichment
-- Search cleanup after build validation
+The next pass should be considered successful if it produces a concrete runtime validation result for the MVP path, records exact blockers, and advances the artifact-lake migration without weakening the current build-clean baseline.
