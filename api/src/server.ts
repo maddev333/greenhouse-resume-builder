@@ -8,7 +8,9 @@ import cors from 'cors';
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Raise the JSON body limit so base64-encoded file uploads (capped at ~4 MB raw → ~5.5 MB
+// base64 in the UI) are not rejected by the default 100 KB limit.
+app.use(express.json({ limit: '8mb' }));
 
 // ── Initialization (runs before routes are mounted) ────────────────
 

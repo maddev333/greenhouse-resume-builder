@@ -1,1 +1,1 @@
-{"root":["./src/api.ts","./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/auth/authbar.tsx","./src/auth/authprovider.tsx","./src/auth/api-auth.ts","./src/auth/msal-config.ts","./src/auth/useauth.ts"],"version":"5.9.3"}
+{"root":["./src/mapview.tsx","./src/api.ts","./src/app.tsx","./src/geo.ts","./src/main.tsx","./src/vite-env.d.ts","./src/auth/authbar.tsx","./src/auth/authprovider.tsx","./src/auth/api-auth.ts","./src/auth/msal-config.ts","./src/auth/useauth.ts"],"version":"5.9.3"}

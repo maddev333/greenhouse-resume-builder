@@ -23,6 +23,7 @@ export interface BuilderAgentInput {
   summaryText?: string;
   summaryMetadata?: Record<string, any>;
   profile?: {
+    name?: string | null;
     headline?: string | null;
     currentTitle?: string | null;
     currentOrganization?: string | null;
@@ -136,6 +137,14 @@ function buildExperienceArtifacts(
       facts.push(dFact);
       itemFactIds.push(dFact.id);
     }
+    if (item.location && item.location.trim()) {
+      const locFact = makeFact(
+        tenantId, personId, extractionRunId, 'experience',
+        'employment.location', item.location.trim(),
+        normalizeString(item.location), sourceDocRefs, 0.65);
+      facts.push(locFact);
+      itemFactIds.push(locFact.id);
+    }
 
     bullets.push(
       makeBullet(
@@ -194,11 +203,20 @@ function buildEducationArtifacts(
       facts.push(degreeFact);
     }
 
+    let locationFact: FactVersion | undefined;
+    if (item.location && item.location.trim()) {
+      locationFact = makeFact(
+        tenantId, personId, extractionRunId, 'education',
+        'education.location', item.location.trim(),
+        normalizeString(item.location), sourceDocRefs, 0.7);
+      facts.push(locationFact);
+    }
+
     bullets.push(
       makeBullet(
         tenantId, personId, extractionRunId, 'education',
         item.degree ? `${item.degree}, ${item.schoolName}` : item.schoolName,
-        [schoolFact.id, ...(degreeFact ? [degreeFact.id] : [])], sourceDocumentIds));
+        [schoolFact.id, ...(degreeFact ? [degreeFact.id] : []), ...(locationFact ? [locationFact.id] : [])], sourceDocumentIds));
   }
   return { facts, bullets };
 }
@@ -221,6 +239,8 @@ function buildProfileArtifacts(
     bullets.push(makeBullet(
       tenantId, personId, extractionRunId, 'profile', bulletText, [fact.id], sourceDocumentIds));
   };
+
+  if (profile.name) addFactBullet('profile.name', profile.name, profile.name, 0.9);
 
   if (profile.headline) addFactBullet('profile.headline', profile.headline, profile.headline, 0.75);
 

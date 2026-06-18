@@ -67,7 +67,7 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for complete debugging guide.
 | ---------------------------- | --------------------------------------------------------------------------------------------------- |
 | **API** (`api/`)             | Express REST layer — ingestion, bullets/facts, annotations, relationships, search                   |
 | **Functions** (`functions/`) | Durable Functions orchestration: extraction, deduplication, builder, persistence, indexing          |
-| **UI** (`ui/`)               | React 18 + Vite — landing flow, candidate profile, diff, annotation, relationship, and search views |
+| **UI** (`ui/`)               | React 18 + Vite — landing flow, candidate profile, map, diff, annotation, relationship, and search views |
 
 ### Capability Modules (`capabilities/`)
 
@@ -181,14 +181,14 @@ Connection supports both password auth and AAD managed identity (default for IL5
    - stage uploaded files before Document Intelligence processing
 3. Wire MCP server handlers in each capability module to the real `functions/src/activities` logic.
 4. Validate search implementation (Azure AI Search query/filter behavior) with a fresh build/type pass.
-5. Implement Azure Maps/map-pin workflow; current map support is architecture/plan only.
+5. Harden the Azure Maps map for production: the candidate-profile **Map** tab now renders location-bearing facts (geocoded via the geospatial MCP `project_map_pins`). Before deploying, swap the local-dev subscription key for Azure Maps AAD anonymous auth.
 
 ## Known constraints
 
 - Search integration should not be treated as fully validated until a fresh build/type pass confirms current client usage and query/filter behavior.
 - The UI landing page is partially wired — upload staging, auth/header behavior, runtime polling behavior, and recent-run behavior need end-to-end validation.
 - Temporal event extraction, recurrence detection, event prediction, and recruiter alerts are target architecture/implementation-plan items, not verified runtime behavior.
-- Azure Maps pins for location-bearing records are target architecture/handle only — unimplemented.
+- Azure Maps pins render on the candidate profile page's **Map** tab from location-bearing facts (`profile.location`, `employment.location`, `education.location`), geocoded on demand by the geospatial MCP `project_map_pins` tool. The browser map uses a local-dev subscription key baked in at build time; production should use Azure Maps AAD anonymous auth.
 - Some docs in the repo may lag behind `NEXT_AGENT.md` and `IMPLEMENTATION_STATUS.md`; use those two files first when directing the next coding pass.
 
 ## Recommended docs to read first

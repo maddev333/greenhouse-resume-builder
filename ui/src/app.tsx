@@ -1,6 +1,8 @@
 /** Greenhouse Resume Builder - Landing page entry */
 import { useState, useEffect, useCallback } from 'react';
 import type { ExtractionRun, BulletDiff, RelationshipEdge, AnnotationItem } from './api';
+import { MapView } from './MapView';
+import { extractLocationRecords } from './geo';
 import { useAuth } from './auth/useAuth';
 import { fetchWithAuth, setAuthToken, setAuthTokenProvider } from './auth/api-auth';
 import { AuthBar } from './auth/AuthBar';
@@ -207,7 +209,7 @@ function RelationshipSuggestions({ personId }: { personId: string }) {
       <p style={{ fontWeight: 600, margin: '0 0 4px', fontSize: '13px' }}>&#9888; Suggested Relationships</p>
       {edges.length === 0 ? <p style={{ margin: 0, fontSize: '12px', color: '#a3a3a3' }}>No suggestions yet.</p> : edges.map(e => (
         <div key={e.relationshipId} style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '12px' }}>{e.fromPersonId.slice(0, 16)} → {e.toPersonId.slice(0, 16)}</span>
+          <span style={{ fontSize: '12px' }}>{(e.fromPersonName || e.fromPersonId.slice(0, 16))} &rarr; {(e.toPersonName || e.toPersonId.slice(0, 16))}{e.relationshipType ? <span style={{ color: '#a16207', marginLeft: 6 }}>({e.relationshipType.replace(/_/g, ' ')})</span> : null}</span>
           <div>
             <button onClick={() => confirmEdge(e.relationshipId)} style={{ fontSize: '11px', padding: '4px 8px', marginRight: 4 }}>Confirm</button>
             <button onClick={() => rejectEdge(e.relationshipId)} style={{ fontSize: '11px', padding: '4px 8px' }}>Reject</button>
@@ -221,7 +223,7 @@ function RelationshipSuggestions({ personId }: { personId: string }) {
 // ── Main App Page for a single candidate ────────────────────
 
 export function CandidateProfilePage() {
-  type Tab = 'bullets' | 'diff' | 'annotations' | 'relationships';
+  type Tab = 'bullets' | 'map' | 'diff' | 'annotations' | 'relationships';
   const [activeTab, setActiveTab] = useState<Tab>('bullets');
   const [personId, setPersonId] = useState(() => new URLSearchParams(window.location.search).get('personId') || 'candidate-demo');
   const [loadingBullets, setLoadingBullets] = useState(false);
@@ -295,14 +297,27 @@ export function CandidateProfilePage() {
     });
   }, [personId]);
 
-  const tabs: Tab[] = ['bullets', 'diff', 'annotations', 'relationships'];
+  // Only surface the Map tab when the candidate actually has location-bearing facts.
+  const hasLocationData = extractLocationRecords(factsBySection).length > 0;
+  const candidateName = (factsBySection['profile'] ?? [])
+    .find((f: any) => f?.factKey === 'profile.name')?.factValue?.toString().trim() || null;
+  const goHome = () => {
+    window.history.pushState({}, '', window.location.pathname);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  };
+  const tabs: Tab[] = ['bullets', ...(hasLocationData ? ['map' as const] : []), 'diff', 'annotations', 'relationships'];
   return (
     <div style={{ maxWidth: 1200, margin: '48px auto', padding: '0 20px' }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: '24px', fontWeight: 700, margin: 0 }}>Greenhouse Resume Builder</h1>
-          <p style={{ color: '#6b7280', margin: '4px 0 0' }}>{personId}</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <button onClick={goHome} title="Back to ingestion" style={{ padding: '8px 14px', fontSize: '13px', background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 6, cursor: 'pointer' }}>
+            &larr; Home
+          </button>
+          <div>
+            <h1 style={{ fontSize: '24px', fontWeight: 700, margin: 0 }}>{candidateName ?? 'Greenhouse Resume Builder'}</h1>
+            <p style={{ color: '#6b7280', margin: '4px 0 0' }}>{personId}</p>
+          </div>
         </div>
         <button onClick={() => setLoadingBullets(true)} disabled={loadingBullets} style={{ padding: '8px 16px', fontSize: '13px', background: loadingBullets ? '#d1d5db' : '#2563eb', color: '#fff', border: 'none', borderRadius: 6, cursor: loadingBullets ? 'default' : 'pointer' }}>
           {loadingBullets ? 'Loading...' : 'Refresh'}
@@ -323,7 +338,7 @@ export function CandidateProfilePage() {
 
       {/* Main Content Area */}
       <div style={{ display: 'flex', gap: 0 }}>
-        <main style={{ flex: 1, marginRight: activeTab === 'annotations' ? 0 : 280 }}>
+        <main style={{ flex: 1, marginRight: activeTab === 'annotations' || activeTab === 'map' ? 0 : 280 }}>
           {activeTab === 'bullets' && (
             <>
               <SectionCard title="Profile"    bullets={bulletMappings['profile'] ?? []} />
@@ -358,6 +373,10 @@ export function CandidateProfilePage() {
             </>
           )}
 
+          {activeTab === 'map' && (
+            <MapView personId={personId} sections={factsBySection} />
+          )}
+
           {activeTab === 'annotations' && <div style={{ padding: 20 }}><p>Select a bullet and click "Annotate" to view/edit notes for that fact. Annotations panel on the right, right.</p></div>}
 
           {activeTab === 'diff' && (
@@ -381,6 +400,22 @@ export function CandidateProfilePage() {
 
 // ── Landing Page ────────────────────────────────────────────
 
+/** Read a File's bytes as a base64 string (without the data: URL prefix). */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string; // "data:<mime>;base64,<payload>"
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('File read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+const MAX_UPLOAD_TOTAL_BYTES = 4 * 1024 * 1024; // 4 MB total across all files
+
 export function LandingPage() {
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [showForm, setShowForm] = useState(false);
@@ -402,7 +437,7 @@ export function LandingPage() {
     setErrorMessage(null);
     try {
       // Build sources from URL input (one per line, web sources)
-      const sources: Array<{name :string; mimeType:string; blobPath?: string; uri?: string; sourceType:'web'|'upload';capturedAt?:string}> = sourceInput.split(/\r?\n/)
+      const sources: Array<{name :string; mimeType:string; blobPath?: string; uri?: string; sourceType:'web'|'upload';capturedAt?:string; data?: string}> = sourceInput.split(/\r?\n/)
         .map(url => url.trim())
         .filter(Boolean)
         .map((url, i) => ({
@@ -413,12 +448,19 @@ export function LandingPage() {
         }));
 
       if (selectedFiles) {
+        const totalBytes = Array.from(selectedFiles).reduce((sum, f) => sum + f.size, 0);
+        if (totalBytes > MAX_UPLOAD_TOTAL_BYTES) {
+          setIngestStatus('error');
+          setErrorMessage(`Uploads total ${(totalBytes / 1024 / 1024).toFixed(1)} MB, which exceeds the ${MAX_UPLOAD_TOTAL_BYTES / 1024 / 1024} MB limit. Please upload smaller files.`);
+          return;
+        }
         for (const file of Array.from(selectedFiles)) {
           sources.push({
             name: file.name,
             mimeType: file.type || 'application/octet-stream',
             blobPath: file.webkitRelativePath ?? file.name,
             sourceType: 'upload' as any,
+            data: await fileToBase64(file),
           });
         }
       }
@@ -589,6 +631,15 @@ export function useAppAuth() {
 
 export default function App() {
   const auth = useAppAuth();
+
+  // Re-render on browser navigation (Back/Forward and our pushState + popstate
+  // dispatches) so the page switches between LandingPage and CandidateProfilePage.
+  const [, setNavTick] = useState(0);
+  useEffect(() => {
+    const onPop = () => setNavTick(n => n + 1);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   // Show CandidateProfilePage only when a personId is specified in the URL,
   // otherwise show LandingPage (the entry screen for ingestion).

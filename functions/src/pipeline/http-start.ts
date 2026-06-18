@@ -66,6 +66,8 @@ app.http('IngestCandidateOrchestratorHttpStart', {
       requestedByUserId: body.requestedByUserId ?? request.headers.get('x-authenticated-user-id') ?? undefined,
       personOverride: body.personOverride,
       webUrls: Array.isArray(body.webUrls) ? body.webUrls : undefined,
+      // Uploaded file bytes (base64) forwarded by the API for StoreUploadsAndExtract.
+      documentBlobs: Array.isArray(body.documentBlobs) ? body.documentBlobs : undefined,
     };
 
     // Use the runId as the orchestration instanceId for idempotent re-starts.

@@ -101,7 +101,12 @@ router.post('/', async (req: any, res: any) => {
     const webUrls = input.sourceDocuments
       .filter((d) => d.sourceType === 'web' && d.uri)
       .map((d) => d.uri as string);
-    console.log(`[Ingestion] Run ${run.id} created with ${sourceDocIds.length} source doc(s) (${webUrls.length} web URL(s)) → triggering orchestrator at ${fnHost}`);
+    // Uploaded file bytes (base64) travel inline to the orchestrator → StoreUploadsAndExtract.
+    // Like webUrls, they are NOT otherwise recoverable inside the pipeline.
+    const documentBlobs = input.sourceDocuments
+      .filter((d) => (d.sourceType ?? 'upload') !== 'web' && typeof (d as any).data === 'string' && (d as any).data)
+      .map((d) => ({ name: d.name, mimeType: d.mimeType, data: (d as any).data as string }));
+    console.log(`[Ingestion] Run ${run.id} created with ${sourceDocIds.length} source doc(s) (${webUrls.length} web URL(s), ${documentBlobs.length} upload(s)) → triggering orchestrator at ${fnHost}`);
     void (async () => {
       const authHeaders = await getServiceAuthHeaders(process.env.FUNCTIONS_TOKEN_SCOPE, req.accessToken);
       const resp = await fetch(orchestratorUrl, {
@@ -112,7 +117,7 @@ router.post('/', async (req: any, res: any) => {
           'x-tenant-id': tenantId,
           ...authHeaders,
         },
-        body: JSON.stringify({ runId: run.id, tenantId, requestedByUserId, webUrls }),
+        body: JSON.stringify({ runId: run.id, tenantId, requestedByUserId, webUrls, documentBlobs }),
       });
       if (!resp.ok) {
         const detail = await resp.text().catch(() => '');

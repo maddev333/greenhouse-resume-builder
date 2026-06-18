@@ -26,7 +26,8 @@ export interface StoreAndAnalyzeInput {
   /** Pre-sourced documents (from ingestion API). Each is either a local buffer/path or URL. */
   documentBlobs?: Array<{
     name: string;
-    data?: Buffer;
+    /** Raw bytes (Buffer) or base64-encoded string (how the API forwards uploads over JSON). */
+    data?: Buffer | string;
     uri?: string;         // remote HTTP(S) URL or Blob container SAS URL
     mimeType?: string;
   }>;
@@ -95,7 +96,21 @@ function getDocumentAnalysisClient(endpoint: string): DocumentAnalysisClient {
     : new DocumentAnalysisClient(endpoint, new DefaultAzureCredential(), options);
 }
 
-/** Analyze a single document via Form Recognizer and return extracted pages as strings. */
+/** Parse an AnalyzeResult into newline-joined page text (falling back to raw content). */
+function parseAnalyzeResult(result: { pages?: any[]; content?: string }): string {
+  const pageText = (result.pages ?? [])
+    .map((page) =>
+      (page.lines ?? [])
+        .map((line: any) => line.content?.trim() ?? '')
+        .filter(Boolean)
+        .join('\n'),
+    )
+    .filter(Boolean)
+    .join('\n\n---\n\n');
+  return pageText || (result.content ?? '');
+}
+
+/** Analyze a single document from a URL via Document Intelligence; returns extracted text. */
 async function analyzeDocument(contentUrl: string, logger: typeof console): Promise<string> {
   const diEndpoint = process.env.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT ?? '';
 
@@ -106,41 +121,68 @@ async function analyzeDocument(contentUrl: string, logger: typeof console): Prom
 
   const client = getDocumentAnalysisClient(diEndpoint);
   // Use prebuilt-layout model to extract all text/content from document pages.
-  const poller = await (client as any).beginAnalyzeDocumentFromUrl('prebuilt-layout', contentUrl);
-  const { pages } = await poller.getResult();
-
-  return (pages ?? [])
-    .map((page) =>
-      (page.lines ?? [])
-        .map((line) => line.content?.trim() ?? '')
-        .filter(Boolean)
-        .join('\n'),
-    )
-    .filter(Boolean)
-    .join('\n\n---\n\n');
+  const poller = await client.beginAnalyzeDocumentFromUrl('prebuilt-layout', contentUrl);
+  return parseAnalyzeResult(await poller.pollUntilDone());
 }
 
-// ── Analyze document from a local buffer (no network staging needed). ────────
+// ── Analyze a document directly from its bytes (no Blob staging needed). ──────
 
-/** Analyze directly from a file path / buffer using Form Recognizer's direct input. */
-async function analyzeDirectBuffer(buffer: Buffer, logger: typeof console): Promise<string> {
+/**
+ * Analyze a document directly from its in-memory bytes — no Blob storage required.
+ * Document Intelligence accepts the file as the request body, so a Storage account is
+ * unnecessary; only AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT plus a credential is needed.
+ * Auth uses Entra ID (az login / managed identity) unless AZURE_DOCUMENT_INTELLIGENCE_KEY is set.
+ */
+async function analyzeBuffer(buffer: Buffer, logger: typeof console): Promise<string> {
   const diEndpoint = process.env.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT ?? '';
 
   if (!diEndpoint) {
-    logger.warn('[DI] Missing DI endpoint — cannot analyze inline buffer.');
+    logger.warn('[DI] AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT missing — cannot analyze document bytes.');
     return '';
   }
 
   const client = getDocumentAnalysisClient(diEndpoint);
-  // Try direct buffer analysis first (works for PDFs when contentUrl accepts it).
-  try {
-    const poller = await (client as any).beginAnalyzeDocumentFromUrl('prebuilt-layout', 'https://example.com/placeholder');
-    const { pages } = await poller.getResult();
-    return (pages ?? []).map((p) => (p.lines ?? []).map((l) => l.content?.trim() ?? '').filter(Boolean).join('\n')).filter(Boolean).join('\n\n---\n\n');
-  } catch (_err: any) {
-    logger.warn(`[DI] Direct buffer analysis failed (${_err.message || 'unknown'}). File must be staged to Blob Storage.`);
-    return '';
-  }
+  // prebuilt-layout extracts all text/content; the Buffer is uploaded directly as the request body.
+  const poller = await client.beginAnalyzeDocument('prebuilt-layout', buffer);
+  return parseAnalyzeResult(await poller.pollUntilDone());
+}
+
+// ── Local text extraction helpers (no Blob / DI required) ──────────────────────
+
+const TEXT_EXTENSIONS = new Set([
+  'txt', 'text', 'md', 'markdown', 'csv', 'tsv', 'json', 'xml',
+  'html', 'htm', 'log', 'yaml', 'yml', 'vtt', 'srt',
+]);
+
+/** True when a file can be decoded directly as UTF-8 text (no OCR needed). */
+function isTextLike(name: string, mimeType?: string): boolean {
+  const mt = (mimeType || '').toLowerCase();
+  if (mt.startsWith('text/')) return true;
+  if (mt === 'application/json' || mt === 'application/xml' || mt === 'application/x-yaml') return true;
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  return TEXT_EXTENSIONS.has(ext);
+}
+
+/** Strip tags/entities from HTML so the extractor sees readable prose. */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n\s*\n+/g, '\n\n')
+    .trim();
+}
+
+/** Coerce an inline upload payload (Buffer, base64 string, or serialized Buffer) into a Buffer. */
+function toBuffer(data: Buffer | string | undefined): Buffer | null {
+  if (!data) return null;
+  if (Buffer.isBuffer(data)) return data;
+  if (typeof data === 'string') return Buffer.from(data, 'base64');
+  const anyData = data as any; // Durable may serialize a Buffer as { type: 'Buffer', data: number[] }
+  if (anyData?.type === 'Buffer' && Array.isArray(anyData.data)) return Buffer.from(anyData.data);
+  return null;
 }
 
 // ── Main activity ─────────────────────────────────────────────────────────────
@@ -148,8 +190,11 @@ async function analyzeDirectBuffer(buffer: Buffer, logger: typeof console): Prom
 /**
  * Store uploads to Blob and analyze with AI Form Recognizer / Document Intelligence.
  *
- * MVP note: For local testing without Azure Blob, the file content is passed inline
- * and returned directly as text blocks (since DI requires a network URL).
+ * Text-based files (.txt, .md, .csv, .html, .json, …) are decoded directly — no Azure
+ * dependency. Binary files (PDF/image/Office docs) are sent directly to Document Intelligence
+ * (no Blob storage required) when AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT is configured, authenticating
+ * via Entra ID (az login / managed identity) or AZURE_DOCUMENT_INTELLIGENCE_KEY. When DI is not
+ * configured, a clear warning is logged and the file yields no text (so the orchestrator fails loudly).
  */
 export async function storeUploadsAndExtract(
   context: any,
@@ -159,64 +204,78 @@ export async function storeUploadsAndExtract(
 
   context.logger.info(`[StoreAndExtract] Processing uploads for run ${runId}`);
 
-  let textBlocks: string[] = [];
+  const textBlocks: string[] = [];
   const sourceDocs: Array<{ id: string; blobPath: string; mimeType: string }> = [];
 
-  // ── Phase 1: Stage files to Blob (if available) ────────────────────────
   const client = await getBlobClient();
-  let documentBlobs = input.documentBlobs ?? [];
+  const diEndpoint = process.env.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT;
+  const documentBlobs = input.documentBlobs ?? [];
 
-  if (client && documentBlobs.length > 0) {
-    for (const doc of documentBlobs) {
-      if (!doc.data) continue;
-      try {
-        const hash   = crypto.createHash('sha256').update(doc.data).digest('hex').slice(0, 12);
-        const ext    = (doc.name.split('.').pop() || '').toLowerCase();
-        const path   = `${runId}/${hash}.${ext || 'bin'}`;
-        const containerName = process.env.AZURE_STORAGE_CONTAINER ?? 'raw';
-        const suffix = process.env.AZURE_STORAGE_ENDPOINT_SUFFIX ?? 'core.windows.net';
-        const url   = `https://${process.env.AZURE_STORAGE_ACCOUNT_NAME}.blob.${suffix}/${containerName}/${path}`;
+  for (const doc of documentBlobs) {
+    const buf = toBuffer(doc.data);
+    if (!buf) {
+      // Web/URL-only entries are handled by the fetch-web-snapshot activity, not here.
+      if (!doc.uri) context.logger.warn(`[StoreAndExtract] Skipping ${doc.name}: no file data provided.`);
+      continue;
+    }
+    const hash = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 12);
 
-        // Stage blob
-        const blockBlobClient = client.getContainerClient(containerName).getBlockBlobClient(path);
-        await blockBlobClient.upload(doc.data, Math.max(doc.data.length, 0));
-
-        sourceDocs.push({ id: path, blobPath: url, mimeType: doc.mimeType ?? 'application/pdf' });
-
-        // Analyze with Form Recognizer on the staged blob URL
-        const content = await analyzeDocument(url, context.logger as unknown as typeof console);
-        if (content) textBlocks.push(content);
-      } catch (err: any) {
-        context.logger.error(`[StoreAndExtract] Failed to stage/analyze ${doc.name}: ${err.message}`);
+    // ── Path A: text-like files — decode directly (no Blob / DI needed). ──
+    if (isTextLike(doc.name, doc.mimeType)) {
+      const ext = (doc.name.split('.').pop() || '').toLowerCase();
+      const raw = buf.toString('utf8');
+      const text = (ext === 'html' || ext === 'htm' || (doc.mimeType || '').includes('html'))
+        ? stripHtml(raw)
+        : raw.trim();
+      if (text) {
+        textBlocks.push(text);
+        sourceDocs.push({ id: `inline_${hash}`, blobPath: '', mimeType: doc.mimeType ?? 'text/plain' });
+        context.logger.info(`[StoreAndExtract] Extracted ${text.length} chars of text from ${doc.name}`);
+      } else {
+        context.logger.warn(`[StoreAndExtract] ${doc.name} decoded to empty text.`);
       }
-    }
-  }
-
-  // ── Phase 2: Handle inline buffers when Blob is not available ───────────
-  else if (documentBlobs.length > 0) {
-    for (const doc of documentBlobs) {
-      if (!doc.data) continue;
-      const hash   = crypto.createHash('sha256').update(doc.data).digest('hex').slice(0, 8);
-      sourceDocs.push({ id: `inline_${hash}`, blobPath: '', mimeType: doc.mimeType ?? 'text/plain' });
-      context.logger.info(`[StoreAndExtract] Blob not available — stub text block for ${doc.name} (SHA: ${hash})`);
+      continue;
     }
 
-    // Fallback: if DI credentials exist, try to analyze via a hosted blob.
-    const diEndpoint = process.env.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT;
-    const diKey      = process.env.AZURE_DOCUMENT_INTELLIGENCE_KEY;
-    
-    if (diEndpoint && diKey) {
-      context.logger.info('[StoreAndExtract] DI endpoint configured but no Azure Blob — files must be re-staged for extraction.');
+    // ── Path B: binary files (PDF/image/Office) — analyze via Document Intelligence. ──
+    // No Blob storage required: the bytes are uploaded directly to Document Intelligence.
+    // Auth uses Entra ID (az login / managed identity) unless AZURE_DOCUMENT_INTELLIGENCE_KEY is set.
+    if (diEndpoint) {
+      let blobUrl = '';
+      // Optionally stage to Blob for source tracking when storage is configured (not required for extraction).
+      if (client) {
+        try {
+          blobUrl = await stageBlob(client, runId, doc.name, buf);
+        } catch (err: any) {
+          context.logger.warn(`[StoreAndExtract] Blob staging failed for ${doc.name} (${err.message}); analyzing bytes directly.`);
+        }
+      }
+      try {
+        const content = await analyzeBuffer(buf, context.logger as unknown as typeof console);
+        if (content) {
+          textBlocks.push(content);
+          context.logger.info(`[StoreAndExtract] Document Intelligence extracted ${content.length} chars from ${doc.name}`);
+        } else {
+          context.logger.warn(`[StoreAndExtract] Document Intelligence returned no text for ${doc.name}.`);
+        }
+        sourceDocs.push({ id: blobUrl || `inline_${hash}`, blobPath: blobUrl, mimeType: doc.mimeType ?? 'application/octet-stream' });
+      } catch (err: any) {
+        context.logger.error(
+          `[StoreAndExtract] Document Intelligence failed for ${doc.name}: ${err.message}. ` +
+          `Ensure your identity has the "Cognitive Services User" role on the resource, or set AZURE_DOCUMENT_INTELLIGENCE_KEY.`,
+        );
+      }
     } else {
-      context.logger.warn('[StoreAndExtract] No Blob client or DI credentials — returning empty text blocks.');
+      context.logger.warn(
+        `[StoreAndExtract] Cannot extract '${doc.name}' (${doc.mimeType || 'binary'}): Document Intelligence is not configured. ` +
+        `Set AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT and sign in to Azure (az login / managed identity) or set AZURE_DOCUMENT_INTELLIGENCE_KEY. ` +
+        `Alternatively, upload a text-based file (.txt/.md/.csv/.html/.json) for local extraction.`,
+      );
     }
   }
 
-  // ── Phase 3: Generate placeholder for web-sourced documents ─────────────
-  if (sourceDocs.length === 0) {
-    const now = new Date().toISOString();
-    textBlocks = []; // Will be populated by the fetch-web-snapshot activity in the pipeline.
-    context.logger.info(`[StoreAndExtract] No file uploads for run ${runId} — waiting on web snapshot.`);
+  if (sourceDocs.length === 0 && textBlocks.length === 0) {
+    context.logger.info(`[StoreAndExtract] No file text for run ${runId} — relying on web snapshot (if any).`);
   }
 
   return {

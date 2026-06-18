@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Relationship, FactVersion } from '@greenhouse-resume-builder/shared';
-import { relationshipRepo, factVersionRepo } from '../db/repo';
+import { relationshipRepo, factVersionRepo, personRepo } from '../db/repo';
 
 const router = Router();
 
@@ -8,13 +8,25 @@ router.get('/:personId/suggested', async (req: any, res: any) => {
   try {
     const personId = req.params.personId;
     const candidates = await relationshipRepo.suggested(personId);
+    // Drop self-loops (from === to) — they are never a meaningful person-to-person edge.
+    const rels = (candidates as unknown as Relationship[]).filter(r => r.fromPersonId !== r.toPersonId);
+
+    // Resolve person IDs → display names so the UI can show "Jane Smith → John Doe".
+    const personIds = Array.from(new Set(rels.flatMap(r => [r.fromPersonId, r.toPersonId])));
+    const nameById = new Map<string, string>();
+    await Promise.all(personIds.map(async id => {
+      const p = await personRepo.getById(id).catch(() => null);
+      if (p?.canonicalName) nameById.set(id, p.canonicalName);
+    }));
 
     const expFacts = await factVersionRepo.allByPersonSection(personId, 'experience');
     const typedExpFacts: FactVersion[] = (expFacts as unknown as FactVersion[]);
 
     res.json({
-      candidates: (candidates as unknown as Relationship[]).map(r => ({
+      candidates: rels.map(r => ({
         relationshipId: r.id, fromPersonId: r.fromPersonId, toPersonId: r.toPersonId,
+        fromPersonName: nameById.get(r.fromPersonId) ?? null,
+        toPersonName: nameById.get(r.toPersonId) ?? null,
         relationshipType: r.relationshipType, status: r.status, confidence: r.confidence ?? 0,
       })),
       evidenceFacts: typedExpFacts.map(f => ({ factKey: f.factKey, factValue: f.factValue, personId: f.personId })),

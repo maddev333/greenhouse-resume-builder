@@ -13,6 +13,7 @@ interface OrchestrationInput {
   requestedByUserId?: string;
   personOverride?: string;
   webUrls?:   string[];
+  documentBlobs?: Array<{ name: string; mimeType?: string; data?: string }>;
 }
 
 interface PipelineResult {
@@ -41,7 +42,7 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
   yield df.callActivity('UpdateExtractionRunStatus', { runId, status: 'in_progress' });
 
   // ── Gate 1: Process uploads + fetch web sources ──
-  const uploadResult = yield df.callActivity('StoreUploadsAndExtract', { runId });
+  const uploadResult = yield df.callActivity('StoreUploadsAndExtract', { runId, documentBlobs: input.documentBlobs });
   log(`[Orchestrator] Gate-1: uploads → ${uploadResult?.sourceDocs?.length ?? 0} source doc(s), ${uploadResult?.textBlocks?.length ?? 0} text block(s)`);
   const webUrlsFromDocs = (uploadResult?.sourceDocs || [])
     .filter((d: any) => d.uri && d.sourceType === 'web')
@@ -59,6 +60,20 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
   if (snapshotResults.length > 0) {
     const snippets = snapshotResults.map((r: any) => r.contentSnippet).filter(Boolean);
     normalizedTextBlocks.push(...snippets);
+  }
+
+  // Fail loudly when input was provided but yielded no readable text, instead of silently
+  // completing into an empty profile (which looks to the user like "nothing happened").
+  if (normalizedTextBlocks.length === 0) {
+    const uploadCount = input.documentBlobs?.length ?? 0;
+    const reason = uploadCount > 0
+      ? `No text could be extracted from the ${uploadCount} uploaded file(s). Text files (.txt, .md, .csv, .html, .json) are read directly; PDFs and images require Azure Document Intelligence — set AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT and sign in to Azure (az login / managed identity with the "Cognitive Services User" role) or set AZURE_DOCUMENT_INTELLIGENCE_KEY.`
+      : (allWebUrls.length > 0
+          ? `No content could be retrieved from the ${allWebUrls.length} web source(s).`
+          : 'No sources were provided to ingest.');
+    log(`[Orchestrator] \u2716 Aborting run ${runId}: ${reason}`);
+    yield df.callActivity('UpdateExtractionRunStatus', { runId, status: 'failed', failedReason: reason });
+    return { personId: '', factsAdded: 0, experienceSegments: [] };
   }
 
   const sectionTexts = normalizeSections(normalizedTextBlocks);
@@ -85,7 +100,7 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
   if (profileExtraCount > 0) log(`[Orchestrator] Gate-2: profile detail → headline:${profile?.headline ? 'y' : 'n'} role:${profile?.currentTitle ? 'y' : 'n'} location:${profile?.location ? 'y' : 'n'} achievements:${profile?.achievements?.length ?? 0} affiliations:${profile?.affiliations?.length ?? 0} links:${profile?.links?.length ?? 0}`);
 
   // ── Gate 3: Person dedup ──
-  const nameMatch = extractNameFromText(normalizedTextBlocks) || profile?.name || null;
+  const nameMatch = (profile?.name && profile.name.trim()) || extractNameFromText(normalizedTextBlocks) || null;
   let personId = input.personOverride;
   let dedupStatus: 'system_matched' | 'recruiter_selected' | 'needs_review' =
     input.personOverride ? 'recruiter_selected' : 'needs_review';
@@ -151,6 +166,7 @@ export function* ingestCandidateOrchestrator(context: any): Generator<any, Pipel
     summaryText: summaryPayload?.summary || profile?.summary,
     summaryMetadata: summaryPayload?.metadata,
     profile: profile ? {
+      name: nameMatch,
       headline: profile.headline,
       currentTitle: profile.currentTitle,
       currentOrganization: profile.currentOrganization,
@@ -227,13 +243,31 @@ function normalizeSections(chunks: string[]): Record<string, string[]> {
   return sections;
 }
 
-/** Extract candidate name from resume text using pattern matching. */
-function extractNameFromText(chunks: string[]): string | null {
+/** Heading-like lines that pattern as 2+ capitalized words but are never a person's name. */
+const NAME_HEADING_STOPWORDS = new Set([
+  'curriculum vitae', 'resume', 'professional resume', 'profile', 'professional profile',
+  'summary', 'professional summary', 'executive summary', 'career summary',
+  'experience', 'work experience', 'professional experience', 'employment history',
+  'education', 'academic background', 'skills', 'technical skills', 'core competencies',
+  'contact', 'contact information', 'about', 'about me', 'objective', 'career objective',
+  'biography', 'references', 'certifications', 'awards', 'publications', 'projects',
+]);
 
+/**
+ * Extract a candidate name from résumé text using a line-aware heuristic.
+ * Scans each line for a 2–4 word capitalized name, skipping common section
+ * headings. Used only as a fallback when the model profile pass yields no name.
+ */
+function extractNameFromText(chunks: string[]): string | null {
   for (const chunk of chunks) {
-    const trimmed = chunk.trim().replace(/[-*~]+/g, '');
-    if (trimmed.length > 2 && trimmed.length < 60 && /^[A-Z][a-zA-Z\s&']+$/.test(trimmed)) {
-      return trimmed;
+    for (const rawLine of chunk.split(/\r?\n/)) {
+      const line = rawLine.replace(/[*~_|]+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (line.length < 3 || line.length > 60) continue;
+      if (NAME_HEADING_STOPWORDS.has(line.toLowerCase())) continue;
+      // 2–4 capitalized tokens (allow middle initials like "J." and name particles).
+      if (/^[A-Z][a-zA-Z'\u2019-]+(?:\s+(?:[A-Z][a-zA-Z'\u2019-]+|[A-Z]\.|&|de|del|la|las|los|van|von|der|den|di|da|dos|du|bin|al|el))+$/.test(line)) {
+        return line;
+      }
     }
   }
   return null;

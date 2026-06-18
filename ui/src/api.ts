@@ -12,7 +12,7 @@ export type ExtractionRun = { id: string; status: string; createdAt: string; com
 export type BulletMapping = { bulletId: string; bulletText: string; sectionId: string; citationFactVersionIds: string[]; citationSourceDocumentIds: string[]; createdAt: string };
 export type FactVersion = { factVersionId: string; sectionId: string; factKey: string; factValue: any; extractedAt: string; confidence?: number; status: string };
 export type AnnotationItem = { id: string; commentText: string; targetFactVersionId: string; status: 'open' | 'resolved'; createdAt: string; createdByUserId: string; personId?: string };
-export type RelationshipEdge = { relationshipId: string; fromPersonId: string; toPersonId: string; relationshipType: string; status: string; confidence?: number };
+export type RelationshipEdge = { relationshipId: string; fromPersonId: string; toPersonId: string; fromPersonName?: string | null; toPersonName?: string | null; relationshipType: string; status: string; confidence?: number };
 export type BulletDiff = { type: 'added' | 'removed' | 'changed'; previousBulletText?: string; currentBulletText: string; currentCitations?: string[] }
 
 // ── Ingestion ───────────────────────────────────────────────
