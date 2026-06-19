@@ -46,6 +46,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from .._logging import get_logger
 from ..models import (
     Collection,
     Concept,
@@ -55,6 +56,8 @@ from ..models import (
     Section,
 )
 from .base import WikiStorage
+
+logger = get_logger("llmwiki.resume_facts")
 
 # Azure SDK -- imported lazily so local/dev (SQLite mode) needs no install.
 try:
@@ -211,6 +214,21 @@ class WikiResumeFactsBackend(WikiStorage):
         self._name_cache: dict[str, str] = {}
         self._names_loaded = False
 
+        logger.info(
+            "resume-facts backend configured: service_url=%s index=%s semantic_config=%s "
+            "tenant_id=%r allow_sensitive=%s",
+            self.service_url or "(unset)",
+            self.facts_index,
+            self.semantic_config,
+            self.tenant_id,
+            self.allow_sensitive,
+        )
+        if not self.tenant_id:
+            logger.warning(
+                "no tenant configured (LLMWIKI_AZURE_SEARCH_TENANT_ID / tenant_id) -- "
+                "all queries will FAIL CLOSED until a tenant is set."
+            )
+
     # -- credential / client --------------------------------------------------
 
     def _resolve_credential(self) -> Any:
@@ -224,10 +242,14 @@ class WikiResumeFactsBackend(WikiStorage):
             from azure.core.credentials import AzureKeyCredential
 
             self._credential = AzureKeyCredential(api_key)
+            logger.info("auth: using AzureKeyCredential (API key from env)")
         else:
             from azure.identity import DefaultAzureCredential
 
             self._credential = DefaultAzureCredential()
+            logger.info(
+                "auth: using DefaultAzureCredential (Managed Identity / az login / env)"
+            )
         return self._credential
 
     def _require_service_url(self) -> str:
@@ -240,10 +262,18 @@ class WikiResumeFactsBackend(WikiStorage):
 
     def _client_(self) -> "SearchClient":
         if self._client is None:
-            self._client = SearchClient(
-                self._require_service_url(),
+            endpoint = self._require_service_url()
+            credential = self._resolve_credential()
+            logger.info(
+                "connecting to Azure AI Search: endpoint=%s index=%s credential=%s",
+                endpoint,
                 self.facts_index,
-                credential=self._resolve_credential(),
+                type(credential).__name__,
+            )
+            self._client = SearchClient(
+                endpoint,
+                self.facts_index,
+                credential=credential,
             )
         return self._client
 
@@ -272,23 +302,61 @@ class WikiResumeFactsBackend(WikiStorage):
         Selectors must include ``tenantId`` (or use ``["*"]``) so the client
         tenant trim can run. ``"*"`` returns every retrievable field.
         """
-        for hit in self._client_().search(search_text="*", top=top, select=select):
-            if self._matches_tenant(hit):
-                yield hit
+        logger.debug(
+            "scan: index=%s search_text='*' top=%d select=%s", self.facts_index, top, select
+        )
+        raw = 0
+        matched = 0
+        seen_tenants: set[str] = set()
+        try:
+            for hit in self._client_().search(search_text="*", top=top, select=select):
+                raw += 1
+                tval = hit.get("tenantId")
+                if tval is not None and len(seen_tenants) < 8:
+                    seen_tenants.add(str(tval))
+                if self._matches_tenant(hit):
+                    matched += 1
+                    yield hit
+        finally:
+            logger.debug(
+                "scan done: index=%s raw=%d matched_tenant=%d (tenant=%r)",
+                self.facts_index, raw, matched, self.tenant_id,
+            )
+            if raw > 0 and matched == 0:
+                logger.warning(
+                    "scan matched 0/%d docs for tenant=%r on index=%s. Data carries "
+                    "tenantId(s)=%s. Set LLMWIKI_AZURE_SEARCH_TENANT_ID to one of those "
+                    "(resume-facts uses 'tenant-dev').",
+                    raw, self.tenant_id, self.facts_index, sorted(seen_tenants) or "<none>",
+                )
 
     def _search(self, text: str, *, top: int) -> list[dict]:
         """Relevance search (semantic, degrading to keyword) with all fields."""
         client = self._client_()
         query = text or "*"
         try:
-            return list(
+            results = list(
                 client.search(
                     search_text=query, top=top,
                     query_type="semantic", semantic_configuration_name=self.semantic_config,
                 )
             )
-        except HttpResponseError:
-            return list(client.search(search_text=query, top=top))
+            logger.debug(
+                "search(semantic): index=%s config=%s query=%r top=%d -> %d raw hits",
+                self.facts_index, self.semantic_config, query, top, len(results),
+            )
+            return results
+        except HttpResponseError as exc:
+            logger.warning(
+                "semantic search failed on index=%s (config=%s): %s -- falling back to keyword.",
+                self.facts_index, self.semantic_config, exc,
+            )
+            results = list(client.search(search_text=query, top=top))
+            logger.debug(
+                "search(keyword): index=%s query=%r top=%d -> %d raw hits",
+                self.facts_index, query, top, len(results),
+            )
+            return results
 
     # -- record helpers -------------------------------------------------------
 
@@ -377,6 +445,7 @@ class WikiResumeFactsBackend(WikiStorage):
 
     def list_collections(self) -> list[Collection]:
         self._require_tenant()
+        logger.info("list_collections: tenant=%r index=%s", self.tenant_id, self.facts_index)
         persons: dict[str, set[str]] = {}
         sec_counts: dict[str, int] = {}
         for hit in self._scan(select=["personId", "sectionId", "factKey", "tenantId"]):
@@ -484,6 +553,10 @@ class WikiResumeFactsBackend(WikiStorage):
         self, collection_id: str | None = None, *, flavor: str | None = None, limit: int = 100,
     ) -> list[Document]:
         self._require_tenant()
+        logger.info(
+            "list_documents: tenant=%r index=%s collection=%r flavor=%r",
+            self.tenant_id, self.facts_index, collection_id, flavor,
+        )
         if flavor and flavor.strip().lower() not in {_FLAVOR, "facts", _DOC_TYPE}:
             return []
         persons = self._aggregate_persons(section=collection_id)
@@ -492,6 +565,7 @@ class WikiResumeFactsBackend(WikiStorage):
             documents.append(
                 self._document_from_rec(pid, persons[pid], collection_id=collection_id or "")
             )
+        logger.info("list_documents: returning %d person document(s)", len(documents))
         return documents
 
     def get_document_count(self, collection_id: str | None = None) -> int:
@@ -534,9 +608,23 @@ class WikiResumeFactsBackend(WikiStorage):
             return None
         try:
             hit = self._client_().get_document(key=section_id)
-        except (ResourceNotFoundError, HttpResponseError):
+        except ResourceNotFoundError:
+            logger.info("get_section: key=%r not found in index=%s", section_id, self.facts_index)
             return None
-        if not self._matches_tenant(hit) or self._is_redacted(hit):
+        except HttpResponseError as exc:
+            logger.warning("get_section: key=%r lookup failed: %s", section_id, exc)
+            return None
+        if not self._matches_tenant(hit):
+            logger.info(
+                "get_section: key=%r belongs to tenant=%r (configured=%r) -> hidden",
+                section_id, hit.get("tenantId"), self.tenant_id,
+            )
+            return None
+        if self._is_redacted(hit):
+            logger.info(
+                "get_section: key=%r factKey=%r is sensitive -> redacted",
+                section_id, hit.get("factKey"),
+            )
             return None
         return self._sec_from_hit(hit)
 
@@ -572,18 +660,39 @@ class WikiResumeFactsBackend(WikiStorage):
         # Over-fetch so post-query tenant/section trim + redaction still yield ~top.
         fetch = min(max(top * 4, top), 50)
         query = _query_text_from_match(match_expr)
+        logger.info(
+            "search_sections: tenant=%r index=%s match_expr=%r -> query=%r top=%d fetch=%d collection=%r",
+            self.tenant_id, self.facts_index, match_expr, query, top, fetch, collection_id,
+        )
 
         visible: list[dict] = []
+        raw = 0
+        dropped_tenant = dropped_collection = dropped_sensitive = 0
         for hit in self._search(query, top=fetch):
+            raw += 1
             if not self._matches_tenant(hit):
+                dropped_tenant += 1
                 continue
             if collection_id and collection_id not in _section_ids(hit):
+                dropped_collection += 1
                 continue
             if self._is_redacted(hit):
+                dropped_sensitive += 1
                 continue
             visible.append(hit)
             if len(visible) >= top:
                 break
+
+        logger.info(
+            "search_sections: raw=%d visible=%d (dropped tenant=%d collection=%d sensitive=%d)",
+            raw, len(visible), dropped_tenant, dropped_collection, dropped_sensitive,
+        )
+        if raw > 0 and not visible and dropped_tenant == raw:
+            logger.warning(
+                "search_sections dropped ALL %d hits on tenant mismatch (configured tenant=%r). "
+                "resume-facts data uses tenantId='tenant-dev'; check LLMWIKI_AZURE_SEARCH_TENANT_ID.",
+                raw, self.tenant_id,
+            )
 
         if visible:
             self._ensure_names()

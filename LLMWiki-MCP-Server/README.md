@@ -263,6 +263,16 @@ The greenhouse-resume-builder pipeline populates a `resume-facts` Azure AI Searc
 
 **Limits & scaling.** The live `resume-facts` index marks **no** fields `filterable` (greenhouse's definition only sets `searchable` on `factValue`/`bulletText`), so the adapter cannot push down an OData `$filter`. It instead fetches by relevance / key and applies tenant, section, person and sensitivity trims **client-side**. This is *secure* — non-matching docs are dropped, so there is no cross-tenant leakage — but recall is lower for very large multi-tenant corpora. For server-side pushdown at scale, mark `tenantId` / `personId` / `sectionId` / `factKey` `filterable: true` in the greenhouse index definition.
 
+**Diagnostics & logging.** All diagnostics go to **stderr** (stdout is the MCP/JSON-RPC channel), controlled by `LLMWIKI_LOG_LEVEL` (default `INFO`):
+
+| Level | Shows |
+|---|---|
+| `INFO` | selected backend + mode, the Azure endpoint/index/credential it connects with, and a per-call summary (e.g. `search_sections: raw=40 visible=8 (dropped tenant=0 collection=0 sensitive=4)`). |
+| `DEBUG` | the above plus every query (`search_text`, `top`, `select`), semantic→keyword fallbacks, and `scan done: raw=462 matched_tenant=462`. |
+| `WARNING` | problems only — notably a **tenant-mismatch** alert when a scan matches `0/N` docs, naming the `tenantId`(s) the data actually carries. |
+
+> **Empty results?** Set `LLMWIKI_LOG_LEVEL=DEBUG` and restart the server. If you see `scan matched 0/N docs for tenant=… Data carries tenantId(s)=['tenant-dev']`, your configured `LLMWIKI_AZURE_SEARCH_TENANT_ID` doesn't match the data tenant — set it to `tenant-dev`. The startup line `creating MCP server: storage_mode=… tenant_id=…` shows the *effective* config (useful when a host-supplied env var overrides `.env`, since `load_dotenv()` does not override existing env vars).
+
 ## Release Status
 
 ### Phase 1 — Storage Abstraction (done)

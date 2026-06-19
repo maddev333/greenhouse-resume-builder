@@ -15,6 +15,9 @@ import sys
 from .config import load_config
 from .ingest import IngestService
 from .watcher import CorpusWatcher
+from ._logging import get_logger
+
+logger = get_logger("llmwiki.factory")
 
 
 def create_mcp_server():
@@ -34,6 +37,10 @@ def create_mcp_server():
     # service URL is configured; 'azure-facts' reads the greenhouse
     # `resume-facts` index read-only; otherwise local SQLite for dev.
     mode = getattr(config, "storage_mode", "auto")
+    logger.info(
+        "creating MCP server: storage_mode=%s service_url=%s tenant_id=%r",
+        mode, config.azure_search_service_url or "(unset)", config.azure_tenant_id,
+    )
     if mode == "azure-facts":
         storage = create_resume_facts_backend(
             service_url=config.azure_search_service_url,
@@ -59,6 +66,9 @@ def create_mcp_server():
     # Read-only backends (e.g. resume-facts) are fed by an external owner; the
     # local corpus watcher/ingest must not run against them.
     read_only = bool(getattr(storage, "read_only", False))
+    logger.info(
+        "backend selected: %s (read_only=%s)", type(storage).__name__, read_only
+    )
 
     ingest = IngestService(config, storage)
     watcher = CorpusWatcher(
