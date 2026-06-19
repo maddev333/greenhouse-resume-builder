@@ -202,6 +202,67 @@ Configure with environment variables:
 
 **Fail-loud by default.** When DI is enabled and `LLMWIKI_DOC_INTEL_FALLBACK=false`, `pypdf` is evicted from the registry for PDFs. This is intentional — silently dropping to lower-quality extraction would corrupt the index. To preserve `pypdf` as a fallback for transient DI failures, set `LLMWIKI_DOC_INTEL_FALLBACK=true`.
 
+## Azure AI Search backend
+
+The server runs on local **SQLite** by default. Set `LLMWIKI_STORAGE_MODE=azure` (or `auto` with a service URL configured) to use **Azure AI Search** as the scalable data interface for MCP clients/agents. The backend keeps full method parity with SQLite and is tenant-scoped (fail-closed).
+
+> **Reading the greenhouse `resume-facts` index?** Use `LLMWIKI_STORAGE_MODE=azure-facts` for a **read-only adapter** that serves the existing `resume-facts` index (populated by greenhouse-resume-builder) through the same tools — no new indexes. See [Read-only adapter over `resume-facts`](#read-only-adapter-over-resume-facts-azure-facts-mode).
+
+### Indexes
+
+Three indexes back the store, each operator-configurable so a single Search service can host multiple logical wikis:
+
+| Index (default) | Purpose |
+|---|---|
+| `wiki-sections` | Primary retrieval index — hybrid BM25 + vector (`bodyVector`) + semantic. |
+| `wiki-documents` | Document/collection metadata catalog (`_deleted` soft-delete, `@collection` markers). |
+| `wiki-concepts` | Concept store (name/definition searchable, `relatedConceptIds`). |
+
+The provisioned schema is built from the same module that reads/writes documents, so it is always compatible with `azure_backend.py`.
+
+### Configuration
+
+| Variable | Default | Notes |
+|---|---|---|
+| `LLMWIKI_STORAGE_MODE` | `auto` | `auto` → Azure when a service URL is set, else SQLite. Force with `azure` / `sqlite` / `azure-facts` (read-only `resume-facts` adapter). |
+| `LLMWIKI_AZURE_SEARCH_SERVICE_URL` | unset | e.g. `https://<svc>.search.windows.net`. Enables Azure mode under `auto`. |
+| `LLMWIKI_AZURE_SEARCH_TENANT_ID` | unset | Data-isolation tenant ANDed into every query. **Fail-closed**: required for any read/write. Distinct from `AZURE_TENANT_ID` (Entra auth). |
+| `LLMWIKI_AZURE_SEARCH_INDEX_PREFIX` | `wiki` | Renames all three indexes at once (`<prefix>-sections`, etc.). |
+| `LLMWIKI_AZURE_SEARCH_SECTIONS_INDEX` | `<prefix>-sections` | Explicit override for the sections index name. |
+| `LLMWIKI_AZURE_SEARCH_DOCUMENTS_INDEX` | `<prefix>-documents` | Explicit override for the documents index name. |
+| `LLMWIKI_AZURE_SEARCH_CONCEPTS_INDEX` | `<prefix>-concepts` | Explicit override for the concepts index name. |
+| `LLMWIKI_AZURE_SEARCH_VECTOR_DIMENSIONS` | `1536` | `bodyVector` size — **must match your embedding model** (`text-embedding-3-small`=1536, `text-embedding-3-large`=3072). |
+| `LLMWIKI_AZURE_SEARCH_AUTO_PROVISION` | `true` | Create any missing indexes at startup. Set `false` once provisioned. |
+| `LLMWIKI_AZURE_SEARCH_API_KEY` | unset | Admin/query key. If unset, `DefaultAzureCredential` (Managed Identity / `az login`) is used. |
+
+**Auto-provisioning & RBAC.** When `LLMWIKI_AZURE_SEARCH_AUTO_PROVISION=true`, the server creates any missing index on startup before the first ingest (this resolves `The index '<name>' ... was not found`). Index *management* requires the **Search Service Contributor** role; document *read/write* requires **Search Index Data Contributor**. Auto-provision failures are logged to stderr and are non-fatal.
+
+### Read-only adapter over `resume-facts` (`azure-facts` mode)
+
+The greenhouse-resume-builder pipeline populates a `resume-facts` Azure AI Search index. Set `LLMWIKI_STORAGE_MODE=azure-facts` to expose **that existing index** through the standard 10 wiki tools as a thin, **read-only** abstraction layer — **no new indexes are created**, and writes raise `NotImplementedError` (greenhouse owns ingestion).
+
+**Mapping** (`resume-facts` → LLMWiki wiki model):
+
+| resume-facts | LLMWiki model | Notes |
+|---|---|---|
+| person (`personId`) | `Document` | `title` = the `profile.name` fact (falls back to `personId`); `doc_type=resume`, `flavor=raw`. |
+| resume `sectionId` | `Collection` | `profile` / `experience` / `skills` / `summary` / `education`. |
+| each fact **or** bullet | `Section` | `heading` = `factKey` (or `"<section> bullet"`); `body` = `factValue` / `bulletText`. |
+
+**Security parity with greenhouse `api/src/search/index.ts`:**
+- **Tenant-scoped, fail-closed.** Every record is trimmed to `LLMWIKI_AZURE_SEARCH_TENANT_ID`; with no tenant set, all queries raise. One tenant can never read another's facts.
+- **Sensitive-attribute redaction.** Facts whose `factKey` is temporal (`event.*`) or precise-location (`*.location`) are **redacted by default**, mirroring greenhouse's privileged `FACTS_SENSITIVE_READ_ROLES` gate. Opt in with `LLMWIKI_FACTS_ALLOW_SENSITIVE=true`.
+
+> **Tenant must equal the DATA tenant, not the Entra auth tenant.** `resume-facts` rows carry `tenantId="tenant-dev"` (the pipeline's data tenant), so set `LLMWIKI_AZURE_SEARCH_TENANT_ID=tenant-dev` — **not** the Entra GUID used by `azure` (wiki) mode.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `LLMWIKI_AZURE_SEARCH_FACTS_INDEX` | `resume-facts` | The greenhouse index to read. |
+| `LLMWIKI_AZURE_SEARCH_FACTS_SEMANTIC_CONFIG` | `semantic-config` | Semantic ranking config on that index. |
+| `LLMWIKI_FACTS_ALLOW_SENSITIVE` | `false` | `true` exposes `event.*` / `*.location` facts to privileged callers. |
+
+**Limits & scaling.** The live `resume-facts` index marks **no** fields `filterable` (greenhouse's definition only sets `searchable` on `factValue`/`bulletText`), so the adapter cannot push down an OData `$filter`. It instead fetches by relevance / key and applies tenant, section, person and sensitivity trims **client-side**. This is *secure* — non-matching docs are dropped, so there is no cross-tenant leakage — but recall is lower for very large multi-tenant corpora. For server-side pushdown at scale, mark `tenantId` / `personId` / `sectionId` / `factKey` `filterable: true` in the greenhouse index definition.
+
 ## Release Status
 
 ### Phase 1 — Storage Abstraction (done)
@@ -211,12 +272,18 @@ Configure with environment variables:
 
 ### Phase 2 — Azure AI Search Integration (done)
 - **Azure AI Search backend** (`backends/azure_backend.py`) with full method parity to SQLite DAO.
-- **Hybrid BM25 + vector search** configured via index schemas with `bodyVector` field (1536-dim OpenAI).
-- **Tenant isolation**: all queries enforce `_require_tenant()` guard; unverified callers are blocked (fail-closed).
-- **Embedding generation** (`embeddings.py`) for local dev when Azure built-in vectorization isn't configured.
-- **OData escaping unified**: `_esc_str()` eliminated, only module-level `_esc()` used.
-- **Section metadata fix**: `sec_doc["metadataJson"]` no longer corrupted by doc-level meta overwrite in `replace_document()`.
+- **Hybrid BM25 + vector search** configured via index schemas with a `bodyVector` field (dimensions configurable via `LLMWIKI_AZURE_SEARCH_VECTOR_DIMENSIONS`, default 1536).
+- **Configurable index names** (`LLMWIKI_AZURE_SEARCH_INDEX_PREFIX` / per-index env vars) so one Search service hosts many logical wikis, plus **auto-provisioning** of missing indexes at startup (`LLMWIKI_AZURE_SEARCH_AUTO_PROVISION`).
+- **Tenant isolation (fail-closed)**: every read *and* write asserts `_require_tenant()` and ANDs a `tenantId` filter into the query. With no tenant configured (`LLMWIKI_AZURE_SEARCH_TENANT_ID` or the `tenant_id` arg), callers are blocked. All identifiers interpolated into OData filters are escaped with `_esc()` to prevent filter injection.
+- **Drop-in dataclasses**: the Azure backend returns the same `models.py` dataclasses (`Document`, `Section`, `Concept`, `SearchHit`, `Collection`, `IngestLogEntry`) as the SQLite backend, so the tool layer (which uses `asdict()` + attribute access) is unchanged.
+- **Embedding generation** (`embeddings.py`) for local dev when Azure built-in vectorization isn't configured. Sections without an available embedding are indexed without a `bodyVector` (no zero-vector pollution).
+- **OData escaping unified**: only the module-level `_esc()` is used, applied to every interpolated identifier.
 - **Bicep template** (`bicep/search.bicep`) for provisioning Azure AI Search + Blob Storage.
+
+### Phase 2.5 — Read-only `resume-facts` adapter (done)
+- **`azure-facts` mode** (`backends/resume_facts_backend.py`): a read-only `WikiStorage` over the greenhouse `resume-facts` index — person→Document, sectionId→Collection, fact/bullet→Section — reusing all 10 wiki tools with **no new indexes**.
+- **Security parity** with `api/src/search/index.ts`: tenant-scoped fail-closed + sensitive (`event.*` / `*.location`) redaction by default (`LLMWIKI_FACTS_ALLOW_SENSITIVE` to opt in).
+- **Client-side trimming**: because the live index has no filterable fields, tenant/section/sensitivity predicates are applied in Python (secure, no cross-tenant leakage). The factory skips provisioning + the corpus watcher for this read-only backend.
 
 ### Ongoing — Phase 3 (Microsoft Planner)
 - Port the Python FastMCP server to follow the team's TypeScript MCP pattern, create `capabilities/llmwiki/mcp/` module.

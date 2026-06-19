@@ -128,26 +128,33 @@ class TestIndexSchemaHelpers(unittest.TestCase):
     """Test that index schema helpers produce valid structures."""
 
     def test_search_index_has_required_fields(self) -> None:
-        """Verify the wiki-sections index schema has required fields 
-        (without needing Azure SDK installed)."""
-        from llmwiki.backends.azure_backend import _wiki_sections_index, \
-            _wiki_documents_index, _wiki_concepts_index
-        
-        # Just verify the functions are callable without error
-        # (Azure SDK not installed locally — check via source inspection instead)
-        
-        # wiki-sections must have these key fields for hybrid search
-        expected_fields = {'id', 'bodyVector', 'heading', 'body', 
-                          'tenantId', 'collectionId', '_deleted'}
-        doc_schema_expected = {'id', 'title', 'docType', 'flavor', '_deleted'}
-        con_schema_expected = {'id', 'name', 'slug', 'kind', 'definition'}
-        
-        # Check source code for field presence (graceful when SDK not installed)
-        import inspect
-        from llmwiki.backends.azure_backend import _wiki_sections_index as sec_fn
-        
-        spec = inspect.signature(sec_fn)
-        self.assertIsNotNone(spec)
+        """Verify the index schemas expose the fields the backend reads/writes
+        and that every field name is a valid Azure AI Search field name."""
+        import re
+
+        from llmwiki.backends import azure_backend as ab
+
+        if not ab._azure_available:  # pragma: no cover - SDK present in CI
+            self.skipTest("azure-search-documents not installed")
+
+        sec = ab._wiki_sections_index()
+        doc = ab._wiki_documents_index()
+        con = ab._wiki_concepts_index()
+
+        sec_fields = {f.name for f in sec.fields}
+        doc_fields = {f.name for f in doc.fields}
+        con_fields = {f.name for f in con.fields}
+
+        self.assertTrue({'id', 'bodyVector', 'heading', 'body', 'tenantId', 'collectionId'} <= sec_fields)
+        self.assertTrue({'id', 'title', 'docType', 'flavor', 'isDeleted', 'tenantId'} <= doc_fields)
+        self.assertTrue({'id', 'name', 'slug', 'kind', 'definition'} <= con_fields)
+
+        # Azure AI Search: field names must begin with a letter and contain
+        # only letters, digits, or underscore. Guards the '_deleted' regression.
+        name_re = re.compile(r'^[A-Za-z][A-Za-z0-9_]*$')
+        for index in (sec, doc, con):
+            for f in index.fields:
+                self.assertRegex(f.name, name_re, f"invalid field name {f.name!r} in {index.name}")
 
 
 class TestEscapingHelper(unittest.TestCase):

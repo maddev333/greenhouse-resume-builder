@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import sys
 
 from .config import load_config
 from .ingest import IngestService
@@ -19,18 +20,45 @@ from .watcher import CorpusWatcher
 def create_mcp_server():
     from fastmcp import FastMCP
 
-    from .backends import create_backend, create_sqlite_backend
+    from .backends import (
+        create_azure_backend,
+        create_resume_facts_backend,
+        create_sqlite_backend,
+    )
     from .tools import register_tools
 
     _load_dotenv_if_available()
     config = load_config()
 
-    # Phase 1: select backend (SQLite by default → Azure AI Search).
-    if hasattr(config, "storage_mode") and config.storage_mode == "azure":
-        storage = create_backend(storage_mode="azure")
+    # Select backend. Explicit 'azure', or 'auto' when an Azure AI Search
+    # service URL is configured; 'azure-facts' reads the greenhouse
+    # `resume-facts` index read-only; otherwise local SQLite for dev.
+    mode = getattr(config, "storage_mode", "auto")
+    if mode == "azure-facts":
+        storage = create_resume_facts_backend(
+            service_url=config.azure_search_service_url,
+            tenant_id=config.azure_tenant_id,
+            facts_index=config.azure_facts_index,
+            semantic_config=config.azure_facts_semantic_config,
+            allow_sensitive=config.facts_allow_sensitive,
+        )
+    elif mode == "azure" or (mode == "auto" and bool(config.azure_search_service_url)):
+        storage = create_azure_backend(
+            service_url=config.azure_search_service_url,
+            tenant_id=config.azure_tenant_id,
+            sections_index=config.azure_sections_index,
+            documents_index=config.azure_documents_index,
+            concepts_index=config.azure_concepts_index,
+            vector_dimensions=config.azure_vector_dimensions,
+        )
+        if config.azure_auto_provision:
+            _provision_azure_indexes(storage)
     else:
-        # 'auto' or 'sqlite': use SQLite for local dev.
         storage = create_sqlite_backend()
+
+    # Read-only backends (e.g. resume-facts) are fed by an external owner; the
+    # local corpus watcher/ingest must not run against them.
+    read_only = bool(getattr(storage, "read_only", False))
 
     ingest = IngestService(config, storage)
     watcher = CorpusWatcher(
@@ -57,7 +85,14 @@ def create_mcp_server():
         watcher=watcher,
     )
 
-    if config.watch_interval_seconds > 0:
+    if read_only:
+        # Greenhouse owns ingestion for this index; do not scan the local corpus.
+        print(
+            "[llmwiki] read-only backend (resume-facts): corpus watcher disabled; "
+            "greenhouse-resume-builder owns writes.",
+            file=sys.stderr,
+        )
+    elif config.watch_interval_seconds > 0:
         watcher.start()
         atexit.register(watcher.stop)
     else:
@@ -66,6 +101,34 @@ def create_mcp_server():
         watcher.trigger_once()
 
     return mcp
+
+
+def _provision_azure_indexes(storage) -> None:
+    """Ensure the Azure AI Search indexes exist before ingest runs.
+
+    Creates any missing index using the backend's configured schema. Logs to
+    stderr (stdout is reserved for the MCP protocol). Failures are surfaced
+    but non-fatal so the server can still serve reads against pre-existing
+    indexes or be provisioned out-of-band.
+    """
+    provision = getattr(storage, "provision_indexes", None)
+    if not callable(provision):
+        return
+    try:
+        created = provision() or []
+        if created:
+            print(f"[llmwiki] provisioned Azure AI Search indexes: {', '.join(created)}", file=sys.stderr)
+        else:
+            print("[llmwiki] Azure AI Search indexes already present", file=sys.stderr)
+    except Exception as exc:  # pragma: no cover - depends on live service/creds
+        print(
+            "[llmwiki] WARNING: could not provision Azure AI Search indexes "
+            f"({type(exc).__name__}: {exc}).\n"
+            "  Index management needs the 'Search Service Contributor' role; "
+            "document read/write needs 'Search Index Data Contributor'.\n"
+            "  Set LLMWIKI_AZURE_SEARCH_AUTO_PROVISION=false once indexes exist.",
+            file=sys.stderr,
+        )
 
 
 def get_cors_middleware():

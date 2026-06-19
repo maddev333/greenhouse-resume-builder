@@ -101,7 +101,51 @@ def create_sqlite_backend(db_path: Path | str | None = None) -> WikiStorage:
     return _storage.Storage(db_path=Path(db) if isinstance(db, str) else db)
 
 
-def create_azure_backend(service_url: str | None = None) -> WikiStorage:
-    """Return a backend backed by Azure AI Search."""
+def create_azure_backend(
+    service_url: str | None = None,
+    *,
+    sections_index: str | None = None,
+    documents_index: str | None = None,
+    concepts_index: str | None = None,
+    vector_dimensions: int | None = None,
+    tenant_id: str | None = None,
+) -> WikiStorage:
+    """Return a backend backed by Azure AI Search.
+
+    Index names and vector dimensions are operator-configurable; when omitted
+    the backend resolves them from the ``LLMWIKI_AZURE_SEARCH_*`` env vars.
+    """
     from . import azure_backend
-    return azure_backend.WikiAzureSearchBackend(service_url=service_url)
+    return azure_backend.WikiAzureSearchBackend(
+        service_url=service_url,
+        tenant_id=tenant_id,
+        sections_index=sections_index,
+        documents_index=documents_index,
+        concepts_index=concepts_index,
+        vector_dimensions=vector_dimensions,
+    )
+
+
+def create_resume_facts_backend(
+    service_url: str | None = None,
+    *,
+    tenant_id: str | None = None,
+    facts_index: str | None = None,
+    semantic_config: str | None = None,
+    allow_sensitive: bool | None = None,
+) -> WikiStorage:
+    """Return a read-only backend over the greenhouse ``resume-facts`` index.
+
+    Maps persons -> documents and facts/bullets -> sections so the standard
+    LLMWiki tools work unchanged. Tenant-scoped and fail-closed; sensitive
+    facts (``event.*`` / ``*.location``) are redacted unless ``allow_sensitive``.
+    No indexes are created -- greenhouse owns the schema and all writes.
+    """
+    from . import resume_facts_backend
+    return resume_facts_backend.WikiResumeFactsBackend(
+        service_url=service_url,
+        tenant_id=tenant_id,
+        facts_index=facts_index,
+        semantic_config=semantic_config,
+        allow_sensitive=allow_sensitive,
+    )

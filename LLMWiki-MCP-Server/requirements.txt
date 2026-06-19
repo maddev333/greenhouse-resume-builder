@@ -1,9 +1,11 @@
 # Core: FastMCP only. Everything else (sqlite, hashing, fs polling, html
 # parsing, markdown chunking) uses the Python standard library.
 fastmcp>=3.0.0
-# Phase 1: Azure AI Search backend (installed only when needed).
+# Phase 1: Azure AI Search backend (installed only when LLMWIKI_STORAGE_MODE
+# selects Azure). Verified against the 11.6.0b+/12.x vector + semantic API.
 azure-search-documents>=11.6.0b1
-# azure-identity pulled in via azure-search-documents dependency chain.
+# azure-identity provides DefaultAzureCredential for keyless (managed-identity)
+# auth; declared explicitly below.
 python-dotenv>=1.0.0
 
 # Optional (PDF ingestion). Pure-Python, no system libraries.

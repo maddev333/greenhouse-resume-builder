@@ -87,9 +87,20 @@ class LLMWikiConfig:
     doc_intel: DocIntelConfig = field(default_factory=DocIntelConfig)
 
     # Phase 1 — storage mode / Azure AI Search (new).
-    storage_mode: Literal["auto", "sqlite", "azure"] = "auto"
+    # 'azure-facts' = read-only adapter over the greenhouse `resume-facts` index.
+    storage_mode: Literal["auto", "sqlite", "azure", "azure-facts"] = "auto"
     azure_search_service_url: str | None = None
     azure_tenant_id: str | None = None
+    # Operator-configurable Azure AI Search index names + schema knobs.
+    azure_sections_index: str = "wiki-sections"
+    azure_documents_index: str = "wiki-documents"
+    azure_concepts_index: str = "wiki-concepts"
+    azure_vector_dimensions: int = 1536
+    azure_auto_provision: bool = True
+    # 'azure-facts' mode: read the greenhouse `resume-facts` index directly.
+    azure_facts_index: str = "resume-facts"
+    azure_facts_semantic_config: str = "semantic-config"
+    facts_allow_sensitive: bool = False
 
     @property
     def db_path(self) -> Path:
@@ -140,9 +151,31 @@ def load_config() -> LLMWikiConfig:
     # Phase 1 — Azure AI Search settings.
     azure_url = (os.environ.get("LLMWIKI_AZURE_SEARCH_SERVICE_URL", "") or "").strip() or None
     azure_tenant = (os.environ.get("LLMWIKI_AZURE_SEARCH_TENANT_ID", "") or "").strip() or None
-    # storage_mode: 'auto' (default) → Azure if AZURE env vars present, else SQLite.
+    # storage_mode: 'auto' (default) → Azure if a Search URL is present, else SQLite.
+    # 'azure-facts' (alias 'resume-facts') → read-only adapter over the
+    # greenhouse `resume-facts` index (no new indexes are created).
     raw_mode = (os.environ.get("LLMWIKI_STORAGE_MODE", "auto") or "auto").strip().lower()
-    mode = raw_mode if raw_mode in ("auto", "sqlite", "azure") else "auto"
+    if raw_mode in ("azure-facts", "resume-facts", "facts"):
+        mode = "azure-facts"
+    elif raw_mode in ("auto", "sqlite", "azure"):
+        mode = raw_mode
+    else:
+        mode = "auto"
+    # Index names resolve from a dedicated env var, then an index prefix
+    # (default 'wiki'); shared with the backend so they never diverge.
+    from .backends.azure_backend import _resolve_index_name
+    sections_index = _resolve_index_name(None, "LLMWIKI_AZURE_SEARCH_SECTIONS_INDEX", "sections")
+    documents_index = _resolve_index_name(None, "LLMWIKI_AZURE_SEARCH_DOCUMENTS_INDEX", "documents")
+    concepts_index = _resolve_index_name(None, "LLMWIKI_AZURE_SEARCH_CONCEPTS_INDEX", "concepts")
+    vector_dimensions = max(1, _int_env("LLMWIKI_AZURE_SEARCH_VECTOR_DIMENSIONS", 1536))
+    auto_provision = _bool_env("LLMWIKI_AZURE_SEARCH_AUTO_PROVISION", True)
+    # 'azure-facts' mode: the greenhouse-owned index + its semantic config.
+    facts_index = (os.environ.get("LLMWIKI_AZURE_SEARCH_FACTS_INDEX", "") or "").strip() or "resume-facts"
+    facts_semantic_config = (
+        (os.environ.get("LLMWIKI_AZURE_SEARCH_FACTS_SEMANTIC_CONFIG", "") or "").strip()
+        or "semantic-config"
+    )
+    facts_allow_sensitive = _bool_env("LLMWIKI_FACTS_ALLOW_SENSITIVE", False)
 
     cfg = LLMWikiConfig(
         host=os.environ.get("LLMWIKI_HOST", "127.0.0.1").strip() or "127.0.0.1",
@@ -158,8 +191,16 @@ def load_config() -> LLMWikiConfig:
         max_section_chars=max(512, _int_env("LLMWIKI_MAX_SECTION_CHARS", 4000)),
         doc_intel=_load_doc_intel_config(),
         storage_mode=mode,
-        azure_search_service_url=azure_url or (azure_url if any(k in os.environ for k in ["LLMWIKI_AZURE_SEARCH_SERVICE_URL", "AZURE_TENANT_ID", "AZURE_CLIENT_ID"]) else None),
+        azure_search_service_url=azure_url,
         azure_tenant_id=azure_tenant,
+        azure_sections_index=sections_index,
+        azure_documents_index=documents_index,
+        azure_concepts_index=concepts_index,
+        azure_vector_dimensions=vector_dimensions,
+        azure_auto_provision=auto_provision,
+        azure_facts_index=facts_index,
+        azure_facts_semantic_config=facts_semantic_config,
+        facts_allow_sensitive=facts_allow_sensitive,
     )
     cfg.corpus_dir.mkdir(parents=True, exist_ok=True)
     cfg.wiki_dir.mkdir(parents=True, exist_ok=True)

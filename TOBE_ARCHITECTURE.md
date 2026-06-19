@@ -5,7 +5,9 @@ captures the decisions from the architecture review and the user's constraints:
 
 - MCP must serve both UI applications and agents.
 - MCP tools should return governed excerpts, citations, handles, cursors, and job IDs, not bulk raw data.
-- The data estate includes resumes/documents, web snapshots, embeddings, events, facts, relationships, and geospatial projections.
+- The data estate includes resumes/documents, web snapshots, embeddings, events, facts, relationships,
+  geospatial projections, public/professional event schedules, availability windows, and engagement
+  recommendations.
 - DoD IL5 remains a hard deployment constraint.
 - Tenant isolation must be strong. Prefer hard isolation through tenant cells, not only row-level filters.
 
@@ -25,6 +27,8 @@ At petabyte scale, the system should answer these questions efficiently and safe
 3. Which excerpt can be returned within the caller's purpose, tenant, classification, and byte limits?
 4. What source, page, offset, model, run, and policy decision produced that excerpt?
 5. Which async job should be started when the work is too large for a synchronous tool call?
+6. When and where can a recruiter appropriately meet a candidate, based on governed schedule,
+   event, location, and availability signals?
 
 ## 2. Target Architecture Summary
 
@@ -39,7 +43,8 @@ API Gateway / APIM / Private Link boundary
 MCP Capability Layer
   |-- retrieval tools: search_excerpts, semantic_retrieve, get_source_excerpt
   |-- entity tools: get_entity_profile, query_relationships, query_timeline, query_map_pins
-  |-- action tools: start_ingestion, start_reindex, start_entity_resolution, start_export
+  |-- engagement tools: query_engagement_opportunities, recommend_meeting_slots, get_engagement_plan
+  |-- action tools: start_ingestion, start_reindex, start_entity_resolution, start_engagement_projection, start_export
   |-- governance: authz, policy, byte limits, audit, citations, data-class checks
   |
   +--> Serving indexes
@@ -48,6 +53,7 @@ MCP Capability Layer
   |      |-- graph / relationship projection
   |      |-- temporal / event projection
   |      |-- geospatial projection
+  |      |-- engagement / availability projection
   |
   +--> Job control plane
   |      |-- Durable Functions orchestrations
@@ -61,6 +67,7 @@ MCP Capability Layer
          |-- lineage
          |-- permissions and policy bindings
          |-- job state
+         |-- engagement plans and approval state
          |-- retention state
 
 Tenant Cell Data Plane
@@ -141,6 +148,12 @@ Artifact examples:
 - Relationship evidence artifacts.
 - Temporal event artifacts.
 - Geospatial projection artifacts.
+- Public/professional event schedule artifacts, such as conference agendas, venue maps, session
+  times, booth hours, and hosted networking windows.
+- Availability snapshots from approved recruiter/team calendars, candidate-provided preferences, or
+  governed event attendance signals.
+- Engagement recommendation artifacts with candidate, time, place, evidence, scoring rationale, and
+  human approval state.
 - Model intermediate outputs and validation reports.
 
 Recommended storage path pattern:
@@ -177,6 +190,10 @@ export type ArtifactType =
   | "relationship_projection"
   | "temporal_events"
   | "geospatial_projection"
+  | "event_schedule"
+  | "availability_snapshot"
+  | "engagement_projection"
+  | "meeting_recommendations"
   | "model_trace"
   | "validation_report";
 
@@ -230,7 +247,7 @@ export interface SourceDocumentV2 {
   tenantId: string;
   cellId: string;
   personId?: string;
-  sourceType: "web" | "upload" | "api" | "batch";
+  sourceType: "web" | "upload" | "api" | "batch" | "event_feed" | "calendar";
   uri?: string;
   originalFileName?: string;
   mimeType?: string;
@@ -289,7 +306,8 @@ export interface IndexJob {
     | "vector_index"
     | "graph_projection"
     | "temporal_projection"
-    | "geospatial_projection";
+    | "geospatial_projection"
+    | "engagement_projection";
   inputArtifactIds: string[];
   outputArtifactIds: string[];
   targetIndexName?: string;
@@ -322,6 +340,145 @@ export interface McpJob {
 }
 ```
 
+### 5.7 Engagement Schedule And Meeting Models
+
+Engagements are recruiter-facing opportunities to meet candidates. They are derived from temporal
+events, geospatial places, approved availability signals, and public/professional event schedules.
+They must remain separate from observed candidate facts and from confirmed calendar meetings.
+
+Use cases:
+
+- A candidate is presenting at a conference in Washington, DC next Tuesday; recommend nearby public
+  meeting places and open recruiter time windows around the session.
+- A recruiter team is attending a career fair; show candidates with matching event attendance,
+  likely availability windows, booth hours, and low-travel meeting places.
+- A candidate has a predicted annual conference appearance; create a suggested engagement task, not
+  a confirmed meeting, until a recruiter reviews it.
+
+```ts
+export interface EngagementEvent {
+  id: string;
+  tenantId: string;
+  cellId: string;
+  eventType:
+    | "conference"
+    | "career_fair"
+    | "meetup"
+    | "interview_loop"
+    | "company_visit"
+    | "other";
+  title: string;
+  startAt: string;
+  endAt: string;
+  timezone: string;
+  venueName?: string;
+  location?: GeoPointRef;
+  sourceDocumentId?: string;
+  sourceArtifactId?: string;
+  citation?: CitationRef;
+  securityLabels: string[];
+  status: "observed" | "predicted" | "cancelled" | "superseded";
+}
+
+export interface AvailabilityWindow {
+  id: string;
+  tenantId: string;
+  cellId: string;
+  ownerType: "candidate" | "recruiter" | "team" | "venue";
+  ownerId?: string;
+  sourceType:
+    | "calendar"
+    | "event_schedule"
+    | "self_reported"
+    | "public_event"
+    | "recruiter_input";
+  startAt: string;
+  endAt: string;
+  timezone: string;
+  location?: GeoPointRef;
+  confidence?: number;
+  evidence?: CitationRef[];
+  visibility: "private" | "team" | "tenant" | "public_professional";
+  status: "active" | "tentative" | "expired" | "revoked";
+}
+
+export interface GeoPointRef {
+  latitude?: number;
+  longitude?: number;
+  placeId?: string;
+  formattedAddress?: string;
+  locationPrecision: "exact_venue" | "campus" | "city" | "region" | "unknown";
+}
+
+export interface MeetingPlaceCandidate {
+  id: string;
+  tenantId: string;
+  cellId: string;
+  eventId?: string;
+  name: string;
+  placeType:
+    | "conference_venue"
+    | "booth"
+    | "meeting_room"
+    | "public_space"
+    | "office"
+    | "virtual"
+    | "other";
+  location?: GeoPointRef;
+  availableWindows?: Array<{
+    startAt: string;
+    endAt: string;
+    timezone: string;
+  }>;
+  evidence?: CitationRef[];
+  securityLabels: string[];
+}
+
+export interface EngagementRecommendation {
+  id: string;
+  tenantId: string;
+  cellId: string;
+  personId: string;
+  eventId?: string;
+  recommendedWindow: { startAt: string; endAt: string; timezone: string };
+  placeCandidateId?: string;
+  score: number;
+  rationale: string;
+  evidence: CitationRef[];
+  constraints: {
+    minDurationMinutes?: number;
+    bufferMinutes?: number;
+    maxTravelMeters?: number;
+    avoidPrivateLocations: boolean;
+    requiresHumanApproval: boolean;
+  };
+  status:
+    | "suggested"
+    | "accepted"
+    | "snoozed"
+    | "dismissed"
+    | "scheduled"
+    | "cancelled";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EngagementPlan {
+  id: string;
+  tenantId: string;
+  cellId: string;
+  recruiterId: string;
+  eventId?: string;
+  recommendationIds: string[];
+  status: "draft" | "reviewed" | "approved" | "archived";
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+Engagement records should store references to calendars, event schedules, citations, and map places;
+they should not copy full calendar bodies or expose unrelated private calendar details.
+
 ## 6. Serving Indexes
 
 Indexes are read models. They must be rebuildable from the artifact lake and metadata catalog.
@@ -348,6 +505,14 @@ Indexes are read models. They must be rebuildable from the artifact lake and met
 5. Geospatial projection.
    - Stores approved public/professional map pins.
    - Avoid exact personal/home locations by default.
+
+6. Engagement projection.
+   - Stores candidate/event matches, availability windows, meeting place candidates, and recommendation
+     scoring fields.
+   - Composes temporal and geospatial projections with approved recruiter/team availability and event
+     schedule artifacts.
+   - Keeps suggested recommendations separate from recruiter-approved or calendar-confirmed meetings.
+   - Avoids exact personal/home locations and unrelated private calendar details by default.
 
 ### 6.2 Shared Search Adapter
 
@@ -387,6 +552,9 @@ get_entity_profile
 query_relationships
 query_timeline
 query_map_pins
+query_engagement_opportunities
+recommend_meeting_slots
+get_engagement_plan
 ```
 
 Action tools:
@@ -398,6 +566,11 @@ start_embedding_job
 start_entity_resolution
 start_relationship_inference
 start_temporal_projection
+start_engagement_projection
+start_meeting_recommendation_job
+create_engagement_hold
+confirm_engagement
+cancel_engagement
 start_export
 get_job_status
 get_job_result_manifest
@@ -448,6 +621,28 @@ export interface ExcerptSearchRequest extends McpToolRequestContext {
 }
 ```
 
+Engagement tools should accept bounded filters and constraints, not raw calendar bodies.
+
+```ts
+export interface MeetingRecommendationRequest extends McpToolRequestContext {
+  personIds?: string[];
+  eventId?: string;
+  dateRange: { from: string; to: string };
+  location?:
+    | { latitude: number; longitude: number; radiusMeters?: number }
+    | { placeId: string; radiusMeters?: number };
+  constraints?: {
+    minDurationMinutes?: number;
+    bufferMinutes?: number;
+    maxTravelMeters?: number;
+    avoidPrivateLocations?: boolean;
+    requireRecruiterAvailability?: boolean;
+    requireCandidateProvidedAvailability?: boolean;
+  };
+  cursor?: string;
+}
+```
+
 ### 7.3 Required Response Shape
 
 ```ts
@@ -473,6 +668,27 @@ export interface ExcerptSearchResponse {
 }
 ```
 
+Engagement recommendation responses must explain why each slot/place is suggested.
+
+```ts
+export interface MeetingRecommendationResponse {
+  recommendations: Array<{
+    recommendationId: string;
+    personId: string;
+    eventId?: string;
+    window: { startAt: string; endAt: string; timezone: string };
+    place?: MeetingPlaceCandidate;
+    score: number;
+    rationale: string;
+    evidence: CitationRef[];
+    constraintsSatisfied: string[];
+    warnings?: string[];
+  }>;
+  nextCursor?: string;
+  policyDecisionId: string;
+}
+```
+
 ### 7.4 MCP Guardrails
 
 Every tool call must enforce:
@@ -487,6 +703,12 @@ Every tool call must enforce:
 - Tamper-evident audit logging.
 - No raw bulk data in synchronous responses.
 - Async job pattern for expensive operations.
+- Engagement recommendations remain suggestions until a recruiter explicitly approves a hold or
+  confirmed meeting.
+- Calendar writes, outbound invitations, and candidate contact require an explicit audited action;
+  recommendations must not send messages or book meetings automatically.
+- Engagement tools must not reveal unrelated private calendar details or exact personal/home
+  locations.
 
 ### 7.5 MCP UI Apps
 
@@ -507,6 +729,15 @@ Preferred UI MCP calls:
 - Timeline and map projections.
 - Relationship exploration.
 - Review queue loading.
+- Engagement opportunity and meeting-slot recommendation.
+
+Recommended MCP UI Apps:
+
+- **Search And Evidence Explorer:** cited retrieval and source inspection.
+- **Timeline And Map Explorer:** event and location projections with evidence drill-in.
+- **Review Queue:** low-confidence facts, conflicts, and missing citations.
+- **Engagement Planner:** candidate/event matching, recommended meeting windows, recommended public
+  places, recruiter approval, and schedule hold review.
 
 ## 8. IL5 Deployment Requirements
 
@@ -520,6 +751,9 @@ Allowed posture:
 - Azure AI Search where authorized for the target environment.
 - Azure OpenAI direct model calls where authorized.
 - Azure Maps only for approved data classes and target environment.
+- Calendar and event-feed connectors only when they are authorized in the target cloud and brokered
+  through governed ingestion; otherwise, treat conference/event schedules as uploaded or web-snapshot
+  artifacts.
 - Entra ID, managed identity, Private Link, VNet integration, APIM, Key Vault, Azure Monitor.
 
 Avoid as runtime dependencies for IL5:
@@ -528,6 +762,8 @@ Avoid as runtime dependencies for IL5:
 - Foundry Agent Service as the production agent runtime if it is not IL5-authorized.
 - Shared secrets or account keys in production.
 - Publicly reachable MCP servers without validated gateway or in-process token enforcement.
+- Consumer calendar, consumer mapping, or public place APIs for IL5 data unless the target
+  authorization explicitly permits them.
 
 Required security behavior:
 
@@ -537,6 +773,8 @@ Required security behavior:
 - Tenant/user are derived from verified tokens, not trusted from request bodies.
 - Every MCP call emits an audit event with caller, tenant, purpose, tool, policy decision, input
   summary, returned excerpt IDs, and byte count.
+- Every engagement action emits an audit event with candidate/person IDs, event IDs, recommendation
+  IDs, calendar write intent, human approval state, and policy decision.
 
 ## 9. Ingestion TO-BE Flow
 
@@ -624,6 +862,11 @@ Add contracts:
 - `CitationRef`
 - `IndexJob`
 - `McpJob`
+- `EngagementEvent`
+- `AvailabilityWindow`
+- `MeetingPlaceCandidate`
+- `EngagementRecommendation`
+- `EngagementPlan`
 - `McpToolRequestContext`
 - `ExcerptSearchRequest`
 - `ExcerptSearchResponse`
@@ -653,6 +896,11 @@ Add logical tables:
 - `artifact_lineage`
 - `index_jobs`
 - `mcp_jobs`
+- `engagement_events`
+- `availability_windows`
+- `meeting_place_candidates`
+- `engagement_recommendations`
+- `engagement_plans`
 - optionally `tenant_cells` if this repo owns cell routing locally
 
 Recommended indexes:
@@ -668,6 +916,11 @@ CREATE INDEX ON artifact_lineage ((data->>'parentArtifactId'));
 CREATE INDEX ON artifact_lineage ((data->>'childArtifactId'));
 CREATE INDEX ON index_jobs ((data->>'tenantId'), (data->>'status'));
 CREATE INDEX ON mcp_jobs ((data->>'tenantId'), (data->>'status'));
+CREATE INDEX ON engagement_events ((data->>'tenantId'), (data->>'startAt'));
+CREATE INDEX ON availability_windows ((data->>'tenantId'), (data->>'startAt'));
+CREATE INDEX ON meeting_place_candidates ((data->>'tenantId'), (data->>'eventId'));
+CREATE INDEX ON engagement_recommendations ((data->>'tenantId'), (data->>'personId'));
+CREATE INDEX ON engagement_recommendations ((data->>'tenantId'), (data->>'status'));
 ```
 
 Acceptance criteria:
@@ -808,6 +1061,42 @@ Acceptance criteria:
 - Search responses include citations and policy decision IDs.
 - Search never returns unbounded raw document text.
 
+### Phase 6A: Engagement Projection And Recommendations
+
+Goal: turn event schedules, candidate temporal events, map places, and approved availability into
+auditable meeting recommendations.
+
+Files to add/update:
+
+- new `shared/src/engagements.ts`
+- new `api/src/db/repo/engagement-repo.ts`
+- new `functions/src/activities/project-engagements.ts`
+- new `functions/src/activities/recommend-meeting-slots.ts`
+- new `capabilities/engagements/mcp/engagements/src/tools.ts`
+- new `capabilities/engagements/ui/src/main.tsx` or an engagement planner route in `ui/src/app.tsx`
+
+Tasks:
+
+1. Ingest public/professional event schedules as artifacts, including conference dates, session
+   times, venue names, booth hours, and source citations.
+2. Normalize event times to timezone-aware windows and normalize public/professional locations to
+   `GeoPointRef` values.
+3. Project candidate attendance or relevance from observed temporal events, recruiter-selected
+   targets, and candidate-provided preferences.
+4. Join candidate/event signals with approved recruiter/team availability and meeting place
+   candidates.
+5. Generate `EngagementRecommendation` records with score, rationale, evidence, warnings, and
+   explicit human-approval requirements.
+6. Keep recommendation, hold, and confirmed meeting states separate.
+
+Acceptance criteria:
+
+- Recommendations explain the event, candidate relevance, time window, place, and constraints used.
+- No recommendation exposes private calendar details beyond busy/free windows allowed by policy.
+- No action sends an invite or contacts a candidate without an explicit recruiter-approved tool call.
+- Recommendations are rebuildable from artifacts, metadata, temporal projections, and geospatial
+  projections.
+
 ### Phase 7: MCP Tools Become Real Product APIs
 
 Goal: replace stub MCP tools with governed implementations.
@@ -822,19 +1111,22 @@ Files to update:
 - `capabilities/relationships/mcp/relationships/src/tools.ts`
 - `capabilities/temporal/mcp/temporal/src/tools.ts`
 - `capabilities/geospatial/mcp/geospatial/src/tools.ts`
+- `capabilities/engagements/mcp/engagements/src/tools.ts`
 
 Tasks:
 
 1. Add request context extraction from validated identity/gateway headers.
 2. Enforce `maxResults` and `maxBytes` defaults centrally.
 3. Add `search_excerpts`, `semantic_retrieve`, `get_source_excerpt`.
-4. Convert long-running tools to `start_*` plus `get_job_status`.
-5. Audit every MCP call.
+4. Add `query_engagement_opportunities`, `recommend_meeting_slots`, and `get_engagement_plan`.
+5. Convert long-running tools to `start_*` plus `get_job_status`.
+6. Audit every MCP call.
 
 Acceptance criteria:
 
 - MCP read tools return excerpts, citations, cursors, and policy decision IDs.
 - MCP action tools return job IDs and never block on long-running work.
+- Engagement tools return recommendations, evidence, warnings, and policy decision IDs.
 - Stub tools are either removed, renamed as dev-only, or explicitly disabled in production.
 
 ### Phase 8: Tenant Cell Routing And Hard Isolation
@@ -880,6 +1172,8 @@ Metrics to emit:
 - Index lag by artifact type.
 - MCP tool calls by tenant/tool/purpose.
 - Excerpts returned and bytes returned.
+- Engagement recommendations created, accepted, snoozed, dismissed, and scheduled.
+- Engagement recommendation lead time, stale recommendation age, and calendar-write failures.
 - Denied policy decisions.
 - Search p95 latency and result counts.
 - Durable orchestration history size.
@@ -903,6 +1197,18 @@ If another agent starts implementing immediately, the safest first slice is:
 6. Update the UI to stage uploads first.
 7. Change the Durable starter to receive only IDs.
 8. Run `npm run build --workspaces`.
+
+First engagement slice after the foundation:
+
+1. Add shared engagement contracts and PostgreSQL JSONB repositories.
+2. Add event schedule ingestion for uploaded or URL-based conference agendas.
+3. Add an engagement projection activity that creates `EngagementEvent`, `AvailabilityWindow`, and
+   `MeetingPlaceCandidate` records.
+4. Add a recommendation activity that scores candidate/time/place options and writes
+   `EngagementRecommendation` records.
+5. Add MCP tools for `query_engagement_opportunities`, `recommend_meeting_slots`, and
+   `get_engagement_plan`.
+6. Add an Engagement Planner UI surface for recruiter review and approval.
 
 Suggested file order:
 
@@ -934,6 +1240,9 @@ ui/src/app.tsx
 - Do not make MCP tools long-running synchronous calls.
 - Do not store predictions as observed facts.
 - Do not display exact personal/home geospatial locations by default.
+- Do not infer or expose private candidate availability from unrelated personal data.
+- Do not auto-send invitations, emails, or messages from recommendation generation.
+- Do not treat suggested engagement recommendations as confirmed meetings.
 - Do not treat PostgreSQL JSONB tables as the petabyte-scale data store.
 
 ## 13. Compatibility With Current MVP
@@ -947,6 +1256,8 @@ Recommended compatibility stance:
 - Existing activities are refactored to read artifacts instead of inline payloads.
 - Existing MCP capability folders remain the package boundaries, but stub tools are replaced with
   governed retrieval/action tools over time.
+- New engagement capability folders can be added alongside temporal and geospatial capabilities;
+  recommendations should compose those read models rather than duplicating them.
 - Existing API endpoints can remain, but new large-data paths should go through artifact IDs and MCP
   excerpt retrieval.
 
@@ -960,6 +1271,8 @@ The foundation is ready when:
 - MCP retrieval tools return bounded excerpts with citations and cursors.
 - MCP action tools return async job IDs.
 - Search/index code is centralized behind one adapter.
+- Engagement recommendations are generated from governed event, availability, temporal, and
+  geospatial projections with citations and human approval state.
 - Tenant-to-cell routing is enforced before data access.
 - Production auth fails closed if gateway/audience/identity configuration is absent.
 - All new paths build with `npm run build --workspaces`.
