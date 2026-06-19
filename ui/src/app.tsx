@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { ExtractionRun, BulletDiff, RelationshipEdge, AnnotationItem } from './api';
 import { MapView } from './MapView';
+import { RelationshipsExplorer } from './RelationshipGraph';
 import { extractLocationRecords } from './geo';
 import { useAuth } from './auth/useAuth';
 import { fetchWithAuth, setAuthToken, setAuthTokenProvider } from './auth/api-auth';
@@ -305,6 +306,16 @@ export function CandidateProfilePage() {
     window.history.pushState({}, '', window.location.pathname);
     window.dispatchEvent(new PopStateEvent('popstate'));
   };
+  // Navigate to a different candidate from within the profile page (e.g. clicking a graph node).
+  // Updates state directly (so the data-loading effect re-runs) and keeps the URL shareable.
+  const selectPerson = (id: string) => {
+    if (!id || id === personId) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('personId', id);
+    window.history.pushState({}, '', url.toString());
+    setActiveTab('relationships');
+    setPersonId(id);
+  };
   const tabs: Tab[] = ['bullets', ...(hasLocationData ? ['map' as const] : []), 'diff', 'annotations', 'relationships'];
   return (
     <div style={{ maxWidth: 1200, margin: '48px auto', padding: '0 20px' }}>
@@ -338,7 +349,7 @@ export function CandidateProfilePage() {
 
       {/* Main Content Area */}
       <div style={{ display: 'flex', gap: 0 }}>
-        <main style={{ flex: 1, marginRight: activeTab === 'annotations' || activeTab === 'map' ? 0 : 280 }}>
+        <main style={{ flex: 1, marginRight: activeTab === 'annotations' || activeTab === 'map' || activeTab === 'relationships' ? 0 : 280 }}>
           {activeTab === 'bullets' && (
             <>
               <SectionCard title="Profile"    bullets={bulletMappings['profile'] ?? []} />
@@ -384,7 +395,12 @@ export function CandidateProfilePage() {
           )}
 
           {activeTab === 'relationships' ? (
-            personId ? <RelationshipSuggestions personId={personId} /> : <p>Please select a candidate first.</p>
+            personId ? (
+              <>
+                <RelationshipsExplorer personId={personId} onSelectPerson={selectPerson} />
+                <RelationshipSuggestions personId={personId} />
+              </>
+            ) : <p>Please select a candidate first.</p>
           ) : (
             <div style={{ padding: 20 }}><p>Select a bullet and click "Annotate" to view/edit notes for that fact. Annotations panel to the right.</p></div>
           )}

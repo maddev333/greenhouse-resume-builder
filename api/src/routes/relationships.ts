@@ -4,6 +4,61 @@ import { relationshipRepo, factVersionRepo, personRepo } from '../db/repo';
 
 const router = Router();
 
+/** Coerce a fact value (string, or object carrying a location-ish field) to a location string. */
+function factValueToLocation(value: unknown): string | null {
+  if (typeof value === 'string') return value.trim() || null;
+  if (value && typeof value === 'object') {
+    const v = value as Record<string, unknown>;
+    const candidate = v.location ?? v.city ?? v.value;
+    if (typeof candidate === 'string') return candidate.trim() || null;
+  }
+  if (value != null && typeof value !== 'object') return String(value).trim() || null;
+  return null;
+}
+
+/**
+ * Relationship graph (neighborhood) for a person: the center node plus every person
+ * connected by a suggested/confirmed edge (either direction). Each node carries a display
+ * name and a primary location (latest `profile.location` fact) so the UI can render both a
+ * node-link graph and a geographic map.
+ */
+router.get('/:personId/graph', async (req: any, res: any) => {
+  try {
+    const centerId = req.params.personId;
+    const edgesRaw = await relationshipRepo.forPersonGraph(centerId);
+    // Drop self-loops — never a meaningful person-to-person edge.
+    const edges = (edgesRaw as unknown as Relationship[]).filter(r => r.fromPersonId !== r.toPersonId);
+
+    const nodeIds = Array.from(new Set([centerId, ...edges.flatMap(e => [e.fromPersonId, e.toPersonId])]));
+
+    const nodes = await Promise.all(nodeIds.map(async (id) => {
+      const person = await personRepo.getById(id).catch(() => null);
+      let location: string | null = null;
+      try {
+        const locFacts = await factVersionRepo.getByFactKey(id, 'profile.location');
+        location = factValueToLocation((locFacts as unknown as FactVersion[])[0]?.factValue);
+      } catch { /* location is best-effort */ }
+      return { id, name: person?.canonicalName ?? null, isCenter: id === centerId, location };
+    }));
+
+    res.json({
+      centerId,
+      nodes,
+      edges: edges.map(e => ({
+        relationshipId: e.id,
+        fromPersonId: e.fromPersonId,
+        toPersonId: e.toPersonId,
+        relationshipType: e.relationshipType,
+        status: e.status,
+        confidence: e.confidence ?? 0,
+      })),
+    });
+  } catch (err) {
+    console.error('[Relationships] Graph error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 router.get('/:personId/suggested', async (req: any, res: any) => {
   try {
     const personId = req.params.personId;

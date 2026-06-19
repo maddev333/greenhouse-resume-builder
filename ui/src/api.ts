@@ -13,6 +13,9 @@ export type BulletMapping = { bulletId: string; bulletText: string; sectionId: s
 export type FactVersion = { factVersionId: string; sectionId: string; factKey: string; factValue: any; extractedAt: string; confidence?: number; status: string };
 export type AnnotationItem = { id: string; commentText: string; targetFactVersionId: string; status: 'open' | 'resolved'; createdAt: string; createdByUserId: string; personId?: string };
 export type RelationshipEdge = { relationshipId: string; fromPersonId: string; toPersonId: string; fromPersonName?: string | null; toPersonName?: string | null; relationshipType: string; status: string; confidence?: number };
+export type RelationshipGraphNode = { id: string; name?: string | null; isCenter: boolean; location?: string | null };
+export type RelationshipGraphEdge = { relationshipId: string; fromPersonId: string; toPersonId: string; relationshipType: string; status: string; confidence?: number };
+export type RelationshipGraph = { centerId: string; nodes: RelationshipGraphNode[]; edges: RelationshipGraphEdge[] };
 export type BulletDiff = { type: 'added' | 'removed' | 'changed'; previousBulletText?: string; currentBulletText: string; currentCitations?: string[] }
 
 // ── Ingestion ───────────────────────────────────────────────
@@ -77,6 +80,9 @@ export const apiAnnotations = {
 export const apiRelationships = {
   /** Get suggested relationships for a person. */
   getSuggested: (personId: string) => json<{ candidates: RelationshipEdge[] }>(`GET`, `/inferences/${personId}/suggested`),
+
+  /** Get the relationship neighborhood (nodes + edges) for a person — drives graph/map views. */
+  getGraph: (personId: string) => json<RelationshipGraph>(`GET`, `/inferences/${encodeURIComponent(personId)}/graph`),
 
   /** Update relationship status (confirm / reject). */
   updateStatus: (relId: string, body: { status: 'confirmed' | 'rejected'; fromPersonId?: string; toPersonId?: string }) =>

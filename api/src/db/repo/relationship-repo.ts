@@ -25,6 +25,14 @@ export class RelationshipRepo extends Repo<Relationship> {
     );
   }
 
+  /** All non-rejected edges touching a person (both directions) — drives the graph view. */
+  async forPersonGraph(personId: string): Promise<Relationship[]> {
+    return this.findDocs<Relationship>(
+      "data->>'status' IN ('suggested', 'confirmed') AND (data->>'fromPersonId' = $1 OR data->>'toPersonId' = $1)",
+      [personId],
+    );
+  }
+
   /** Check if an edge already exists between two people. */
   async edgeExists(personA: string, personB: string): Promise<boolean> {
     const docs = await this.findDocs<Relationship>(
