@@ -20,9 +20,11 @@ scope a query to grounding sources or to the curated wiki itself.
 from __future__ import annotations
 
 from dataclasses import asdict
+import uuid
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.tools.tool import ToolResult
 
 from .config import LLMWikiConfig
 from .ingest import IngestService
@@ -182,6 +184,138 @@ def register_tools(
                 for d in documents
             ],
         }
+
+    # ------------------------------------------------------------------
+    # Document/section browsing helpers for the wiki browser widget
+    # ------------------------------------------------------------------
+
+    @mcp.tool
+    def list_sections_for_document(document_id: str) -> dict[str, Any]:
+        """List all wiki sections for a given document.
+
+        Returns lightweight section metadata (ids + headings). To read full
+        content, call `read_wiki_section` with the returned `section_id`.
+        """
+
+        sections = storage.list_sections_for_document(document_id)
+        return {
+            "document_id": document_id,
+            "sections": [
+                {
+                    "id": s.id,
+                    "ordinal": s.ordinal,
+                    "heading": s.heading,
+                    "heading_path": s.heading_path,
+                    "page_anchor": s.page_anchor,
+                    "body_chars": s.body_chars,
+                }
+                for s in sections
+            ],
+        }
+
+    # ------------------------------------------------------------------
+    # Browse (interactive wiki browser widget)
+    # ------------------------------------------------------------------
+    @mcp.tool(
+        meta={"ui": {"resourceUri": "ui://wiki-browser.html"}},
+        tags={"mcp-app"},
+    )
+    def browse_wiki(
+        query: str | None = None,
+        collection: str | None = None,
+        flavor: str | None = None,
+        doc_type: str | None = None,
+        section_id: str | None = None,
+    ) -> ToolResult:
+        """Browse wiki content — drives the `ui://wiki-browser.html` widget.
+
+        When `section_id` is set navigates directly. With a `query` returns ranked
+        search-hit previews for the widget. Without query or section_id falls back to
+        the collection manifest with per-collection document previews.
+        """
+        view_uuid = str(uuid.uuid4())
+        ui_meta = {
+            "ui": {"resourceUri": "ui://wiki-browser.html"},
+            "viewUUID": view_uuid,
+        }
+
+        if section_id:
+            payload = read_section(
+                storage,
+                section_id=section_id,
+                include_neighbors=True,
+                max_chars=config.max_read_chars,
+            )
+            if payload is None:
+                payload = {"error": "section_not_found", "section_id": section_id}
+            structured = {"mode": "navigation", "payload": payload}
+
+        elif query:
+            hits = search_wiki(
+                storage,
+                query=query,
+                collection=collection,
+                doc_type=doc_type,
+                flavor=flavor,
+                max_results=20,
+            )
+            structured = {
+                "mode": "search",
+                "query": query,
+                "hits": hits.get("results", []),
+            }
+
+        else:
+            # Default mode: manifest + document previews (widget uses this)
+            all_collections = storage.list_collections()
+            cols_with_previews: list[dict[str, Any]] = []
+            for c in all_collections:
+                docs = storage.list_documents(collection_id=c.id, limit=10)
+                cols_with_previews.append(
+                    {
+                        **asdict(c),
+                        "document_previews": [
+                            {
+                                "id": d.id,
+                                "title": d.title,
+                                "doc_type": d.doc_type,
+                                "flavor": d.flavor,
+                            }
+                            for d in docs[:5]
+                        ],
+                    }
+                )
+            structured = {
+                "mode": "manifest",
+                "collections": cols_with_previews,
+                "total_collections": len(all_collections),
+            }
+
+        # Text-channel fallback for hosts/models (kept small; widget uses structuredContent).
+        mode = structured.get("mode")
+        if mode == "manifest":
+            content = (
+                f"LLMWiki manifest: {structured.get('total_collections', '?')} collections."
+            )
+        elif mode == "search":
+            hits = structured.get("hits") or []
+            content = f"LLMWiki search: query='{structured.get('query')}' ({len(hits)} hits)."
+        elif mode == "navigation":
+            heading = (
+                (structured.get("payload") or {}).get("heading")
+                or (structured.get("payload") or {}).get("document", {}).get("title")
+                or structured.get("payload", {}).get("section_id")
+                or "section"
+            )
+            content = f"LLMWiki section navigation: {heading}"
+        else:
+            content = "LLMWiki browse"
+
+        return ToolResult(
+            content=content,
+            structured_content=structured,
+            meta=ui_meta,
+        )
 
     # ------------------------------------------------------------------
     # Validation

@@ -52,10 +52,12 @@ def lint_wiki(
     findings: list[WikiHealthFinding] = []
     findings.extend(_check_canonicals(wiki_dir))
 
+    wiki_root = wiki_dir.resolve()
+
     # Index every page by its case-folded relative path AND by its stem so
     # wikilinks (which carry the page name without an extension) can be
     # resolved against the real files.
-    by_relpath = {_norm(str(p.relative_to(wiki_dir))): p for p in pages}
+    by_relpath = {_norm(str(p.relative_to(wiki_root))): p for p in pages}
     by_stem: dict[str, list[Path]] = {}
     for p in pages:
         by_stem.setdefault(_norm(p.stem), []).append(p)
@@ -67,7 +69,7 @@ def lint_wiki(
             text = page.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        rel = str(page.relative_to(wiki_dir))
+        rel = str(page.relative_to(wiki_root))
         for target in _extract_link_targets(text):
             resolved = _resolve_link(
                 target,
@@ -89,14 +91,14 @@ def lint_wiki(
                 if len(findings) >= max_findings:
                     break
                 continue
-            referenced.add(_norm(str(resolved.relative_to(wiki_dir))))
+            referenced.add(_norm(str(resolved.relative_to(wiki_root))))
         if len(findings) >= max_findings:
             break
 
     # Orphans: every non-canonical page that nobody else links to.
     if len(findings) < max_findings:
         for page in pages:
-            rel = str(page.relative_to(wiki_dir))
+            rel = str(page.relative_to(wiki_root))
             if page.name in CANONICAL_NAMES:
                 continue
             if _norm(rel) in referenced:
@@ -123,7 +125,7 @@ def lint_wiki(
                 index_text = ""
             index_haystack = index_text.lower()
             for page in pages:
-                rel = str(page.relative_to(wiki_dir))
+                rel = str(page.relative_to(wiki_root))
                 if page.name in CANONICAL_NAMES:
                     continue
                 needle_stem = page.stem.lower()
@@ -150,7 +152,13 @@ def lint_wiki(
 
 
 def _collect_pages(wiki_dir: Path) -> list[Path]:
-    return sorted(p for p in wiki_dir.rglob("*.md") if p.is_file())
+    # Resolve each page path so relative_to(wiki_dir.resolve()) is stable
+    # even when the caller's wiki_dir includes symlinked path components.
+    pages: list[Path] = []
+    for p in wiki_dir.rglob("*.md"):
+        if p.is_file():
+            pages.append(p.resolve())
+    return sorted(pages)
 
 
 def _check_canonicals(wiki_dir: Path) -> Iterable[WikiHealthFinding]:

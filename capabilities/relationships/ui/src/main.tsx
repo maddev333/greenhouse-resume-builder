@@ -16,7 +16,50 @@ interface McpBridge {
 function getMcpBridge(serverUrl: string): McpBridge {
   const host = (globalThis as any).mcpHost;
   if (host && typeof host.callTool === 'function') {
-    return { embedded: true, callTool: (n, a) => host.callTool(n, a) };
+    // MCP Apps gate — prevent early tool calls before app.connect() completes.
+    const isInMcpApp = Boolean((window as any).__MCP_APP_BRIDGE__);
+    let bridgeInitOk = false;
+    const pendingBridges: Array<{ name: string; args: unknown; resolve: (v: any) => void; reject: (e: Error) => void }> = [];
+
+    if (isInMcpApp) {
+      window.addEventListener(
+        'message',
+        function onBridgeInit(e: MessageEvent<unknown>) {
+          if ((e.data as any)?.method === 'ui/notifications/initialized') {
+            bridgeInitOk = true;
+            for (const p of pendingBridges.splice(0)) {
+              host.callTool(p.name, p.args).then(p.resolve, p.reject);
+            }
+            window.removeEventListener('message', onBridgeInit as EventListener);
+          }
+        },
+        { passive: true },
+      );
+    } else {
+      bridgeInitOk = true;
+    }
+
+    return {
+      embedded: true,
+      callTool: (name, args) => {
+        if (!bridgeInitOk && isInMcpApp) {
+          let settled = false;
+          return new Promise<any>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              settled = true;
+              reject(new Error('MCP Apps host did not initialize in time (15s timeout)'));
+            }, 15000);
+            pendingBridges.push({
+              name,
+              args,
+              resolve: (v: any) => { if (!settled) { clearTimeout(timer); resolve(v); } },
+              reject: (e: Error) => { if (!settled) { clearTimeout(timer); reject(e); } },
+            });
+          });
+        }
+        return host.callTool(name, args);
+      },
+    };
   }
   let id = 1;
   return {

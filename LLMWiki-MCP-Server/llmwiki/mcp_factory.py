@@ -12,6 +12,11 @@ import atexit
 import os
 import sys
 
+from fastmcp import FastMCP
+from fastmcp.apps.config import AppConfig
+from fastmcp.resources import Resource, TextResource
+from fastmcp.utilities.mime import UI_MIME_TYPE as MCP_APP_MIME
+
 from .config import load_config
 from .ingest import IngestService
 from .watcher import CorpusWatcher
@@ -21,8 +26,6 @@ logger = get_logger("llmwiki.factory")
 
 
 def create_mcp_server():
-    from fastmcp import FastMCP
-
     from .backends import (
         create_azure_backend,
         create_resume_facts_backend,
@@ -94,6 +97,11 @@ def create_mcp_server():
         ingest=ingest,
         watcher=watcher,
     )
+
+    # ------------------------------------------------------------------
+    # UI resource: interactive wiki browser widget (Phase 1)
+    # ------------------------------------------------------------------
+    _register_wiki_browser_resource(mcp)
 
     if read_only:
         # Greenhouse owns ingestion for this index; do not scan the local corpus.
@@ -196,3 +204,57 @@ def _load_dotenv_if_available() -> None:
     except ImportError:
         return
     load_dotenv()
+
+
+def _register_wiki_browser_resource(mcp: FastMCP, cfg: AppConfig | None = None) -> None:
+    """Serve the interactive wiki-browser.html as a ui:// resource.
+
+    MCP hosts supporting MCP Apps (io.modelcontextprotocol/ui) discover the
+    ``ui://wiki-browser.html`` resource via FastMCP's ``list_resources()``
+    endpoint and render it inline alongside any tool whose AppConfig
+    declares ``resourceUri = "ui://wiki-browser.html"``.
+    ``TextResource`` is used so ``read_resource`` returns the HTML content.
+    """
+    from pathlib import Path as _Path
+
+    html_path = None
+    for p in [
+        _Path(__file__).resolve().parent.parent / "static" / "ui" / "wiki-browser.html",
+        _Path.cwd() / "static" / "ui" / "wiki-browser.html",
+    ]:
+        if p.is_file():
+            html_path = p
+            break
+
+    default_cfg = AppConfig(
+        resource_uri="ui://wiki-browser.html",
+        visibility=["model", "app"],  # visible to both model and app contexts
+    )
+    cfg = cfg or default_cfg
+
+    if html_path is None:
+        # No widget available — advertise the resource anyway so hosts know it
+        # exists (but serve a placeholder).  browse_wiki will fall back to JSON.
+        hint = (
+            "[llmwiki] wiki browser widget unavailable. Place wiki-browser.html "
+            "in static/ui/ or invoke browse_wiki without query for manifest data.\n"
+            "Use ``manifest()`` to see available collections/documents."
+        )
+        mcp.add_resource(
+            TextResource(
+                uri=cfg.resource_uri,
+                name="LLMWiki Browser Widget (offline)",
+                text=hint,
+                mime_type=MCP_APP_MIME,
+            ),
+        )
+    else:
+        html = html_path.read_text(encoding="utf-8")
+        mcp.add_resource(
+            TextResource(
+                uri=cfg.resource_uri,
+                name="LLMWiki Browser Widget",
+                text=html,
+                mime_type=MCP_APP_MIME,
+            ),
+        )
