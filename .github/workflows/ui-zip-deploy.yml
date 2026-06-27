@@ -1,0 +1,69 @@
+name: UI Zip Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+  push:
+    branches: [ main, workshop/dev-pipelines ]
+    paths:
+      - '.github/workflows/ui-zip-deploy.yml'
+      - 'ui/**'
+
+jobs:
+  build-and-package:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Package UI for deployment
+        run: |
+          cd dist
+          zip -r ../ui-deploy.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-deploy
+          path: ui-deploy.zip
+
+  deploy-to-azure:
+    needs: build-and-package
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'development' }}
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-deploy
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: greenhouse-resume-builder-ui
+          package: ui-deploy.zip
