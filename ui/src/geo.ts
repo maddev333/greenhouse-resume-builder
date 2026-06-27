@@ -9,8 +9,12 @@
 const GEOSPATIAL_MCP_URL =
   (import.meta as any).env?.VITE_GEOSPATIAL_MCP_URL || 'http://localhost:7076/api/mcp/geospatial';
 
-/** Azure Maps subscription key injected at build time (see vite.config.ts). '' when not configured. */
-export const MAPS_KEY = ((import.meta as any).env?.VITE_AZURE_MAPS_KEY as string) || '';
+/** Azure Maps client ID for AAD authentication (SPA anonymous auth). '' when not configured. */
+export const MAPS_CLIENT_ID = ((import.meta as any).env?.VITE_AZURE_MAPS_CLIENT_ID as string) || '';
+
+/** Azure Maps token scope for acquiring access tokens via MSAL. */
+export const MAPS_TOKEN_SCOPE = 
+  (import.meta as any).env?.VITE_AZURE_MAPS_TOKEN_SCOPE || 'https://atlas.microsoft.com/.default';
 
 export type LocationCategory = 'current' | 'work' | 'education' | 'other';
 

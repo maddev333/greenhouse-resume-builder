@@ -24,10 +24,16 @@ function nearestEnvValue(key: string): string | undefined {
 }
 
 export default defineConfig(({ mode }) => {
-  // Prefer an explicit ui-level VITE_AZURE_MAPS_KEY; otherwise reuse the repo-root AZURE_MAPS_KEY so the
-  // candidate map needs no separate key file. Local dev only — this bakes a subscription key into the
-  // client bundle. In production use Azure Maps AAD (anonymous auth + a token endpoint), never a key.
+  // Support both subscription key (local dev) and client ID (production AAD auth).
+  // Prefer ui-level VITE_AZURE_MAPS_CLIENT_ID or VITE_AZURE_MAPS_KEY; otherwise reuse the repo-root
+  // AZURE_MAPS_CLIENT_ID or AZURE_MAPS_KEY so the candidate map needs no separate key file.
   const uiEnv = loadEnv(mode, here, 'VITE_');
+  
+  // For production: use AAD anonymous auth with client ID and token scope
+  const mapsClientId = uiEnv.VITE_AZURE_MAPS_CLIENT_ID || nearestEnvValue('AZURE_MAPS_CLIENT_ID') || '';
+  const mapsTokenScope = uiEnv.VITE_AZURE_MAPS_TOKEN_SCOPE || 'https://atlas.microsoft.com/.default';
+  
+  // For local dev: subscription key (baked into client bundle)
   const mapsKey = uiEnv.VITE_AZURE_MAPS_KEY || nearestEnvValue('AZURE_MAPS_KEY') || '';
 
   return {
@@ -38,6 +44,8 @@ export default defineConfig(({ mode }) => {
     server: { port: 5173, proxy: { '/api/v1': 'http://localhost:3001' } },
     define: {
       'import.meta.env.VITE_AZURE_MAPS_KEY': JSON.stringify(mapsKey),
+      'import.meta.env.VITE_AZURE_MAPS_CLIENT_ID': JSON.stringify(mapsClientId),
+      'import.meta.env.VITE_AZURE_MAPS_TOKEN_SCOPE': JSON.stringify(mapsTokenScope),
     },
   };
 });

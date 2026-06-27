@@ -10,8 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^18.3.0",
-    "@greenhouse-resume-builder/llmwiki-shared": "*"
+    "react": "^18.3.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",

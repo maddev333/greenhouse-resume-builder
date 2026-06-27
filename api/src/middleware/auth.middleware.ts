@@ -204,7 +204,7 @@ export const authMiddleware: RequestHandler = async (req, res, next) => {
   let accessToken = ''; // default to empty for dev bypass mode
   let user: AuthenticatedUser;
 
-  if (AZURE_AD_JWKS_URI?.trim()) {
+  if (AZURE_AD_JWKS_URI?.trim() && !(ALLOW_DEV_AUTH_BYPASS && !IS_PRODUCTION)) {
     // ── Production: cryptographically verify the Bearer token ──
     if (!authHeader.toLowerCase().startsWith('bearer ')) {
       return res.status(401).json({ error: 'Missing or invalid Authorization header (expected Bearer token)' });

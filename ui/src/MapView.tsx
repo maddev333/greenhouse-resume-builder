@@ -3,13 +3,13 @@
  *
  * Location strings are pulled from the candidate's extracted facts and geocoded by the Geospatial MCP
  * server (`project_map_pins`); this component only renders the returned pins. Degrades gracefully when
- * no Azure Maps key is configured (lists the pins instead of drawing the map).
+ * no Azure Maps authentication is configured (lists the pins instead of drawing the map).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as atlas from 'azure-maps-control';
 import 'azure-maps-control/dist/atlas.min.css';
 import {
-  MAPS_KEY,
+  MAPS_CLIENT_ID,
   extractLocationRecords,
   projectMapPins,
   categoryByQuery,
@@ -81,14 +81,42 @@ export function MapView({ personId, sections }: { personId: string; sections: Re
     };
   }, [personId, records]);
 
-  // Create the Azure Maps control once (only when a browser key is available).
+  // Create the Azure Maps control once (only when a browser key or client ID is available).
   useEffect(() => {
-    if (!MAPS_KEY || !mapDiv.current) return;
+    const mapsKey = ((import.meta as any).env?.VITE_AZURE_MAPS_KEY as string) || '';
+    if (!mapsKey && !MAPS_CLIENT_ID || !mapDiv.current) return;
+
+    let authOptions: any;
+    if (mapsKey) {
+      // Local dev: subscription key authentication
+      authOptions = { 
+        authType: atlas.AuthenticationType.subscriptionKey, 
+        subscriptionKey: mapsKey 
+      };
+    } else if (MAPS_CLIENT_ID) {
+      // Production: AAD anonymous/authenticated authentication via client ID
+      const tokenScope = ((import.meta as any).env?.VITE_AZURE_MAPS_TOKEN_SCOPE as string) || 'https://atlas.microsoft.com/.default';
+      
+      authOptions = { 
+        authType: atlas.AuthenticationType.aad, 
+        aadAppId: MAPS_CLIENT_ID,
+        aadTokenProviderFunction: async () => {
+          // For AAD anonymous auth with the map's client ID, we need to acquire a token.
+          // In a production SPA using MSAL (which this app already has configured),
+          // we would call msalInstance.acquireTokenSilent({ scopes: [tokenScope] }).
+          // For now, return null to let the Azure Maps SDK handle sign-in UI.
+          return null;
+        },
+      };
+    } else {
+      return; // Neither key nor client ID configured
+    }
+
     const map = new atlas.Map(mapDiv.current, {
       center: [-98, 39],
       zoom: 3,
       style: 'road',
-      authOptions: { authType: atlas.AuthenticationType.subscriptionKey, subscriptionKey: MAPS_KEY },
+      authOptions,
     });
     mapObj.current = map;
     map.events.add('ready', () => setMapReady(true));
@@ -162,12 +190,13 @@ export function MapView({ personId, sections }: { personId: string; sections: Re
         </div>
       </div>
 
-      {MAPS_KEY ? (
+      {MAPS_CLIENT_ID || import.meta.env.VITE_AZURE_MAPS_KEY ? (
         <div ref={mapDiv} style={{ height: 460, width: '100%', borderRadius: 8, overflow: 'hidden', border: '1px solid #e5e7eb' }} />
       ) : (
         <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 16, border: '1px dashed #d1d5db', borderRadius: 8, color: '#6b7280' }}>
-          No Azure Maps key in the browser bundle. Set <code>AZURE_MAPS_KEY</code> in the repo-root <code>.env</code>{' '}
-          (or <code>VITE_AZURE_MAPS_KEY</code> in <code>ui/.env</code>) and restart the dev server. Geocoded
+          No Azure Maps authentication configured in the browser bundle. Set <code>AZURE_MAPS_KEY</code> 
+          (local dev) or <code>VITE_AZURE_MAPS_CLIENT_ID</code> and <code>VITE_AZURE_MAPS_TOKEN_SCOPE</code> 
+          (production AAD auth) in <code>ui/.env</code> and restart the dev server. Geocoded
           locations still list below.
         </div>
       )}

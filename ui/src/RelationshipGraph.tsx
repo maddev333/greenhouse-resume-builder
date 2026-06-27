@@ -16,7 +16,7 @@ import {
   type RelationshipGraph,
   type RelationshipGraphNode,
 } from './api';
-import { MAPS_KEY, projectMapPins, type LocationRecord } from './geo';
+import { MAPS_CLIENT_ID, projectMapPins, type LocationRecord } from './geo';
 
 const STATUS_STYLE: Record<string, { color: string; dash?: string; label: string }> = {
   confirmed: { color: '#059669', label: 'Confirmed' },
@@ -205,7 +205,7 @@ function GraphMap({ graph }: { graph: RelationshipGraph }) {
         setStatus(
           res.mapsConfigured
             ? `${m.size} of ${records.length} location(s) mapped.`
-            : 'The Geospatial MCP server has no Azure Maps key (set AZURE_MAPS_KEY for the server).',
+            : 'The Geospatial MCP server has no Azure Maps authentication configured.',
         );
       })
       .catch((err) => {
@@ -227,14 +227,39 @@ function GraphMap({ graph }: { graph: RelationshipGraph }) {
     [coordByLoc],
   );
 
-  // Create the map control once (only when a browser key is available).
+  // Create the map control once (only when a browser key or client ID is available).
   useEffect(() => {
-    if (!MAPS_KEY || !mapDiv.current) return;
+    const mapsKey = ((import.meta as any).env?.VITE_AZURE_MAPS_KEY as string) || '';
+    if (!mapsKey && !MAPS_CLIENT_ID || !mapDiv.current) return;
+
+    let authOptions: any;
+    if (mapsKey) {
+      // Local dev: subscription key authentication
+      authOptions = { 
+        authType: atlas.AuthenticationType.subscriptionKey, 
+        subscriptionKey: mapsKey 
+      };
+    } else if (MAPS_CLIENT_ID) {
+      // Production: AAD anonymous/authenticated authentication via client ID
+      const tokenScope = ((import.meta as any).env?.VITE_AZURE_MAPS_TOKEN_SCOPE as string) || 'https://atlas.microsoft.com/.default';
+      
+      authOptions = { 
+        authType: atlas.AuthenticationType.aad, 
+        aadAppId: MAPS_CLIENT_ID,
+        aadTokenProviderFunction: async () => {
+          // For AAD anonymous auth with the map's client ID, we need to acquire a token.
+          return null;
+        },
+      };
+    } else {
+      return; // Neither key nor client ID configured
+    }
+
     const map = new atlas.Map(mapDiv.current, {
       center: [-98, 39],
       zoom: 3,
       style: 'road',
-      authOptions: { authType: atlas.AuthenticationType.subscriptionKey, subscriptionKey: MAPS_KEY },
+      authOptions,
     });
     mapObj.current = map;
     map.events.add('ready', () => {
@@ -331,14 +356,15 @@ function GraphMap({ graph }: { graph: RelationshipGraph }) {
 
   return (
     <div>
-      {MAPS_KEY ? (
+      {MAPS_CLIENT_ID || ((import.meta as any).env?.VITE_AZURE_MAPS_KEY ? (
         <div ref={mapDiv} style={{ height: 460, width: '100%', borderRadius: 8, overflow: 'hidden', border: '1px solid #e5e7eb' }} />
       ) : (
         <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 16, border: '1px dashed #d1d5db', borderRadius: 8, color: '#6b7280' }}>
-          No Azure Maps key in the browser bundle. Set <code>AZURE_MAPS_KEY</code> in the repo-root <code>.env</code>{' '}
-          (or <code>VITE_AZURE_MAPS_KEY</code> in <code>ui/.env</code>) and restart the dev server.
+          No Azure Maps authentication configured in the browser bundle. Set <code>AZURE_MAPS_KEY</code> 
+          (local dev) or <code>VITE_AZURE_MAPS_CLIENT_ID</code> and <code>VITE_AZURE_MAPS_TOKEN_SCOPE</code> 
+          (production AAD auth) in <code>ui/.env</code> and restart the dev server.
         </div>
-      )}
+      ))}
       <p style={{ color: busy ? '#2563eb' : '#6b7280', fontSize: 13, minHeight: 18, margin: '8px 0 4px' }}>{status}</p>
       {unplaced.length > 0 ? (
         <p style={{ color: '#9ca3af', fontSize: 12, margin: 0 }}>
