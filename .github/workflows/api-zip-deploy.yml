@@ -1,26 +1,26 @@
 name: Deploy API to Azure Web App
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
     paths:
       - 'api/**'
       - '.github/workflows/api-zip-deploy.yml'
-
-permissions:
-  contents: read
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -28,26 +28,15 @@ jobs:
           cache-dependency-path: api/package-lock.json
 
       - name: Install dependencies
-        working-directory: api
         run: npm ci
 
       - name: Build API
-        working-directory: api
         run: npm run build
 
-      - name: Create deployment package
-        run: |
-          mkdir -p release
-          rsync -av \
-            --exclude='.git' \
-            --exclude='node_modules' \
-            --exclude='src' \
-            --exclude='*.log' \
-            api/ release/
-          cd release
-          zip -r ../api-release.zip .
+      - name: Archive deployment package
+        run: zip -r ../api-release.zip . -x '*.git*'
 
-      - name: Upload deployment artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: api-package
@@ -58,9 +47,8 @@ jobs:
     needs: build
     environment:
       name: production
-
     steps:
-      - name: Download deployment artifact
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: api-package
@@ -68,6 +56,6 @@ jobs:
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
-          app-name: ${{ secrets.AZURE_API_APP_NAME }}
+          app-name: ${{ vars.AZURE_API_APP_NAME }}
           publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
           package: api-release.zip
