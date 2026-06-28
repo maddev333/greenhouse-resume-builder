@@ -1,0 +1,57 @@
+name: Deploy API to Azure Web App
+
+on:
+  push:
+    branches:
+      - deploy-api-workflow
+      - main
+    paths:
+      - 'api/**'
+      - 'shared/**'
+      - '.github/workflows/api-zip-deploy.yml'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build shared package
+        run: npm run build --workspace shared
+
+      - name: Build api package
+        run: npm run build --workspace api
+
+      - name: Prune dev dependencies for api
+        run: npm prune --omit=dev --workspace api
+
+      - name: Prepare deployment package
+        run: |
+          rm -rf deploy
+          mkdir -p deploy
+          cp -R api/dist deploy/dist
+          cp api/package.json deploy/package.json
+          cp api/package-lock.json deploy/package-lock.json
+          cp -R api/node_modules deploy/node_modules
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_API_APP_NAME }}
+          publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
+          package: deploy
