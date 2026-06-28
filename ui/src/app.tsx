@@ -1,489 +1,759 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { login, logout, getAccessToken, getActiveAccount, getIsAuthenticated } from './auth/msal';
-import {
-  ApiError,
-  type AnnotationNode,
-  type BundleNode,
-  type BundleResponse,
-  type CompanyNode,
-  type ContactNode,
-  type DiffNode,
-  type EducationNode,
-  type GeoCityNode,
-  type GeoCoords,
-  type JobApplicationNode,
-  type OpeningNode,
-  type PersonNode,
-  type QueryBundleParams,
-  type QueryBundleResult,
-  type QueryDagParams,
-  type QueryDagResult,
-  type ResumeNode,
-  type SkillNode,
-  queryBundle,
-  queryDag,
-  queryDagById,
-  searchBundles,
-} from './api';
-import { RelationshipGraph } from './RelationshipGraph';
+/** Greenhouse Resume Builder - Landing page entry */
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import type { ExtractionRun, BulletDiff, RelationshipEdge, AnnotationItem } from './api';
 import { MapView } from './MapView';
+import { RelationshipsExplorer } from './RelationshipGraph';
+import { extractLocationRecords } from './geo';
+import { useAuth } from './auth/useAuth';
+import { fetchWithAuth, setAuthToken, setAuthTokenProvider } from './auth/api-auth';
+import { AuthBar } from './auth/AuthBar';
+import { isAuthConfigured } from './auth/msal-config';
 
-const DEFAULT_CITY = 'Chicago';
-const DEFAULT_RADIUS_MI = 25;
-const VERSION_LABEL = import.meta.env.VITE_APP_VERSION || 'dev';
+// ── Auth helpers — attach MSAL Bearer token to API requests ────
 
-const sectionStyle: CSSProperties = {
-  background: '#fff',
-  borderRadius: 10,
-  boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
-  padding: 16,
-};
-
-function App() {
-  const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE_URL || 'http://localhost:7071/api');
-  const [bundleId, setBundleId] = useState('');
-  const [bundleResult, setBundleResult] = useState<QueryBundleResult | null>(null);
-  const [dagResult, setDagResult] = useState<QueryDagResult | null>(null);
-  const [bundleSearchQ, setBundleSearchQ] = useState('');
-  const [bundleSearchLimit, setBundleSearchLimit] = useState(10);
-  const [bundleSearchResults, setBundleSearchResults] = useState<BundleResponse[]>([]);
-  const [newBundleId, setNewBundleId] = useState('');
-  const [newResumeUrl, setNewResumeUrl] = useState('');
-  const [newResumeText, setNewResumeText] = useState('');
-  const [newResumeName, setNewResumeName] = useState('');
-  const [newContactFullName, setNewContactFullName] = useState('');
-  const [newContactEmail, setNewContactEmail] = useState('');
-  const [newContactPhone, setNewContactPhone] = useState('');
-  const [newContactCity, setNewContactCity] = useState('');
-  const [newContactState, setNewContactState] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [tokenPreview, setTokenPreview] = useState<string>('');
-  const [isAuthenticated, setIsAuthenticated] = useState(getIsAuthenticated());
-  const [graphMode, setGraphMode] = useState<'bundle' | 'dag'>('bundle');
-  const [graphSearch, setGraphSearch] = useState('');
-  const [cityQuery, setCityQuery] = useState(DEFAULT_CITY);
-  const [radiusMiles, setRadiusMiles] = useState<number>(DEFAULT_RADIUS_MI);
-  const [mapCenter, setMapCenter] = useState<GeoCoords | null>(null);
-  const [mapError, setMapError] = useState<string | null>(null);
-  const graphContainerRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    setIsAuthenticated(getIsAuthenticated());
-    setTokenPreview(getAccessToken() || '');
-  }, []);
-
-  const graphData = useMemo(() => {
-    return graphMode === 'bundle' ? bundleResult?.graph ?? null : dagResult?.graph ?? null;
-  }, [graphMode, bundleResult, dagResult]);
-
-  const graphSummary = useMemo(() => {
-    if (!graphData) return null;
-    return {
-      nodes: graphData.nodes.length,
-      edges: graphData.edges.length,
-      rootIds: graphData.rootIds,
-      generatedAt: graphData.generatedAt,
-    };
-  }, [graphData]);
-
-  async function withLoading<T>(fn: () => Promise<T>) {
-    setLoading(true);
-    setError(null);
-    try {
-      return await fn();
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setError(`${err.message}${err.details ? `\n${JSON.stringify(err.details, null, 2)}` : ''}`);
-      } else if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError(String(err));
-      }
-      throw err;
-    } finally {
-      setLoading(false);
-    }
+async function json<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers = new Headers();
+  if (body !== undefined) headers.set('Content-Type', 'application/json');
+  const init: RequestInit = { method, headers };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  const res = await fetchWithAuth(path, init);
+  if (res.status === 204 || res.status === 205) return null as unknown as T;
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(detail.error ?? `API ${method} ${path}: ${res.status}`);
   }
+  return res.json() as Promise<T>;
+}
 
-  async function handleLogin() {
-    await login();
-    setIsAuthenticated(getIsAuthenticated());
-    setTokenPreview(getAccessToken() || '');
-  }
+// ── UI Types ────────────────────────────────────────────────
 
-  function handleLogout() {
-    logout();
-    setIsAuthenticated(getIsAuthenticated());
-    setTokenPreview('');
-  }
+interface BulletWithMeta {
+  bulletText: string;
+  citationIds: string[];
+  factKey?: string;
+  sectionId: string;
+  id: string;
+  citations?: string[];
+}
 
-  async function loadBundle() {
-    const id = bundleId.trim();
-    if (!id) {
-      setError('Enter a bundle id first.');
-      return;
-    }
+// ── Helper: render a section card ───────────────────────────
 
-    await withLoading(async () => {
-      const result = await queryBundle(apiBase, { bundleId: id });
-      setBundleResult(result);
-      setGraphMode('bundle');
-    });
-  }
-
-  async function loadDag() {
-    const id = bundleId.trim();
-    if (!id) {
-      setError('Enter a bundle id first.');
-      return;
-    }
-
-    await withLoading(async () => {
-      const result = await queryDagById(apiBase, id);
-      setDagResult(result);
-      setGraphMode('dag');
-    });
-  }
-
-  async function runBundleSearch() {
-    await withLoading(async () => {
-      const results = await searchBundles(apiBase, {
-        q: bundleSearchQ || undefined,
-        limit: bundleSearchLimit,
-      });
-      setBundleSearchResults(results.results);
-    });
-  }
-
-  async function createBundle() {
-    if (!newBundleId.trim()) {
-      setError('Bundle id is required.');
-      return;
-    }
-
-    const payload: QueryBundleParams = {
-      bundleId: newBundleId.trim(),
-      resume: {
-        name: newResumeName || undefined,
-        url: newResumeUrl || undefined,
-        text: newResumeText || undefined,
-      },
-      contact: {
-        fullName: newContactFullName || undefined,
-        email: newContactEmail || undefined,
-        phone: newContactPhone || undefined,
-        city: newContactCity || undefined,
-        state: newContactState || undefined,
-      },
-    };
-
-    await withLoading(async () => {
-      const result = await queryBundle(apiBase, payload);
-      setBundleResult(result);
-      setBundleId(payload.bundleId);
-      setGraphMode('bundle');
-    });
-  }
-
-  async function refreshGraph() {
-    if (graphMode === 'bundle') {
-      await loadBundle();
-    } else {
-      await loadDag();
-    }
-  }
-
-  async function handleCitySearch() {
-    const city = cityQuery.trim() || DEFAULT_CITY;
-    setCityQuery(city);
-    setMapError(null);
-
-    try {
-      const result = await queryDag(apiBase, {
-        city,
-        radiusMiles,
-      } as QueryDagParams);
-      setDagResult(result);
-      setGraphMode('dag');
-      const cityNode = result.graph.nodes.find((n): n is GeoCityNode => n.kind === 'geo_city');
-      if (cityNode?.coords) {
-        setMapCenter(cityNode.coords);
-      }
-    } catch (err) {
-      if (err instanceof Error) {
-        setMapError(err.message);
-      } else {
-        setMapError(String(err));
-      }
-    }
-  }
-
-  const filteredNodes = useMemo(() => {
-    if (!graphData) return [];
-    const q = graphSearch.trim().toLowerCase();
-    if (!q) return graphData.nodes;
-    return graphData.nodes.filter((node) => JSON.stringify(node).toLowerCase().includes(q));
-  }, [graphData, graphSearch]);
-
+function SectionCard({ title, bullets }: { title: string; bullets: BulletWithMeta[] }) {
   return (
-    <div style={{ fontFamily: 'Arial, sans-serif', margin: '0 auto', maxWidth: 1200, padding: 16 }}>
-      <div
-        style={{
-          position: 'fixed',
-          right: 16,
-          bottom: 16,
-          zIndex: 1000,
-          padding: '6px 10px',
-          borderRadius: 999,
-          background: 'rgba(15, 23, 42, 0.9)',
-          color: '#fff',
-          fontSize: 12,
-          letterSpacing: 0.3,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
-        }}
-        title="UI build version"
-      >
-        Build {VERSION_LABEL}
-      </div>
-      <header style={{ marginBottom: 16 }}>
-        <h1 style={{ marginBottom: 8 }}>Greenhouse Resume Builder Playground</h1>
-        <p style={{ color: '#555', marginTop: 0 }}>
-          Exercise bundle and DAG endpoints, visualize relationships, and inspect geospatial coverage.
-        </p>
-      </header>
-
-      <section style={{ ...sectionStyle, marginBottom: 16 }}>
-        <h2>API Connection</h2>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-          <label style={{ flex: 1, minWidth: 320 }}>
-            API Base URL
-            <input
-              style={{ width: '100%', padding: 8, marginTop: 4 }}
-              value={apiBase}
-              onChange={(e) => setApiBase(e.target.value)}
-            />
-          </label>
-          <div>
-            <button onClick={handleLogin} disabled={loading || isAuthenticated} style={{ marginRight: 8 }}>
-              Login
-            </button>
-            <button onClick={handleLogout} disabled={loading || !isAuthenticated}>
-              Logout
-            </button>
-          </div>
-        </div>
-        <p style={{ marginBottom: 4 }}>Authenticated: {isAuthenticated ? 'Yes' : 'No'}</p>
-        <p style={{ marginTop: 4, wordBreak: 'break-all' }}>
-          Access Token: {tokenPreview ? `${tokenPreview.slice(0, 32)}…` : 'Not available'}
-        </p>
-      </section>
-
-      <section style={{ ...sectionStyle, marginBottom: 16 }}>
-        <h2>Open Existing Bundle / DAG</h2>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <label style={{ flex: 1, minWidth: 280 }}>
-            Bundle ID
-            <input
-              style={{ width: '100%', padding: 8, marginTop: 4 }}
-              value={bundleId}
-              onChange={(e) => setBundleId(e.target.value)}
-              placeholder="resume-bundle-123"
-            />
-          </label>
-          <button onClick={loadBundle} disabled={loading}>Load Bundle</button>
-          <button onClick={loadDag} disabled={loading}>Load DAG</button>
-          <button onClick={refreshGraph} disabled={loading || !bundleId.trim()}>
-            Refresh Current Graph
-          </button>
-        </div>
-      </section>
-
-      <section style={{ ...sectionStyle, marginBottom: 16 }}>
-        <h2>Search Bundles</h2>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <label style={{ flex: 1, minWidth: 240 }}>
-            Search query
-            <input
-              style={{ width: '100%', padding: 8, marginTop: 4 }}
-              value={bundleSearchQ}
-              onChange={(e) => setBundleSearchQ(e.target.value)}
-              placeholder="name, email, company..."
-            />
-          </label>
-          <label>
-            Limit
-            <input
-              type="number"
-              min={1}
-              max={100}
-              style={{ width: 100, padding: 8, marginTop: 4 }}
-              value={bundleSearchLimit}
-              onChange={(e) => setBundleSearchLimit(Number(e.target.value) || 10)}
-            />
-          </label>
-          <button onClick={runBundleSearch} disabled={loading}>Search</button>
-        </div>
-        <ul>
-          {bundleSearchResults.map((item) => (
-            <li key={item.bundleId}>
-              <button
-                onClick={() => {
-                  setBundleId(item.bundleId);
-                  setBundleResult(item);
-                  setGraphMode('bundle');
-                }}
-              >
-                {item.bundleId}
-              </button>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section style={{ ...sectionStyle, marginBottom: 16 }}>
-        <h2>Create / Update Bundle</h2>
-        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
-          <label>
-            Bundle ID
-            <input style={{ width: '100%', padding: 8, marginTop: 4 }} value={newBundleId} onChange={(e) => setNewBundleId(e.target.value)} />
-          </label>
-          <label>
-            Resume Name
-            <input style={{ width: '100%', padding: 8, marginTop: 4 }} value={newResumeName} onChange={(e) => setNewResumeName(e.target.value)} />
-          </label>
-          <label>
-            Resume URL
-            <input style={{ width: '100%', padding: 8, marginTop: 4 }} value={newResumeUrl} onChange={(e) => setNewResumeUrl(e.target.value)} />
-          </label>
-          <label>
-            Contact Full Name
-            <input
-              style={{ width: '100%', padding: 8, marginTop: 4 }}
-              value={newContactFullName}
-              onChange={(e) => setNewContactFullName(e.target.value)}
-            />
-          </label>
-          <label>
-            Contact Email
-            <input style={{ width: '100%', padding: 8, marginTop: 4 }} value={newContactEmail} onChange={(e) => setNewContactEmail(e.target.value)} />
-          </label>
-          <label>
-            Contact Phone
-            <input style={{ width: '100%', padding: 8, marginTop: 4 }} value={newContactPhone} onChange={(e) => setNewContactPhone(e.target.value)} />
-          </label>
-          <label>
-            Contact City
-            <input style={{ width: '100%', padding: 8, marginTop: 4 }} value={newContactCity} onChange={(e) => setNewContactCity(e.target.value)} />
-          </label>
-          <label>
-            Contact State
-            <input style={{ width: '100%', padding: 8, marginTop: 4 }} value={newContactState} onChange={(e) => setNewContactState(e.target.value)} />
-          </label>
-        </div>
-        <label style={{ display: 'block', marginTop: 12 }}>
-          Resume Text
-          <textarea
-            style={{ width: '100%', minHeight: 120, padding: 8, marginTop: 4 }}
-            value={newResumeText}
-            onChange={(e) => setNewResumeText(e.target.value)}
-          />
-        </label>
-        <button onClick={createBundle} disabled={loading} style={{ marginTop: 12 }}>
-          Save Bundle
-        </button>
-      </section>
-
-      <section style={{ ...sectionStyle, marginBottom: 16 }}>
-        <h2>City Radius Query</h2>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <label>
-            City
-            <input style={{ width: 200, padding: 8, marginTop: 4 }} value={cityQuery} onChange={(e) => setCityQuery(e.target.value)} />
-          </label>
-          <label>
-            Radius (miles)
-            <input
-              type="number"
-              min={1}
-              style={{ width: 120, padding: 8, marginTop: 4 }}
-              value={radiusMiles}
-              onChange={(e) => setRadiusMiles(Number(e.target.value) || DEFAULT_RADIUS_MI)}
-            />
-          </label>
-          <button onClick={handleCitySearch} disabled={loading}>Run City Search</button>
-        </div>
-        {mapError ? <p style={{ color: 'crimson' }}>{mapError}</p> : null}
-      </section>
-
-      {error ? (
-        <section style={{ ...sectionStyle, marginBottom: 16, border: '1px solid #f5c2c7', background: '#f8d7da' }}>
-          <strong>Error</strong>
-          <pre style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}>{error}</pre>
-        </section>
-      ) : null}
-
-      <section style={{ ...sectionStyle, marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <h2 style={{ marginBottom: 4 }}>Relationship Graph</h2>
-            <p style={{ margin: 0, color: '#666' }}>
-              Mode: <strong>{graphMode.toUpperCase()}</strong>
-              {graphSummary ? ` · ${graphSummary.nodes} nodes · ${graphSummary.edges} edges` : ''}
-            </p>
-          </div>
-          <label>
-            Filter nodes
-            <input style={{ marginLeft: 8, padding: 8 }} value={graphSearch} onChange={(e) => setGraphSearch(e.target.value)} />
-          </label>
-        </div>
-        <div ref={graphContainerRef} style={{ marginTop: 16 }}>
-          <RelationshipGraph graph={graphData} filteredNodes={filteredNodes} />
-        </div>
-      </section>
-
-      <section style={{ ...sectionStyle, marginBottom: 16 }}>
-        <h2>Map View</h2>
-        <MapView graph={graphData} center={mapCenter} />
-      </section>
-
-      <section style={sectionStyle}>
-        <h2>Graph JSON</h2>
-        <pre style={{ maxHeight: 360, overflow: 'auto', background: '#f8f9fb', padding: 12, borderRadius: 8 }}>
-          {JSON.stringify(graphData, null, 2)}
-        </pre>
-      </section>
+    <div style={{ marginBottom: '24px', background: '#fff', borderRadius: 8, padding: '16px 20px', boxShadow: '#e5e7eb 0px 1px 3px' }}>
+      <h3 style={{ fontSize: '18px', fontWeight: 600, margin: '0 0 12px' }}>{title}</h3>
+      {bullets.length === 0 && <p style={{ color: '#9ca3af' }}>No data extracted</p>}
+      {bullets.map(b => (
+        <li key={b.id} style={{ marginBottom: 8, position: 'relative', padding: '8px 12px', background: b.citationIds?.length ? '#f0fdf4' : '#fafafa', borderRadius: 6 }}>
+          <p style={{ margin: 0, fontSize: '14px', lineHeight: 1.5 }}>{b.bulletText}</p>
+          {b.factKey && <small style={{ color: '#93c5fd', display: 'block', marginTop: 2 }}>{b.factKey}</small>}
+          {b.citationIds?.length ? <small style={{ color: '#6b7280', display: 'block', marginTop: 4 }}>{b.citationIds.length} citation{b.citationIds.length !== 1 ? 's' : ''}</small> : null}
+        </li>
+      ))}
     </div>
   );
 }
 
-function renderNodeLabel(node: BundleNode) {
-  switch (node.kind) {
-    case 'resume':
-      return `Resume: ${(node as ResumeNode).name ?? node.id}`;
-    case 'contact':
-      return `Contact: ${(node as ContactNode).fullName ?? node.id}`;
-    case 'person':
-      return `Person: ${(node as PersonNode).fullName ?? node.id}`;
-    case 'company':
-      return `Company: ${(node as CompanyNode).name ?? node.id}`;
-    case 'job_application':
-      return `Application: ${(node as JobApplicationNode).title ?? node.id}`;
-    case 'opening':
-      return `Opening: ${(node as OpeningNode).title ?? node.id}`;
-    case 'skill':
-      return `Skill: ${(node as SkillNode).name ?? node.id}`;
-    case 'education':
-      return `Education: ${(node as EducationNode).school ?? node.id}`;
-    case 'annotation':
-      return `Annotation: ${(node as AnnotationNode).type ?? node.id}`;
-    case 'diff':
-      return `Diff: ${(node as DiffNode).name ?? node.id}`;
-    case 'geo_city':
-      return `City: ${(node as GeoCityNode).name ?? node.id}`;
-    default:
-      return node.id;
-  }
+// ── Search Panel ────────────────────────────────────────────
+
+function SearchPanel({ personId }: { personId?: string }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const doSearch = async () => {
+    if (!query.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await json<{ results: any[] }>('POST', `/search?personId=${encodeURIComponent(personId || '')}`, { query: query.trim() });
+      setResults(data?.results ?? []);
+    } catch (e: any) {
+      setError(e.message);
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ marginBottom: '24px', padding: '16px 20px', background: '#fff7ed', borderRadius: 8, border: '1px solid #fde68a' }}>
+      <h3 style={{ fontSize: '18px', fontWeight: 600, margin: '0 0 8px' }}>🔍 Search All Content</h3>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <input
+          type="text"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && doSearch()}
+          placeholder="Search facts, bullets, summaries..."
+          style={{ flex: 1, padding: '8px 12px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: '14px' }}
+        />
+        <button onClick={doSearch} disabled={loading || !query.trim()} style={{
+          padding: '8px 16px', background: loading ? '#d1d5db' : '#d97706', color: '#fff', border: 'none', borderRadius: 6, cursor: loading ? 'default' : 'pointer', fontSize: '14px'
+        }}>
+          {loading ? 'Searching...' : 'Search'}
+        </button>
+      </div>
+      {error && <p style={{ color: '#dc2626', fontSize: '12px' }}>{error}</p>}
+      {!loading && results.length > 0 ? (
+        <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+          {results.map((r: any, i: number) => (
+            <div key={i} style={{ padding: '8px 10px', background: '#fff', borderRadius: 6, marginBottom: 4, fontSize: '13px' }}>
+              <div style={{ fontWeight: 500, color: '#d97706' }}>{r.sectionId?.[0] || '—'} — {r.factKey || r.bulletText ? (r.bulletText || r.factValue || '').slice(0, 120) : '—'}</div>
+              {(r.score != null) && <small style={{ color: '#9ca3af' }}>Score: {r.score.toFixed(3)}</small>}
+            </div>
+          ))}
+        </div>
+      ) : !loading && query.trim() ? (
+        <p style={{ color: '#a3a3a3', fontSize: '13px' }}>No results found</p>
+      ) : null}
+    </div>
+  );
 }
 
-export default App;
+// ── Diff View ───────────────────────────────────────────────
+
+function DiffView({ diffs }: { diffs: BulletDiff[] }) {
+  if (!diffs.length) return <p>No diff available (need at least 2 runs).</p>;
+  return (
+    <div style={{ background: '#fff', borderRadius: 8, padding: '16px 20px', boxShadow: '#e5e7eb 0px 1px 3px' }}>
+      <h3 style={{ fontSize: '18px', fontWeight: 600, margin: '0 0 12px' }}>Version Diffs</h3>
+      {diffs.map((d, i) => (
+        <div key={i} style={{ marginBottom: 8, padding: '6px 10px', background: d.type === 'added' ? '#f0fdf4' : d.type === 'removed' ? '#fef2f2' : '#fff7ed', borderRadius: 6 }}>
+          <span style={{ fontWeight: 600, fontSize: '11px', textTransform: 'uppercase' }}>{d.type}</span>
+          {d.previousBulletText && <p style={{ margin: '4px 0', color: '#a3a3a3' }}>Old: {d.previousBulletText}</p>}
+          <p style={{ margin: '4px 0', fontWeight: 500 }}>{d.currentBulletText || <em>removed</em>}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Annotation Panel (live-bound to API) ───────────────────
+
+function AnnotationPanel({ personId, targetFactId }: { personId: string; targetFactId?: string }) {
+  const [annotations, setAnnotations] = useState<AnnotationItem[]>([]);
+  const [comment, setComment] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!personId) return;
+    setLoading(true);
+    json<AnnotationItem[]>(`GET`, `/annotations${personId ? `?personId=${encodeURIComponent(personId)}` : ''}`).then(data => {
+      setAnnotations(Array.isArray(data) ? data : []);
+    }).catch(() => setAnnotations([])).finally(() => setLoading(false));
+  }, [personId]);
+
+  const handleSave = useCallback(() => {
+    if (!comment.trim()) return;
+    json<AnnotationItem>(`PUT`, `/annotations/ann-${Date.now()}`, { commentText: comment.trim(), targetFactVersionId: targetFactId }).then((saved: AnnotationItem) => {
+      setAnnotations(prev => [...prev, saved]);
+      setComment('');
+    });
+  }, [comment, targetFactId]);
+
+  const toggleStatus = (id: string, currentStatus: 'open' | 'resolved') => {
+    json<any>(`PATCH`, `/annotations/${id}`, { status: currentStatus === 'open' ? 'resolved' : 'open' as const }).then(() => {
+      setAnnotations(prev => prev.map(a => a.id === id ? ({ ...a, status: currentStatus === 'open' ? 'open' as const : 'resolved' }) as AnnotationItem : a));
+    });
+  };
+
+  return (
+    <aside style={{ width: '280px', padding: '16px', background: '#f9fafb', borderLeft: '1px solid #e5e7eb', overflowY: 'auto' }}>
+      <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 8px' }}>Annotations</p>
+      {targetFactId && <small style={{ color: '#6b7280', display: 'block', marginBottom: 8 }}>Target: {targetFactId.slice(0, 16)}...</small>}
+      <textarea value={comment} placeholder="Add a note..." onChange={e => setComment(e.target.value)} style={{ width: '100%', minHeight: 80, fontSize: '13px', padding: 8, borderRadius: 6, resize: 'vertical' }} />
+      <button onClick={handleSave} style={{ marginTop: 4, fontSize: '12px', padding: '6px 12px' }}>Save Note</button>
+
+      {loading ? (
+        <p style={{ color: '#9ca3af', fontSize: '12px' }}>Loading...</p>
+      ) : annotations.map(a => (
+        <div key={a.id} style={{ marginBottom: 8, padding: '8px', background: a.status === 'resolved' ? '#f0fdf4' : '#fff', borderRadius: 6, fontSize: '13px' }}>
+          <div>{a.commentText}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+            <small style={{ color: '#9ca3af' }}>{new Date(a.createdAt).toLocaleDateString()}</small>
+            <button onClick={() => toggleStatus(a.id, a.status as 'open' | 'resolved')} style={{ fontSize: '10px', cursor: 'pointer' }}>{a.status === 'resolved' ? 'Reopen' : 'Resolve'}</button>
+          </div>
+        </div>
+      ))}
+    </aside>
+  );
+}
+
+// ── Relationship Suggestions (live-bound to API) ────────────
+
+function RelationshipSuggestions({ personId }: { personId: string }) {
+  const [edges, setEdges] = useState<RelationshipEdge[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!personId) return;
+    setLoading(true);
+    json<any>(`GET`, `/inferences/${encodeURIComponent(personId)}/suggested`).then(result => {
+      const candidates = result?.candidates || [];
+      setEdges(Array.isArray(candidates) ? candidates : []);
+    }).catch(() => setEdges([])).finally(() => setLoading(false));
+  }, [personId]);
+
+  const confirmEdge = (relId: string) => {
+    json<any>(`PATCH`, `/inferences/${encodeURIComponent(relId)}`, { status: 'confirmed' as const, fromPersonId: personId }).then(() => setEdges(prev => prev.filter(e => e.relationshipId !== relId)));
+  };
+
+  const rejectEdge = (relId: string) => {
+    json<any>(`PATCH`, `/inferences/${encodeURIComponent(relId)}`, { status: 'rejected' as const, fromPersonId: personId }).then(() => setEdges(prev => prev.filter(e => e.relationshipId !== relId)));
+  };
+
+  if (loading) return <p style={{ color: '#9ca3af' }}>Loading...</p>;
+  return (
+    <div style={{ padding: '12px', background: '#fffbe6', border: '1px solid #fef08a', borderRadius: 8, marginBottom: '12px' }}>
+      <p style={{ fontWeight: 600, margin: '0 0 4px', fontSize: '13px' }}>&#9888; Suggested Relationships</p>
+      {edges.length === 0 ? <p style={{ margin: 0, fontSize: '12px', color: '#a3a3a3' }}>No suggestions yet.</p> : edges.map(e => (
+        <div key={e.relationshipId} style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: '12px' }}>{(e.fromPersonName || e.fromPersonId.slice(0, 16))} &rarr; {(e.toPersonName || e.toPersonId.slice(0, 16))}{e.relationshipType ? <span style={{ color: '#a16207', marginLeft: 6 }}>({e.relationshipType.replace(/_/g, ' ')})</span> : null}</span>
+          <div>
+            <button onClick={() => confirmEdge(e.relationshipId)} style={{ fontSize: '11px', padding: '4px 8px', marginRight: 4 }}>Confirm</button>
+            <button onClick={() => rejectEdge(e.relationshipId)} style={{ fontSize: '11px', padding: '4px 8px' }}>Reject</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Main App Page for a single candidate ────────────────────
+
+export function CandidateProfilePage() {
+  type Tab = 'bullets' | 'map' | 'diff' | 'annotations' | 'relationships';
+  const [activeTab, setActiveTab] = useState<Tab>('bullets');
+  const [personId, setPersonId] = useState(() => new URLSearchParams(window.location.search).get('personId') || 'candidate-demo');
+  const [loadingBullets, setLoadingBullets] = useState(false);
+  const [loadingDiffs, setLoadingDiffs] = useState(false);
+
+  useEffect(() => {
+    const searchPerson = new URLSearchParams(window.location.search).get('personId');
+    setPersonId(searchPerson || 'candidate-demo');
+  }, []);
+
+  const [bulletMappings, setBulletMappings] = useState<Record<string, BulletWithMeta[]>>({});
+  const [factsBySection, setFactsBySection] = useState<Record<string, any[]>>({});
+  const [diffResults, setDiffResults] = useState<BulletDiff[]>([]);
+
+  useEffect(() => {
+    if (!personId) return;
+    setLoadingBullets(true);
+    setLoadingDiffs(true);
+
+    // Fetch bullets by section from the API.
+    Promise.all([
+      json<any>(`GET`, `/insights/${encodeURIComponent(personId)}/bullet-mappings`).catch(() => null),
+      json<any>(`GET`, `/insights/${encodeURIComponent(personId)}/facts`).catch(() => null),
+      json<BulletDiff[]>(`GET`, `/insights/${encodeURIComponent(personId)}/differences`).catch(() => []),
+    ]).then(([bulletsData, factsData, diffsData]) => {
+      // API returns flat ResumeBulletResponse[] — group by section client-side
+      let bulletSectionsMap: Record<string, BulletWithMeta[]> = {};
+      if (Array.isArray(bulletsData)) {
+        for (const b of bulletsData) {
+          const sec = b.sectionId || 'experience';
+          if (!bulletSectionsMap[sec]) bulletSectionsMap[sec] = [];
+          bulletSectionsMap[sec].push({
+            id: b.bulletId ?? `b-${Math.random().toString(36).slice(6)}`,
+            bulletText: b.bulletText,
+            citationIds: b.citationFactVersionIds ?? [],
+            sectionId: sec,
+          });
+        }
+        setBulletMappings(bulletSectionsMap);
+      } else if (bulletsData?.sections) {
+        // backward-compat for grouped shape
+        for (const [section, items] of Object.entries(bulletsData.sections)) {
+          bulletSectionsMap[section] = (items as any[]).map((b: any) => ({
+            id: b.bulletId ?? `b-${Math.random().toString(36).slice(6)}`,
+            bulletText: b.bulletText,
+            citationIds: b.citationFactVersionIds ?? [],
+            sectionId: b.sectionId || 'experience',
+          }));
+        }
+        setBulletMappings(bulletSectionsMap);
+      }
+
+      // Facts response: { personId, sections: Record<string, FactVersionResponse[]> }
+      if (factsData?.sections) {
+        const newFacts: Record<string, any[]> = {};
+        for (const [section, items] of Object.entries(factsData.sections)) {
+          if (Array.isArray(items)) {
+            newFacts[section] = [...items];
+          }
+        }
+        setFactsBySection(newFacts);
+      }
+
+      if (diffsData && diffsData.length > 0) {
+        setDiffResults(diffsData);
+      } else {
+        setDiffResults([]);
+      }
+      setLoadingBullets(false);
+      setLoadingDiffs(false);
+    });
+  }, [personId]);
+
+  // Only surface the Map tab when the candidate actually has location-bearing facts.
+  const hasLocationData = extractLocationRecords(factsBySection).length > 0;
+  const candidateName = (factsBySection['profile'] ?? [])
+    .find((f: any) => f?.factKey === 'profile.name')?.factValue?.toString().trim() || null;
+  const goHome = () => {
+    window.history.pushState({}, '', window.location.pathname);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  };
+  // Navigate to a different candidate from within the profile page (e.g. clicking a graph node).
+  // Updates state directly (so the data-loading effect re-runs) and keeps the URL shareable.
+  const selectPerson = (id: string) => {
+    if (!id || id === personId) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('personId', id);
+    window.history.pushState({}, '', url.toString());
+    setActiveTab('relationships');
+    setPersonId(id);
+  };
+  const tabs: Tab[] = ['bullets', ...(hasLocationData ? ['map' as const] : []), 'diff', 'annotations', 'relationships'];
+  return (
+    <div style={{ maxWidth: 1200, margin: '48px auto', padding: '0 20px' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <button onClick={goHome} title="Back to ingestion" style={{ padding: '8px 14px', fontSize: '13px', background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 6, cursor: 'pointer' }}>
+            &larr; Home
+          </button>
+          <div>
+            <h1 style={{ fontSize: '24px', fontWeight: 700, margin: 0 }}>{candidateName ?? 'Greenhouse Resume Builder'}</h1>
+            <p style={{ color: '#6b7280', margin: '4px 0 0' }}>{personId}</p>
+          </div>
+        </div>
+        <button onClick={() => setLoadingBullets(true)} disabled={loadingBullets} style={{ padding: '8px 16px', fontSize: '13px', background: loadingBullets ? '#d1d5db' : '#2563eb', color: '#fff', border: 'none', borderRadius: 6, cursor: loadingBullets ? 'default' : 'pointer' }}>
+          {loadingBullets ? 'Loading...' : 'Refresh'}
+        </button>
+      </div>
+
+      {/* Tab Navigation */}
+      <nav style={{ display: 'flex', gap: 0, borderBottom: '1px solid #e5e7eb', marginBottom: 24 }}>
+        {tabs.map(tab => (
+          <button key={tab} onClick={() => setActiveTab(tab)} style={{ padding: '8px 16px', fontSize: '13px', fontWeight: 500, borderBottom: activeTab === tab ? '2px solid #2563eb' : '2px solid transparent', color: activeTab === tab ? '#2563eb' : '#6b7280', background: 'none', borderLeft: 'none', borderTop: 'none', borderRight: 'none', cursor: 'pointer', textTransform: 'capitalize' }}>
+            {tab}
+          </button>
+        ))}
+      </nav>
+
+      {/* Search Panel — always shown */}
+      <SearchPanel personId={personId || undefined} />
+
+      {/* Main Content Area */}
+      <div style={{ display: 'flex', gap: 0 }}>
+        <main style={{ flex: 1, marginRight: activeTab === 'annotations' || activeTab === 'map' || activeTab === 'relationships' ? 0 : 280 }}>
+          {activeTab === 'bullets' && (
+            <>
+              <SectionCard title="Profile"    bullets={bulletMappings['profile'] ?? []} />
+              <SectionCard title="Experience" bullets={bulletMappings['experience'] ?? []} />
+              <SectionCard title="Skills"     bullets={bulletMappings['skills'] ?? []} />
+              <SectionCard title="Education"  bullets={bulletMappings['education'] ?? []} />
+              <SectionCard title="Summary"    bullets={bulletMappings['summary'] ?? []} />
+
+              {Object.keys(factsBySection).length > 0 && (
+                // Display all extracted facts grouped by section.
+                <details style={{ marginTop: '16px', padding: '12px', background: '#f0fdf4', borderRadius: 8 }}>
+                  <summary style={{ fontWeight: 600, fontSize: '14px', cursor: 'pointer' }}>View all extracted facts</summary>
+
+                  {/* Facts grouped by section. */}
+                  <table style={{ width: '100%', marginTop: 8, fontSize: '12px' }} cellPadding={8}>
+                    {Object.entries(factsBySection).map(([section, facts]) => (
+                      <tbody key={section}>
+                        <tr><th>Facts — {section}</th></tr>
+                        {facts.map((fact: any, i: number) => (
+                          <tr key={i} style={{ borderTop: '1px solid #e5e7eb' }}>
+                            <td>{JSON.stringify(fact.factKey)}</td>
+                            <td>{JSON.stringify(fact.factValue)}</td>
+                            <td>{fact.extractedAt ? new Date(fact.extractedAt).toLocaleDateString() : '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    ))}
+                  </table>
+                </details>
+              )}
+
+            </>
+          )}
+
+          {activeTab === 'map' && (
+            <MapView personId={personId} sections={factsBySection} />
+          )}
+
+          {activeTab === 'annotations' && <div style={{ padding: 20 }}><p>Select a bullet and click "Annotate" to view/edit notes for that fact. Annotations panel on the right, right.</p></div>}
+
+          {activeTab === 'diff' && (
+            <DiffView diffs={diffResults} />
+          )}
+
+          {activeTab === 'relationships' ? (
+            personId ? (
+              <>
+                <RelationshipsExplorer personId={personId} onSelectPerson={selectPerson} />
+                <RelationshipSuggestions personId={personId} />
+              </>
+            ) : <p>Please select a candidate first.</p>
+          ) : (
+            <div style={{ padding: 20 }}><p>Select a bullet and click "Annotate" to view/edit notes for that fact. Annotations panel to the right.</p></div>
+          )}
+
+        </main>
+
+        {/* Annotation Panel — always rendered when annotations tab selected */}
+        {activeTab === 'annotations' && personId ? <AnnotationPanel personId={personId} /> : null}
+      </div>
+    </div>
+  );
+}
+
+// ── Landing Page ────────────────────────────────────────────
+
+/** Read a File's bytes as a base64 string (without the data: URL prefix). */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string; // "data:<mime>;base64,<payload>"
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('File read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+const MAX_UPLOAD_TOTAL_BYTES = 4 * 1024 * 1024; // 4 MB total across all files
+
+export function LandingPage() {
+  const [runs, setRuns] = useState<ExtractionRun[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [sourceInput, setSourceInput] = useState('');
+  const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
+  const [ingestStatus, setIngestStatus] = useState<'idle' | 'submitting' | 'polling' | 'done' | 'error'>('idle');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [deconflicting, setDeconflicting] = useState(false);
+  const [deconflictMsg, setDeconflictMsg] = useState<string | null>(null);
+
+  // Load recent runs on mount, then refresh periodically so the list reflects background
+  // run progress (queued → in_progress → completed) without a manual page reload.
+  const loadRuns = useCallback(() => {
+    json<ExtractionRun[]>('GET', '/ingestion-requests?tenantId=tenant-dev')
+      .then(data => setRuns(Array.isArray(data) ? data.slice(0, 20) : []))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadRuns();
+    const interval = setInterval(loadRuns, 5000);
+    const onVisible = () => { if (document.visibilityState === 'visible') loadRuns(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVisible); };
+  }, [loadRuns]);
+
+  // Merge person records that share a name (likely the same individual) into one canonical
+  // profile, then refresh the list so the deduplicated names show up immediately.
+  const runDeconflict = useCallback(async () => {
+    setDeconflicting(true);
+    setDeconflictMsg(null);
+    try {
+      const r = await json<{ groupsFound: number; personsMerged: number }>('POST', '/persons/deconflict', { tenantId: 'tenant-dev' });
+      const merged = r?.personsMerged ?? 0;
+      const groups = r?.groupsFound ?? 0;
+      setDeconflictMsg(
+        merged > 0
+          ? `Merged ${merged} duplicate profile${merged === 1 ? '' : 's'} across ${groups} name group${groups === 1 ? '' : 's'}.`
+          : 'No same-name duplicates found.',
+      );
+      loadRuns();
+    } catch {
+      setDeconflictMsg('Deconfliction failed. Is the ingestion service running?');
+    } finally {
+      setDeconflicting(false);
+    }
+  }, [loadRuns]);
+
+  // Collapse the runs list into a person-centric view: multiple completed ingestions
+  // of the same candidate fold into a single row (with a ×N badge) so repeated runs of
+  // one person no longer look like unmerged duplicates. In-progress / failed runs (which
+  // have no person yet) stay as individual rows. Mirrors the person-level dedup.
+  const displayRuns = useMemo(() => {
+    const byPerson = new Map<string, { run: ExtractionRun; count: number }>();
+    const standalone: Array<{ run: ExtractionRun; count: number }> = [];
+    for (const r of runs) {
+      if (r.status === 'completed' && r.personId) {
+        const existing = byPerson.get(r.personId);
+        if (!existing) {
+          byPerson.set(r.personId, { run: r, count: 1 });
+        } else {
+          existing.count += 1;
+          if (new Date(r.createdAt).getTime() > new Date(existing.run.createdAt).getTime()) existing.run = r;
+        }
+      } else {
+        standalone.push({ run: r, count: 1 });
+      }
+    }
+    return [...standalone, ...byPerson.values()].sort(
+      (a, b) => new Date(b.run.createdAt).getTime() - new Date(a.run.createdAt).getTime(),
+    );
+  }, [runs]);
+
+  const doSubmit = async () => {
+    if (!sourceInput.trim() && !selectedFiles?.length) return;
+    setIngestStatus('submitting');
+    setErrorMessage(null);
+    try {
+      // Build sources from URL input (one per line, web sources)
+      const sources: Array<{name :string; mimeType:string; blobPath?: string; uri?: string; sourceType:'web'|'upload';capturedAt?:string; data?: string}> = sourceInput.split(/\r?\n/)
+        .map(url => url.trim())
+        .filter(Boolean)
+        .map((url, i) => ({
+          name: `source-${i}`,
+          mimeType: 'text/html',
+          uri: url,
+          sourceType: 'web',
+        }));
+
+      if (selectedFiles) {
+        const totalBytes = Array.from(selectedFiles).reduce((sum, f) => sum + f.size, 0);
+        if (totalBytes > MAX_UPLOAD_TOTAL_BYTES) {
+          setIngestStatus('error');
+          setErrorMessage(`Uploads total ${(totalBytes / 1024 / 1024).toFixed(1)} MB, which exceeds the ${MAX_UPLOAD_TOTAL_BYTES / 1024 / 1024} MB limit. Please upload smaller files.`);
+          return;
+        }
+        for (const file of Array.from(selectedFiles)) {
+          sources.push({
+            name: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            blobPath: file.webkitRelativePath ?? file.name,
+            sourceType: 'upload' as any,
+            data: await fileToBase64(file),
+          });
+        }
+      }
+
+      if (!sources.length) {
+        setIngestStatus('error');
+        setErrorMessage('Please provide at least one URL or file.');
+        return;
+      }
+
+      const result = await json<Record<string, unknown>>('POST', '/ingestion-requests', {
+        tenantId: 'tenant-dev',
+        sourceDocuments: sources,
+      } as any);
+      const runId = (result.runId ?? result.id) as string;
+      if (!runId) throw new Error('No runId in response');
+
+      setIngestStatus('polling');
+
+      // Poll for completion
+      let attempts = 0;
+      while (attempts < 120) {
+        await new Promise(r => setTimeout(r, 5000));
+        const status = await json<ExtractionRun>('GET', `/ingestion-requests/${runId}/status`)
+          .catch(() => null);
+
+        if (status) {
+          // The status endpoint returns `runId` (not `id`); normalize so list keys/dedup work.
+          const normalized: ExtractionRun = { ...status, id: status.id ?? (status as any).runId ?? runId };
+          setRuns(prev => [normalized, ...prev.filter(r => r.id !== normalized.id)].slice(0, 21));
+
+          if (normalized.status === 'completed' && normalized.personId) {
+            // Navigate to candidate profile automatically
+            window.history.pushState({}, '', `?personId=${normalized.personId}`);
+            (window as any).dispatchEvent(new PopStateEvent('popstate'));
+            return;
+          }
+          if (normalized.status === 'failed') {
+            setIngestStatus('error');
+            setErrorMessage((normalized as any).failedReason || 'Ingestion failed');
+            return;
+          }
+        }
+        attempts++;
+      }
+
+      // Timeout — still show polling state
+      setIngestStatus('polling');
+
+    } catch (e: any) {
+      setIngestStatus('error');
+      setErrorMessage(e.message || 'Submission failed');
+    }
+  };
+
+  return (
+    <div style={{ maxWidth: 800, margin: '48px auto', padding: '0 20px' }}>
+      <h1 style={{ fontSize: '32px', fontWeight: 700, textAlign: 'center' }}>Greenhouse Resume Builder</h1>
+      <p style={{ textAlign: 'center', color: '#6b7280', marginTop: 8 }}>Ingest candidate sources · Review extracted facts with citations · Build polished resumes.</p>
+
+      {showForm && (
+        <div style={{ marginTop: 24, background: '#fff', padding: 24, borderRadius: 12, boxShadow: '#e5e7eb 0 4px 6px' }}>
+          <h3 style={{ margin: '0 0 16px' }}>Submit New Source</h3>
+
+          {/* URLs — one per line */}
+          <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: 4 }}>Web URLs (one per line)</label>
+          <textarea
+            value={sourceInput}
+            onChange={e => setSourceInput(e.target.value)}
+            placeholder="https://linkedin.com/in/candidate&#10;https://example.com/resume.pdf"
+            rows={4}
+            style={{ display: 'block', width: '100%', padding: '8px 12px', marginBottom: 8, borderRadius: 6, border: '1px solid #d1d5db', fontSize: '14px', resize: 'vertical' }}
+          />
+
+          {/* File upload */}
+          <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: 8 }}>Or upload files</label>
+          {selectedFiles?.length ? (
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
+              {Array.from(selectedFiles).map((f, i) => (
+                <span key={i} style={{ padding: '4px 10px', background: '#eff6ff', borderRadius: 4, fontSize: '12px' }}>{f.name}</span>
+              ))}
+            </div>
+          ) : null}
+          <input type="file" multiple onChange={e => setSelectedFiles(e.target.files)} style={{ display: 'block', width: '100%', marginBottom: 8 }} />
+
+          {/* Actions */}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={doSubmit}
+              disabled={ingestStatus === 'submitting' || ingestStatus === 'polling' || (!sourceInput.trim() && !selectedFiles?.length)}
+              style={{ padding: '8px 16px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, cursor: (ingestStatus === 'submitting' || ingestStatus === 'polling') ? 'default' : 'pointer', fontSize: '14px', opacity: (!sourceInput.trim() && !selectedFiles?.length) ? 0.5 : 1 }}
+            >
+              {ingestStatus === 'submitting' ? 'Submitting...' : ingestStatus === 'polling' ? 'Processing... (wait)' : 'Submit'}
+            </button>
+            <button onClick={() => setShowForm(false)} disabled={ingestStatus === 'submitting' || ingestStatus === 'polling'} style={{ padding: '8px 16px', background: '#e5e7eb', border: 'none', borderRadius: 6, cursor: (ingestStatus === 'submitting' || ingestStatus === 'polling') ? 'default' : 'pointer' }}>Cancel</button>
+          </div>
+
+          {/* Status messages */}
+          {ingestStatus === 'error' && errorMessage && (
+            <div style={{ marginTop: 12, padding: '8px 12px', background: '#fef2f2', borderRadius: 6, fontSize: '13px', color: '#dc2626' }}>
+              {errorMessage}
+            </div>
+          )}
+          {ingestStatus === 'polling' && (
+            <div style={{ marginTop: 12, padding: '8px 12px', background: '#eff6ff', borderRadius: 6, fontSize: '13px', color: '#2563eb' }}>
+              Processing sources... this may take a few minutes.
+            </div>
+          )}
+        </div>
+      )}
+
+      {!showForm && ingestStatus !== 'polling' && (
+        <button onClick={() => setShowForm(true)} style={{ display: 'block', margin: '16px auto', padding: '10px 20px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, fontSize: '14px' }}>+ Ingest New Source</button>
+      )}
+
+      {/* Recent Runs */}
+      <div style={{ marginTop: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <h2 style={{ fontSize: '16px', fontWeight: 600, margin: 0 }}>Recent Runs</h2>
+          <button
+            onClick={runDeconflict}
+            disabled={deconflicting}
+            title="Merge person records that share a name into one profile"
+            style={{ fontSize: '12px', padding: '6px 12px', background: deconflicting ? '#e5e7eb' : '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 6, cursor: deconflicting ? 'default' : 'pointer' }}
+          >
+            {deconflicting ? 'Deconflicting…' : 'Deconflict duplicates'}
+          </button>
+        </div>
+        {deconflictMsg && (
+          <div style={{ marginBottom: 8, padding: '6px 10px', background: '#eff6ff', borderRadius: 6, fontSize: '12px', color: '#2563eb' }}>
+            {deconflictMsg}
+          </div>
+        )}
+        {runs.length === 0 ? (
+          <p style={{ color: '#9ca3af', fontSize: '13px' }}>No runs yet.</p>
+        ) : (
+          displayRuns.map(({ run: r, count }) => (
+            <div
+              key={r.id ?? (r as any).runId}
+              onClick={() => {
+                  if (r.personId) {
+                    window.history.pushState({}, '', `?personId=${encodeURIComponent(r.personId!)}`);
+                    (window as any).dispatchEvent(new PopStateEvent('popstate'));
+                  }
+                }}
+              style={{ padding: '8px 12px', background: '#f9fafb', borderRadius: 6, marginTop: 4, cursor: r.personId ? 'pointer' : 'default', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+            >
+              <span style={{ fontSize: '13px', color: r.status === 'completed' ? '#059669' : r.status === 'failed' ? '#dc2626' : '#6b7280' }}>
+                {r.status === 'completed' && r.personId ? (<>✓ {r.personName || r.personId}{count > 1 ? <span title={`${count} ingestion runs merged into one candidate`} style={{ color: '#6b7280', fontWeight: 600 }}> ×{count}</span> : null}</>) : r.status || '—'}
+              </span>
+              <span style={{ color: '#9ca3af', fontSize: '12px' }}>{new Date(r.createdAt).toLocaleDateString()}</span>
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Help text */}
+      {!showForm && (
+        <div style={{ marginTop: 32, padding: '16px', background: '#fffbeb', borderRadius: 8, border: '1px solid #fde68a' }}>
+          <p style={{ margin: '0 0 4px', fontWeight: 500, fontSize: '14px' }}>How it works</p>
+          <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.8, color: '#6b7280', fontSize: '13px' }}>
+            <li>Paste candidate URLs (one per line) or upload resume files</li>
+            <li>We extract experience, skills, education and summary facts with source citations</li>
+            <li>Once complete, the profile opens automatically where you can review, annotate and explore relationships</li>
+          </ol>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── App Root ────────────────────────────────────────────────
+
+export function useAppAuth() {
+  const auth = useAuth();
+  const { accessToken, authenticated, getAccessToken, getToken } = auth;
+  useEffect(() => {
+    setAuthToken(authenticated ? getToken() : null);
+    setAuthTokenProvider(authenticated ? getAccessToken : null);
+  }, [accessToken, authenticated, getAccessToken, getToken]);
+  return auth;
+}
+
+export default function App() {
+  const auth = useAppAuth();
+
+  // Re-render on browser navigation (Back/Forward and our pushState + popstate
+  // dispatches) so the page switches between LandingPage and CandidateProfilePage.
+  const [, setNavTick] = useState(0);
+  useEffect(() => {
+    const onPop = () => setNavTick(n => n + 1);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  // Show CandidateProfilePage only when a personId is specified in the URL,
+  // otherwise show LandingPage (the entry screen for ingestion).
+  const params = new URLSearchParams(window.location.search);
+  const hasPersonId = params.get('personId') !== null;
+
+  return (
+    <div style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', minHeight: '100vh', background: '#f3f4f6' }}>
+      {/* ── Top bar ─────────────────────────────────────── */}
+      <header style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '10px 20px', background: '#fff', borderBottom: '1px solid #e5e7eb',
+      }}>
+        <h1 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Greenhouse Resume Builder</h1>
+        <AuthBar />
+      </header>
+
+      {isAuthConfigured && auth.loading ? (
+        <main style={{ maxWidth: 760, margin: '48px auto', padding: '0 20px', color: '#6b7280' }}>Checking Microsoft sign-in…</main>
+      ) : isAuthConfigured && !auth.authenticated ? (
+        <main style={{ maxWidth: 760, margin: '48px auto', padding: '0 20px', background: '#fff', borderRadius: 8, boxShadow: '#e5e7eb 0px 1px 3px' }}>
+          <h2 style={{ margin: '0 0 8px', paddingTop: 20, fontSize: 20 }}>Sign in required</h2>
+          <p style={{ margin: '0 0 20px', color: '#6b7280' }}>Use the Microsoft sign-in button above to access resume services.</p>
+        </main>
+      ) : hasPersonId ? <CandidateProfilePage /> : <LandingPage />}
+    </div>
+  );
+}
