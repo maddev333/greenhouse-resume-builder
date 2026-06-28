@@ -38,6 +38,11 @@ jobs:
 
       - name: Build UI
         working-directory: ui
+        env:
+          VITE_AZURE_AD_CLIENT_ID: ${{ vars.VITE_AZURE_AD_CLIENT_ID }}
+          VITE_API_CLIENT_ID: ${{ vars.VITE_API_CLIENT_ID }}
+          VITE_API_SCOPE: ${{ vars.VITE_API_SCOPE }}
+          VITE_APP_VERSION: ${{ github.sha }}
         run: npm run build
 
       - name: Package UI for deployment
