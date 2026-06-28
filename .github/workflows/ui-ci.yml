@@ -16,6 +16,7 @@ jobs:
     env:
       VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
       VITE_AZURE_AD_CLIENT_ID: ${{ vars.VITE_AZURE_AD_CLIENT_ID }}
+      VITE_API_CLIENT_ID: ${{ vars.VITE_API_CLIENT_ID }}
       VITE_API_SCOPE: ${{ vars.VITE_API_SCOPE }}
       VITE_APP_VERSION: ${{ github.sha }}
     steps:
