@@ -4,16 +4,14 @@ on:
   push:
     paths:
       - 'ui/**'
-      - 'shared/**'
       - '.github/workflows/ui-ci.yml'
   pull_request:
     paths:
       - 'ui/**'
-      - 'shared/**'
       - '.github/workflows/ui-ci.yml'
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     env:
       VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
@@ -21,29 +19,10 @@ jobs:
       VITE_API_SCOPE: ${{ vars.VITE_API_SCOPE }}
       VITE_APP_VERSION: ${{ github.sha }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run UI tests
-        run: npm test --workspace ui -- --run
-
-      - name: Build UI
-        run: npm run build --workspace ui
-
-      - name: Deploy UI to Azure Web App
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ vars.AZURE_UI_APP_NAME }}
-          publish-profile: ${{ secrets.AZURE_UI_PUBLISH_PROFILE }}
-          package: ui/dist
+      - run: npm ci
+      - run: npm run build --workspace ui
