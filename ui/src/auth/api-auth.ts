@@ -6,7 +6,7 @@
 import { getAccessToken as msalGetAccessToken } from './useAuth';
 
 let _token: string | null = null;
-let _apiBaseUrl: string = import.meta.env.VITE_API_URL ?? '/api/v1';
+let _apiBaseUrl: string = import.meta.env.VITE_API_BASE_URL ?? '/api/v1';
 let _tokenProvider: (() => Promise<string | null>) | null = null;
 
 export interface ExtractionRun {
