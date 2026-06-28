@@ -1,29 +1,26 @@
-name: UI Zip Deploy
+name: Deploy UI to Azure App Service
 
 on:
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Environment to deploy to'
-        required: true
-        default: 'development'
-        type: choice
-        options:
-          - development
-          - staging
-          - production
   push:
-    branches: [ main, workshop/dev-pipelines ]
+    branches:
+      - main
+      - deploy-ui-workflow
+      - update-ui-vite-auth-vars
     paths:
-      - '.github/workflows/ui-zip-deploy.yml'
       - 'ui/**'
+      - '.github/workflows/ui-zip-deploy.yml'
 
 jobs:
-  build-and-package:
+  build-and-deploy:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ui
+    env:
+      VITE_AZURE_AD_CLIENT_ID: ${{ vars.VITE_AZURE_AD_CLIENT_ID }}
+      VITE_API_SCOPE: ${{ vars.VITE_API_SCOPE }}
+      VITE_API_CLIENT_ID: ${{ vars.VITE_API_CLIENT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,39 +28,24 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: 20
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: ui/package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
+      - name: Build app
         run: npm run build
 
-      - name: Package UI for deployment
+      - name: Package build output
         run: |
           cd dist
-          zip -r ../ui-deploy.zip .
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ui-deploy
-          path: ui-deploy.zip
-
-  deploy-to-azure:
-    needs: build-and-package
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'development' }}
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ui-deploy
+          zip -r ../ui-dist.zip .
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
-          app-name: greenhouse-resume-builder-ui
-          package: ui-deploy.zip
+          app-name: ${{ vars.AZURE_UI_APP_NAME }}
+          publish-profile: ${{ secrets.AZURE_UI_PUBLISH_PROFILE }}
+          package: ui/ui-dist.zip
