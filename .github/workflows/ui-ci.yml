@@ -2,8 +2,6 @@ name: UI CI
 
 on:
   push:
-    branches:
-      - main
     paths:
       - 'ui/**'
       - '.github/workflows/ui-ci.yml'
@@ -13,34 +11,18 @@ on:
       - '.github/workflows/ui-ci.yml'
 
 jobs:
-  build-ui:
+  build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ui
     env:
-      VITE_APP_VERSION: ${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
+      VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+      VITE_AZURE_AD_CLIENT_ID: ${{ vars.VITE_AZURE_AD_CLIENT_ID }}
+      VITE_API_SCOPE: ${{ vars.VITE_API_SCOPE }}
+      VITE_APP_VERSION: ${{ github.sha }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
-          cache-dependency-path: ui/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build UI
-        env:
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
-          VITE_TENANT_ID: ${{ vars.VITE_TENANT_ID }}
-          VITE_CLIENT_ID: ${{ vars.VITE_CLIENT_ID }}
-          VITE_REDIRECT_URI: ${{ vars.VITE_REDIRECT_URI }}
-          VITE_POST_LOGOUT_REDIRECT_URI: ${{ vars.VITE_POST_LOGOUT_REDIRECT_URI }}
-          VITE_SCOPE: ${{ vars.VITE_SCOPE }}
-          VITE_APP_VERSION: ${{ env.VITE_APP_VERSION }}
-        run: npm run build
+      - run: npm ci
+      - run: npm run build --workspace ui
