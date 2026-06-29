@@ -45,6 +45,10 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ready' as string, timestamp: new Date().toISOString() });
 });
 
+app.get('/ping', (_req, res) => {
+  res.json({ status: 'pong' as string, timestamp: new Date().toISOString() });
+});
+
 // ── Route modules ─────────────────────────────────────────────────
 
 // Ingestion (returns early if auth fails via middleware)
