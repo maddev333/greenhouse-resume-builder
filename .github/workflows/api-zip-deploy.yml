@@ -75,5 +75,6 @@ jobs:
               {"name": "AZURE_AUTHORITY_HOST", "value": "${{ secrets.AZURE_AUTHORITY_HOST || 'https://login.microsoftonline.com' }}"},
               {"name": "PORT", "value": "3001"},
               {"name": "NODE_ENV", "value": "production"},
-              {"name": "WEBSITE_NODE_DEFAULT_VERSION", "value": "~20"}
+              {"name": "WEBSITE_NODE_DEFAULT_VERSION", "value": "~20"},
+              {"name": "startupCommand", "value": "pm2 start server.js --no-daemon"}
             ]
