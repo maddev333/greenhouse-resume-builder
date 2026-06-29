@@ -51,6 +51,64 @@ jobs:
           # Create root server.js for Azure App Service compatibility (points to dist/server.js)
           echo "require('./dist/server.js');" > deploy/server.js
 
+      - name: Set Azure Web App settings via Kudu API
+        env:
+          APP_NAME: ${{ vars.AZURE_API_APP_NAME }}
+          PUBLISH_PROFILE: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
+          PGHOST: ${{ vars.PGHOST }}
+          PGPORT: ${{ vars.PGPORT || '5432' }}
+          PGDATABASE: ${{ vars.PGDATABASE || 'resume_builder' }}
+          PGUSER: ${{ vars.PGUSER }}
+          PGPASSWORD: ${{ vars.PGPASSWORD || '' }}
+          PGSSLMODE: ${{ vars.PGSSLMODE || 'require' }}
+          PG_AAD_SCOPE: ${{ vars.PG_AAD_SCOPE || 'https://ossrdbms-aad.database.windows.net/.default' }}
+          PG_POOL_MAX: ${{ vars.PG_POOL_MAX || '10' }}
+          AZURE_SEARCH_SERVICE: ${{ vars.AZURE_SEARCH_SERVICE }}
+          AZURE_SEARCH_API_KEY: ${{ vars.AZURE_SEARCH_API_KEY || '' }}
+          AZURE_SEARCH_ENDPOINT_SUFFIX: ${{ vars.AZURE_SEARCH_ENDPOINT_SUFFIX || 'search.windows.net' }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_AD_CLIENT_ID: ${{ vars.AZURE_AD_CLIENT_ID }}
+          AZURE_AUTHORITY_HOST: ${{ vars.AZURE_AUTHORITY_HOST || 'https://login.microsoftonline.com' }}
+          PORT: "3001"
+          NODE_ENV: "production"
+          WEBSITE_NODE_DEFAULT_VERSION: "~20"
+        run: |
+          # Extract username and password from publish profile
+          USERNAME=$(echo "$PUBLISH_PROFILE" | grep -oP '(?<=userName=")[^"]*' | head -n 1)
+          PASSWORD=$(echo "$PUBLISH_PROFILE" | grep -oP '(?<=userPWD=")[^"]*' | head -n 1)
+          
+          if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
+            echo "Failed to extract credentials from publish profile"
+            exit 1
+          fi
+
+          SCM_URL="https://${APP_NAME}.scm.azurewebsites.net"
+          echo "Using SCM URL: ${SCM_URL}"
+          
+          # Set app settings via Kudu API
+          curl -s -X POST "${SCM_URL}/api/settings" \
+            -H "Content-Type: application/json" \
+            -u "${USERNAME}:${PASSWORD}" \
+            -d "{
+              \"PGHOST\": \"${PGHOST}\",
+              \"PGPORT\": \"${PGPORT}\",
+              \"PGDATABASE\": \"${PGDATABASE}\",
+              \"PGUSER\": \"${PGUSER}\",
+              \"PGPASSWORD\": \"${PGPASSWORD}\",
+              \"PGSSLMODE\": \"${PGSSLMODE}\",
+              \"PG_AAD_SCOPE\": \"${PG_AAD_SCOPE}\",
+              \"PG_POOL_MAX\": \"${PG_POOL_MAX}\",
+              \"AZURE_SEARCH_SERVICE\": \"${AZURE_SEARCH_SERVICE}\",
+              \"AZURE_SEARCH_API_KEY\": \"${AZURE_SEARCH_API_KEY}\",
+              \"AZURE_SEARCH_ENDPOINT_SUFFIX\": \"${AZURE_SEARCH_ENDPOINT_SUFFIX}\",
+              \"AZURE_TENANT_ID\": \"${AZURE_TENANT_ID}\",
+              \"AZURE_AD_CLIENT_ID\": \"${AZURE_AD_CLIENT_ID}\",
+              \"AZURE_AUTHORITY_HOST\": \"${AZURE_AUTHORITY_HOST}\",
+              \"PORT\": \"${PORT}\",
+              \"NODE_ENV\": \"${NODE_ENV}\",
+              \"WEBSITE_NODE_DEFAULT_VERSION\": \"${WEBSITE_NODE_DEFAULT_VERSION}\"
+            }" || echo "Warning: Failed to set app settings via Kudu API"
+
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
