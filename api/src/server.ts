@@ -12,6 +12,16 @@ app.use(cors());
 // base64 in the UI) are not rejected by the default 100 KB limit.
 app.use(express.json({ limit: '8mb' }));
 
+// ── Public health check (no auth required, registered first to ensure it works even if init fails) ────────────────────────
+
+app.get('/health', (_req: any, res: any) => {
+  res.status(200).json({ status: 'ready' as string, timestamp: new Date().toISOString() });
+});
+
+app.get('/ping', (_req: any, res: any) => {
+  res.status(200).send('pong');
+});
+
 // ── Initialization (runs before routes are mounted) ────────────────
 
 import { ensureMVPTablesExist } from './db/pg-client';
@@ -38,16 +48,6 @@ bootstrap().catch(err => {
 // ── Authentication middleware (applied to all API routes) ─────────
 
 app.use('/api/', authMiddleware as any);
-
-// ── Public health check (no auth required) ────────────────────────
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ready' as string, timestamp: new Date().toISOString() });
-});
-
-app.get('/ping', (_req, res) => {
-  res.json({ status: 'pong' as string, timestamp: new Date().toISOString() });
-});
 
 // ── Route modules ─────────────────────────────────────────────────
 
