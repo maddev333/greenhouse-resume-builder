@@ -98,21 +98,32 @@ jobs:
           NODE_ENV: "production"
           WEBSITE_NODE_DEFAULT_VERSION: "~20"
         run: |
-          set -euo pipefail
-          # Extract username and password from publish profile
+          set -uo pipefail
+          # Extract username, password, and the real SCM host from the publish profile.
           USERNAME=$(echo "$PUBLISH_PROFILE" | grep -oP '(?<=userName=")[^"]*' | head -n 1)
           PASSWORD=$(echo "$PUBLISH_PROFILE" | grep -oP '(?<=userPWD=")[^"]*' | head -n 1)
-          
+          # Newer App Service apps only expose a REGIONAL SCM host
+          # (e.g. <app>.scm.<region>-01.azurewebsites.net); the legacy global
+          # <app>.scm.azurewebsites.net no longer resolves. Read the real host from the
+          # profile's MSDeploy publishUrl instead of constructing it from the app name.
+          SCM_HOST=$(echo "$PUBLISH_PROFILE" | grep -oP '(?<=publishUrl=")[^"]*\.scm\.[^":/]*' | head -n 1)
+
           if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
-            echo "Failed to extract credentials from publish profile"
+            echo "::error::Failed to extract credentials from publish profile"
             exit 1
           fi
 
-          SCM_URL="https://${APP_NAME}.scm.azurewebsites.net"
+          if [ -z "$SCM_HOST" ]; then
+            SCM_HOST="${APP_NAME}.scm.azurewebsites.net"
+            echo "Publish profile contained no SCM publishUrl; falling back to ${SCM_HOST}"
+          fi
+          SCM_URL="https://${SCM_HOST}"
           echo "Using SCM URL: ${SCM_URL}"
-          
-          # Set app settings via Kudu API (fail the job on a non-2xx response)
-          curl -sS --fail-with-body -X POST "${SCM_URL}/api/settings" \
+
+          # Best effort: app-settings sync must not block deploying the code itself,
+          # but surface a clear warning (and the HTTP status) when it fails.
+          HTTP_CODE=$(curl -sS -o /tmp/kudu_settings.out -w '%{http_code}' \
+            -X POST "${SCM_URL}/api/settings" \
             -H "Content-Type: application/json" \
             -u "${USERNAME}:${PASSWORD}" \
             -d "{
@@ -133,7 +144,14 @@ jobs:
               \"PORT\": \"${PORT}\",
               \"NODE_ENV\": \"${NODE_ENV}\",
               \"WEBSITE_NODE_DEFAULT_VERSION\": \"${WEBSITE_NODE_DEFAULT_VERSION}\"
-            }"
+            }") || true
+
+          if [ "${HTTP_CODE}" = "200" ] || [ "${HTTP_CODE}" = "204" ]; then
+            echo "App settings updated successfully (HTTP ${HTTP_CODE})."
+          else
+            echo "::warning::Failed to update app settings via Kudu API (HTTP ${HTTP_CODE:-000}); continuing with deployment."
+            cat /tmp/kudu_settings.out 2>/dev/null || true
+          fi
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
