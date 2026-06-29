@@ -51,27 +51,31 @@ jobs:
           # Create root server.js for Azure App Service compatibility (points to dist/server.js)
           echo "require('./dist/server.js');" > deploy/server.js
 
+      - name: Azure login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
       - name: Set Azure Web App settings
         uses: azure/appservice-settings@v1
         with:
           app-name: ${{ vars.AZURE_API_APP_NAME }}
-          publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
           app-settings-json: |
             [
-              {"name": "PGHOST", "value": "${{ secrets.PGHOST }}"},
-              {"name": "PGPORT", "value": "${{ secrets.PGPORT || '5432' }}"},
-              {"name": "PGDATABASE", "value": "${{ secrets.PGDATABASE || 'resume_builder' }}"},
-              {"name": "PGUSER", "value": "${{ secrets.PGUSER }}"},
-              {"name": "PGPASSWORD", "value": "${{ secrets.PGPASSWORD || '' }}"},
-              {"name": "PGSSLMODE", "value": "${{ secrets.PGSSLMODE || 'require' }}"},
-              {"name": "PG_AAD_SCOPE", "value": "${{ secrets.PG_AAD_SCOPE || 'https://ossrdbms-aad.database.windows.net/.default' }}"},
-              {"name": "PG_POOL_MAX", "value": "${{ secrets.PG_POOL_MAX || '10' }}"},
-              {"name": "AZURE_SEARCH_SERVICE", "value": "${{ secrets.AZURE_SEARCH_SERVICE }}"},
-              {"name": "AZURE_SEARCH_API_KEY", "value": "${{ secrets.AZURE_SEARCH_API_KEY || '' }}"},
-              {"name": "AZURE_SEARCH_ENDPOINT_SUFFIX", "value": "${{ secrets.AZURE_SEARCH_ENDPOINT_SUFFIX || 'search.windows.net' }}"},
-              {"name": "AZURE_TENANT_ID", "value": "${{ secrets.AZURE_TENANT_ID }}"},
-              {"name": "AZURE_AD_CLIENT_ID", "value": "${{ secrets.AZURE_AD_CLIENT_ID }}"},
-              {"name": "AZURE_AUTHORITY_HOST", "value": "${{ secrets.AZURE_AUTHORITY_HOST || 'https://login.microsoftonline.com' }}"},
+              {"name": "PGHOST", "value": "${{ vars.PGHOST }}"},
+              {"name": "PGPORT", "value": "${{ vars.PGPORT || '5432' }}"},
+              {"name": "PGDATABASE", "value": "${{ vars.PGDATABASE || 'resume_builder' }}"},
+              {"name": "PGUSER", "value": "${{ vars.PGUSER }}"},
+              {"name": "PGPASSWORD", "value": "${{ vars.PGPASSWORD || '' }}"},
+              {"name": "PGSSLMODE", "value": "${{ vars.PGSSLMODE || 'require' }}"},
+              {"name": "PG_AAD_SCOPE", "value": "${{ vars.PG_AAD_SCOPE || 'https://ossrdbms-aad.database.windows.net/.default' }}"},
+              {"name": "PG_POOL_MAX", "value": "${{ vars.PG_POOL_MAX || '10' }}"},
+              {"name": "AZURE_SEARCH_SERVICE", "value": "${{ vars.AZURE_SEARCH_SERVICE }}"},
+              {"name": "AZURE_SEARCH_API_KEY", "value": "${{ vars.AZURE_SEARCH_API_KEY || '' }}"},
+              {"name": "AZURE_SEARCH_ENDPOINT_SUFFIX", "value": "${{ vars.AZURE_SEARCH_ENDPOINT_SUFFIX || 'search.windows.net' }}"},
+              {"name": "AZURE_TENANT_ID", "value": "${{ vars.AZURE_TENANT_ID }}"},
+              {"name": "AZURE_AD_CLIENT_ID", "value": "${{ vars.AZURE_AD_CLIENT_ID }}"},
+              {"name": "AZURE_AUTHORITY_HOST", "value": "${{ vars.AZURE_AUTHORITY_HOST || 'https://login.microsoftonline.com' }}"},
               {"name": "PORT", "value": "3001"},
               {"name": "NODE_ENV", "value": "production"},
               {"name": "WEBSITE_NODE_DEFAULT_VERSION", "value": "~20"}
