@@ -1,15 +1,9 @@
 name: Deploy API to Azure Web App
 
+# Auto-triggers are disabled: deployment is performed manually via a zip
+# upload (npm run package:zip --workspace api). Run on demand from the Actions
+# tab ("Run workflow") if you ever need the pipeline-based deploy.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'api/**'
-      - 'shared/**'
-      - '.github/workflows/api-zip-deploy.yml'
-      - 'package.json'
-      - 'package-lock.json'
   workflow_dispatch:
 
 permissions:

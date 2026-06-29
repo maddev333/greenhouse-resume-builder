@@ -1,22 +1,8 @@
 name: API CI
 
+# Auto-triggers are disabled in favor of manual zip deploys. Run on demand
+# from the Actions tab ("Run workflow") if you need a CI build.
 on:
-  push:
-    paths:
-      - 'api/**'
-      - 'shared/**'
-      - '.github/workflows/api-ci.yml'
-      - '.github/workflows/api-zip-deploy.yml'
-      - 'package.json'
-      - 'package-lock.json'
-  pull_request:
-    paths:
-      - 'api/**'
-      - 'shared/**'
-      - '.github/workflows/api-ci.yml'
-      - '.github/workflows/api-zip-deploy.yml'
-      - 'package.json'
-      - 'package-lock.json'
   workflow_dispatch:
 
 permissions:

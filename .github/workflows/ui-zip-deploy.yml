@@ -1,5 +1,8 @@
 name: UI Zip Deploy
 
+# Auto-triggers are disabled: deployment is performed manually via a zip
+# upload (npm run package:zip --workspace ui). Run on demand from the Actions
+# tab ("Run workflow") if you ever need the pipeline-based deploy.
 on:
   workflow_dispatch:
     inputs:
@@ -12,11 +15,6 @@ on:
           - development
           - staging
           - production
-  push:
-    branches: [ main ]
-    paths:
-      - '.github/workflows/ui-zip-deploy.yml'
-      - 'ui/**'
 
 permissions:
   contents: read

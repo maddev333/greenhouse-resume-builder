@@ -1,14 +1,8 @@
 name: UI CI
 
+# Auto-triggers are disabled in favor of manual zip deploys. Run on demand
+# from the Actions tab ("Run workflow") if you need a CI build.
 on:
-  push:
-    paths:
-      - 'ui/**'
-      - '.github/workflows/ui-ci.yml'
-  pull_request:
-    paths:
-      - 'ui/**'
-      - '.github/workflows/ui-ci.yml'
   workflow_dispatch:
 
 permissions:
