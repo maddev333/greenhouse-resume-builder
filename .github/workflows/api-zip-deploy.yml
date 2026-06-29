@@ -60,6 +60,9 @@ jobs:
           # Application code + manifest.
           cp -R api/dist "$DEPLOY/dist"
           cp api/package.json "$DEPLOY/package.json"
+          # web.config routes IIS/iisnode traffic to the Node app on Windows App
+          # Service; without it IIS 404s every route (e.g. /ping).
+          cp api/web.config "$DEPLOY/web.config"
 
           # Repoint the shared dependency at the local tarball, then install production
           # deps standalone (RUNNER_TEMP is outside the repo, so no workspace root applies).
@@ -88,7 +91,6 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_AD_CLIENT_ID: ${{ vars.AZURE_AD_CLIENT_ID }}
           AZURE_AUTHORITY_HOST: ${{ vars.AZURE_AUTHORITY_HOST || 'https://login.microsoftonline.com' }}
-          PORT: "3001"
           NODE_ENV: "production"
           WEBSITE_NODE_DEFAULT_VERSION: "~20"
         run: |
@@ -135,7 +137,6 @@ jobs:
               \"AZURE_TENANT_ID\": \"${AZURE_TENANT_ID}\",
               \"AZURE_AD_CLIENT_ID\": \"${AZURE_AD_CLIENT_ID}\",
               \"AZURE_AUTHORITY_HOST\": \"${AZURE_AUTHORITY_HOST}\",
-              \"PORT\": \"${PORT}\",
               \"NODE_ENV\": \"${NODE_ENV}\",
               \"WEBSITE_NODE_DEFAULT_VERSION\": \"${WEBSITE_NODE_DEFAULT_VERSION}\"
             }") || true

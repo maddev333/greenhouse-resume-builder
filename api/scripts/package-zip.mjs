@@ -13,6 +13,7 @@
  * Output zip layout (contents at the zip root, ready for Kudu ZipDeploy /
  * `az webapp deploy --type zip`):
  *   server.js            (shim -> dist/server.js)
+ *   web.config           (IIS/iisnode routing for Azure App Service on Windows)
  *   package.json
  *   dist/...
  *   node_modules/...
@@ -121,6 +122,9 @@ async function main() {
 
     log('assembling deployment package...');
     fs.cpSync(path.join(apiDir, 'dist'), path.join(staging, 'dist'), { recursive: true });
+    // web.config is required for Azure App Service on Windows (IIS + iisnode) to
+    // route HTTP requests to the Node app; without it IIS 404s every route.
+    fs.copyFileSync(path.join(apiDir, 'web.config'), path.join(staging, 'web.config'));
     const pkg = JSON.parse(fs.readFileSync(path.join(apiDir, 'package.json'), 'utf8'));
     pkg.dependencies['@greenhouse-resume-builder/shared'] = `file:vendor/${tgz}`;
     fs.writeFileSync(path.join(staging, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);

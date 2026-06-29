@@ -133,8 +133,12 @@ app.use('/api/', authMiddleware as any);
 
 // ── Health + Listen ───────────────────────────────────────────────
 
-const PORT = Number(process.env.PORT ?? 3001);
+// On Azure App Service for Windows, Node runs behind IIS/iisnode which passes a
+// named pipe (a string) via process.env.PORT — so do NOT coerce it to a Number,
+// or the app will listen on a random port and IIS can never reach it. Locally,
+// PORT is an unset/numeric value and app.listen handles both forms.
+const PORT = process.env.PORT ?? 3001;
 console.log('[Server] PGHOST=' + process.env.PGHOST + ' PGUSER=' + process.env.PGUSER + ' PGPASSWORD_len=' + (process.env.PGPASSWORD?.length ?? 0));
-app.listen(PORT, () => {
+app.listen(PORT as any, () => {
   console.log(`[Server] MVP Express API ready on port ${PORT}, NODE_ENV=${process.env.NODE_ENV ?? 'not set'}`);
 });
