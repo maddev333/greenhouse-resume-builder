@@ -8,7 +8,8 @@
     "watch": "tsc -w",
     "start": "func start",
     "start:dev": "concurrently \"npm run watch\" \"func start --lang node --watch\"",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "package:zip": "node scripts/package-zip.mjs"
   },
   "dependencies": {
     "@azure/ai-form-recognizer": "^5.0.0",
@@ -26,6 +27,7 @@
     "@types/node": "^20.14.0",
     "@types/pg": "^8.11.0",
     "@types/uuid": "^10.0.0",
+    "archiver": "^7.0.1",
     "concurrently": "^9.0.0",
     "typescript": "^5.4.0"
   }
