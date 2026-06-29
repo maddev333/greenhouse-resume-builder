@@ -48,6 +48,8 @@ jobs:
           cp api/package.json deploy/package.json
           cp api/package-lock.json deploy/package-lock.json
           cp -R api/node_modules deploy/node_modules
+          # Create root server.js for Azure App Service compatibility (points to dist/server.js)
+          echo "require('./dist/server.js');" > deploy/server.js
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
@@ -55,3 +57,110 @@ jobs:
           app-name: ${{ vars.AZURE_API_APP_NAME }}
           publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
           package: deploy
+
+      - name: Enable Managed Identity on API Web App
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }} || true
+            # Enable system-assigned managed identity if not already enabled
+            az webapp identity assign --name ${{ vars.AZURE_API_APP_NAME }} --resource-group ${{ vars.AZURE_API_RESOURCE_GROUP }} --output none || true
+
+      - name: Configure Azure Web App settings for Managed Identities
+        uses: azure/appservice-settings@v2
+        with:
+          app-name: ${{ vars.AZURE_API_APP_NAME }}
+          publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
+          app-settings-json: |
+            [
+              {
+                "name": "PGHOST",
+                "value": "${{ secrets.PGHOST }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PGPORT",
+                "value": "${{ secrets.PGPORT || '5432' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PGDATABASE",
+                "value": "${{ secrets.PGDATABASE || 'resume_builder' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PGUSER",
+                "value": "${{ secrets.PGUSER }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PGPASSWORD",
+                "value": "${{ secrets.PGPASSWORD || '' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PGSSLMODE",
+                "value": "${{ secrets.PGSSLMODE || 'require' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PG_AAD_SCOPE",
+                "value": "${{ secrets.PG_AAD_SCOPE || 'https://ossrdbms-aad.database.windows.net/.default' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PG_POOL_MAX",
+                "value": "${{ secrets.PG_POOL_MAX || '10' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_SEARCH_SERVICE",
+                "value": "${{ secrets.AZURE_SEARCH_SERVICE }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_SEARCH_API_KEY",
+                "value": "${{ secrets.AZURE_SEARCH_API_KEY || '' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_SEARCH_ENDPOINT_SUFFIX",
+                "value": "${{ secrets.AZURE_SEARCH_ENDPOINT_SUFFIX || 'search.windows.net' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_TENANT_ID",
+                "value": "${{ secrets.AZURE_TENANT_ID }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_AD_CLIENT_ID",
+                "value": "${{ secrets.AZURE_AD_CLIENT_ID }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_AUTHORITY_HOST",
+                "value": "${{ secrets.AZURE_AUTHORITY_HOST || 'https://login.microsoftonline.com' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PORT",
+                "value": "3001",
+                "slotSetting": false
+              },
+              {
+                "name": "NODE_ENV",
+                "value": "production",
+                "slotSetting": false
+              }
+            ]
+
+      - name: Configure startup command
+        uses: azure/appservice-settings@v2
+        with:
+          app-name: ${{ vars.AZURE_API_APP_NAME }}
+          publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
+          general-settings-json: |
+            {
+              "appCommandLine": ""
+            }
