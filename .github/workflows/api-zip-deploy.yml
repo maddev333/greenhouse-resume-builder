@@ -51,12 +51,11 @@ jobs:
           # Create root server.js for Azure App Service compatibility (points to dist/server.js)
           echo "require('./dist/server.js');" > deploy/server.js
 
-      - name: Deploy to Azure Web App and configure settings
-        uses: azure/webapps-deploy@v3
+      - name: Set Azure Web App settings
+        uses: azure/appservice-settings@v1
         with:
           app-name: ${{ vars.AZURE_API_APP_NAME }}
           publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
-          package: deploy
           app-settings-json: |
             [
               {"name": "PGHOST", "value": "${{ secrets.PGHOST }}"},
@@ -75,6 +74,12 @@ jobs:
               {"name": "AZURE_AUTHORITY_HOST", "value": "${{ secrets.AZURE_AUTHORITY_HOST || 'https://login.microsoftonline.com' }}"},
               {"name": "PORT", "value": "3001"},
               {"name": "NODE_ENV", "value": "production"},
-              {"name": "WEBSITE_NODE_DEFAULT_VERSION", "value": "~20"},
-              {"name": "WEBSITE_WEBDEPLOY_USE_SCM", "value": "true"}
+              {"name": "WEBSITE_NODE_DEFAULT_VERSION", "value": "~20"}
             ]
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_API_APP_NAME }}
+          publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
+          package: deploy
