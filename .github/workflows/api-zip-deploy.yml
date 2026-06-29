@@ -62,7 +62,7 @@ jobs:
         uses: azure/appservice-settings@v1
         with:
           app-name: ${{ vars.AZURE_API_APP_NAME }}
-          publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
+          slot-name: production
           app-settings-json: |
             [
               {
@@ -151,3 +151,13 @@ jobs:
                 "slotSetting": false
               }
             ]
+
+      - name: Configure startup command
+        uses: azure/appservice-settings@v1
+        with:
+          app-name: ${{ vars.AZURE_API_APP_NAME }}
+          slot-name: production
+          general-settings-json: |
+            {
+              "linuxFxVersion": "NODE|20"
+            }
