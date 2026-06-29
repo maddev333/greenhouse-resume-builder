@@ -3,7 +3,6 @@ name: Deploy API to Azure Web App
 on:
   push:
     branches:
-      - deploy-api-workflow
       - main
     paths:
       - 'api/**'
@@ -12,6 +11,13 @@ on:
       - 'package.json'
       - 'package-lock.json'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-deploy
+  cancel-in-progress: false
 
 jobs:
   build-and-deploy:
@@ -37,19 +43,38 @@ jobs:
       - name: Build api package
         run: npm run build --workspace api
 
-      - name: Prune dev dependencies for api
-        run: npm prune --omit=dev --workspace api
-
-      - name: Prepare deployment package
+      - name: Assemble self-contained deployment package
         run: |
-          rm -rf deploy
-          mkdir -p deploy
-          cp -R api/dist deploy/dist
-          cp api/package.json deploy/package.json
-          cp api/package-lock.json deploy/package-lock.json
-          cp -R api/node_modules deploy/node_modules
-          # Create root server.js for Azure App Service compatibility (points to dist/server.js)
-          echo "require('./dist/server.js');" > deploy/server.js
+          set -euo pipefail
+          # This repo is an npm workspaces monorepo, so api's runtime dependencies
+          # (pg, helmet, cors, jose, jsonwebtoken, dotenv, @azure/*) and the
+          # @greenhouse-resume-builder/shared package are hoisted to the ROOT
+          # node_modules, NOT api/node_modules. Copying api/node_modules alone would
+          # ship an incomplete dependency tree and crash at runtime. Instead, build an
+          # isolated, production-only package outside the workspace tree so npm resolves
+          # the complete dependency set.
+          DEPLOY="${RUNNER_TEMP}/api-deploy"
+          rm -rf "$DEPLOY"
+          mkdir -p "$DEPLOY/vendor"
+
+          # Pack the already-built shared workspace as a local tarball dependency.
+          npm pack --workspace shared --pack-destination "$DEPLOY/vendor"
+          shopt -s nullglob
+          tarballs=("$DEPLOY"/vendor/*.tgz)
+          SHARED_TGZ="$(basename "${tarballs[0]}")"
+
+          # Application code + manifest.
+          cp -R api/dist "$DEPLOY/dist"
+          cp api/package.json "$DEPLOY/package.json"
+
+          # Repoint the shared dependency at the local tarball, then install production
+          # deps standalone (RUNNER_TEMP is outside the repo, so no workspace root applies).
+          cd "$DEPLOY"
+          SHARED_TGZ="$SHARED_TGZ" node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.dependencies['@greenhouse-resume-builder/shared']='file:vendor/'+process.env.SHARED_TGZ;fs.writeFileSync('package.json',JSON.stringify(p,null,2));"
+          npm install --omit=dev --no-audit --no-fund
+
+          # Root server.js for Azure App Service compatibility (points to dist/server.js).
+          echo "require('./dist/server.js');" > server.js
 
       - name: Set Azure Web App settings via Kudu API
         env:
@@ -59,12 +84,12 @@ jobs:
           PGPORT: ${{ vars.PGPORT || '5432' }}
           PGDATABASE: ${{ vars.PGDATABASE || 'resume_builder' }}
           PGUSER: ${{ vars.PGUSER }}
-          PGPASSWORD: ${{ vars.PGPASSWORD || '' }}
+          PGPASSWORD: ${{ secrets.PGPASSWORD }}
           PGSSLMODE: ${{ vars.PGSSLMODE || 'require' }}
           PG_AAD_SCOPE: ${{ vars.PG_AAD_SCOPE || 'https://ossrdbms-aad.database.windows.net/.default' }}
           PG_POOL_MAX: ${{ vars.PG_POOL_MAX || '10' }}
           AZURE_SEARCH_SERVICE: ${{ vars.AZURE_SEARCH_SERVICE }}
-          AZURE_SEARCH_API_KEY: ${{ vars.AZURE_SEARCH_API_KEY || '' }}
+          AZURE_SEARCH_API_KEY: ${{ secrets.AZURE_SEARCH_API_KEY }}
           AZURE_SEARCH_ENDPOINT_SUFFIX: ${{ vars.AZURE_SEARCH_ENDPOINT_SUFFIX || 'search.windows.net' }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_AD_CLIENT_ID: ${{ vars.AZURE_AD_CLIENT_ID }}
@@ -73,6 +98,7 @@ jobs:
           NODE_ENV: "production"
           WEBSITE_NODE_DEFAULT_VERSION: "~20"
         run: |
+          set -euo pipefail
           # Extract username and password from publish profile
           USERNAME=$(echo "$PUBLISH_PROFILE" | grep -oP '(?<=userName=")[^"]*' | head -n 1)
           PASSWORD=$(echo "$PUBLISH_PROFILE" | grep -oP '(?<=userPWD=")[^"]*' | head -n 1)
@@ -85,8 +111,8 @@ jobs:
           SCM_URL="https://${APP_NAME}.scm.azurewebsites.net"
           echo "Using SCM URL: ${SCM_URL}"
           
-          # Set app settings via Kudu API
-          curl -s -X POST "${SCM_URL}/api/settings" \
+          # Set app settings via Kudu API (fail the job on a non-2xx response)
+          curl -sS --fail-with-body -X POST "${SCM_URL}/api/settings" \
             -H "Content-Type: application/json" \
             -u "${USERNAME}:${PASSWORD}" \
             -d "{
@@ -107,11 +133,11 @@ jobs:
               \"PORT\": \"${PORT}\",
               \"NODE_ENV\": \"${NODE_ENV}\",
               \"WEBSITE_NODE_DEFAULT_VERSION\": \"${WEBSITE_NODE_DEFAULT_VERSION}\"
-            }" || echo "Warning: Failed to set app settings via Kudu API"
+            }"
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ vars.AZURE_API_APP_NAME }}
           publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
-          package: deploy
+          package: ${{ runner.temp }}/api-deploy

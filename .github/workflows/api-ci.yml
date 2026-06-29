@@ -1,6 +1,14 @@
 name: API CI
 
 on:
+  push:
+    paths:
+      - 'api/**'
+      - 'shared/**'
+      - '.github/workflows/api-ci.yml'
+      - '.github/workflows/api-zip-deploy.yml'
+      - 'package.json'
+      - 'package-lock.json'
   pull_request:
     paths:
       - 'api/**'
@@ -10,6 +18,13 @@ on:
       - 'package.json'
       - 'package-lock.json'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:

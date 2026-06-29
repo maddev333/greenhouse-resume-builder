@@ -13,14 +13,22 @@ on:
           - staging
           - production
   push:
-    branches: [ main, workshop/dev-pipelines ]
+    branches: [ main ]
     paths:
       - '.github/workflows/ui-zip-deploy.yml'
       - 'ui/**'
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-deploy-${{ inputs.environment || 'development' }}
+  cancel-in-progress: false
+
 jobs:
-  build-and-package:
+  build-and-deploy:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'development' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,43 +40,25 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      - name: Install dependencies (UI)
-        working-directory: ui
+      - name: Install dependencies
         run: npm ci
 
       - name: Build UI
-        working-directory: ui
         env:
           VITE_AZURE_AD_CLIENT_ID: ${{ vars.VITE_AZURE_AD_CLIENT_ID }}
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
           VITE_API_CLIENT_ID: ${{ vars.VITE_API_CLIENT_ID }}
           VITE_API_SCOPE: ${{ vars.VITE_API_SCOPE }}
           VITE_APP_VERSION: ${{ github.sha }}
-        run: npm run build
+        run: npm run build --workspace ui
 
       - name: Package UI for deployment
         working-directory: ui/dist
-        run: zip -r ../../ui-deploy.zip .
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ui-deploy
-          path: ui-deploy.zip
-
-  deploy-to-azure:
-    needs: build-and-package
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'development' }}
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ui-deploy
+        run: zip -r "${RUNNER_TEMP}/ui-deploy.zip" .
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ vars.UI_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: ui-deploy.zip
+          package: ${{ runner.temp }}/ui-deploy.zip
