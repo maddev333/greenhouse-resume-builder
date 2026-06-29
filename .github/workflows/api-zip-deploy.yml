@@ -58,18 +58,12 @@ jobs:
           publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
           package: deploy
 
-      - name: Login to Azure
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
-          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-
       - name: Configure Azure Web App settings for Managed Identities
         uses: azure/cli@v2
         with:
           inlineScript: |
+            az login --service-principal --username ${{ secrets.AZURE_CLIENT_ID }} --password ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }}
+             
             az webapp config appsettings set \
               --name ${{ vars.AZURE_API_APP_NAME }} \
               --resource-group ${{ vars.AZURE_API_RESOURCE_GROUP }} \
