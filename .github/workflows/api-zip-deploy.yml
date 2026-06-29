@@ -71,32 +71,31 @@ jobs:
         with:
           inlineScript: |
             az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }} || true
-            
-           # Set app settings
-           az webapp config appsettings set \
-             --name ${{ vars.AZURE_API_APP_NAME }} \
-             --resource-group ${{ vars.AZURE_API_RESOURCE_GROUP }} \
-             --settings \
-               PGHOST="${{ secrets.PGHOST }}" \
-               PGPORT="${{ secrets.PGPORT || '5432' }}" \
-               PGDATABASE="${{ secrets.PGDATABASE || 'resume_builder' }}" \
-               PGUSER="${{ secrets.PGUSER }}" \
-               PGPASSWORD="${{ secrets.PGPASSWORD || '' }}" \
-               PGSSLMODE="${{ secrets.PGSSLMODE || 'require' }}" \
-               PG_AAD_SCOPE="${{ secrets.PG_AAD_SCOPE || 'https://ossrdbms-aad.database.windows.net/.default' }}" \
-               PG_POOL_MAX="${{ secrets.PG_POOL_MAX || '10' }}" \
-               AZURE_SEARCH_SERVICE="${{ secrets.AZURE_SEARCH_SERVICE }}" \
-               AZURE_SEARCH_API_KEY="${{ secrets.AZURE_SEARCH_API_KEY || '' }}" \
-               AZURE_SEARCH_ENDPOINT_SUFFIX="${{ secrets.AZURE_SEARCH_ENDPOINT_SUFFIX || 'search.windows.net' }}" \
-               AZURE_TENANT_ID="${{ secrets.AZURE_TENANT_ID }}" \
-               AZURE_AD_CLIENT_ID="${{ secrets.AZURE_AD_CLIENT_ID }}" \
-               AZURE_AUTHORITY_HOST="${{ secrets.AZURE_AUTHORITY_HOST || 'https://login.microsoftonline.com' }}" \
-               PORT="3001" \
-               NODE_ENV="production" \
-               --slot-settings false
-
-           # Set Linux Node.js runtime version
-           az webapp config set \
-             --name ${{ vars.AZURE_API_APP_NAME }} \
-             --resource-group ${{ vars.AZURE_API_RESOURCE_GROUP }} \
-             --linux-fx-version "NODE|20"
+             
+            # Set app settings
+            az webapp config appsettings set \
+              --name ${{ vars.AZURE_API_APP_NAME }} \
+              --resource-group ${{ vars.AZURE_API_RESOURCE_GROUP }} \
+              --settings \
+                PGHOST="${{ secrets.PGHOST }}" \
+                PGPORT="${{ secrets.PGPORT || '5432' }}" \
+                PGDATABASE="${{ secrets.PGDATABASE || 'resume_builder' }}" \
+                PGUSER="${{ secrets.PGUSER }}" \
+                PGPASSWORD="${{ secrets.PGPASSWORD || '' }}" \
+                PGSSLMODE="${{ secrets.PGSSLMODE || 'require' }}" \
+                PG_AAD_SCOPE="${{ secrets.PG_AAD_SCOPE || 'https://ossrdbms-aad.database.windows.net/.default' }}" \
+                PG_POOL_MAX="${{ secrets.PG_POOL_MAX || '10' }}" \
+                AZURE_SEARCH_SERVICE="${{ secrets.AZURE_SEARCH_SERVICE }}" \
+                AZURE_SEARCH_API_KEY="${{ secrets.AZURE_SEARCH_API_KEY || '' }}" \
+                AZURE_SEARCH_ENDPOINT_SUFFIX="${{ secrets.AZURE_SEARCH_ENDPOINT_SUFFIX || 'search.windows.net' }}" \
+                AZURE_TENANT_ID="${{ secrets.AZURE_TENANT_ID }}" \
+                AZURE_AD_CLIENT_ID="${{ secrets.AZURE_AD_CLIENT_ID }}" \
+                AZURE_AUTHORITY_HOST="${{ secrets.AZURE_AUTHORITY_HOST || 'https://login.microsoftonline.com' }}" \
+                PORT="3001" \
+                NODE_ENV="production" \
+               
+            # Set Linux Node.js runtime version
+            az webapp config set \
+              --name ${{ vars.AZURE_API_APP_NAME }} \
+              --resource-group ${{ vars.AZURE_API_RESOURCE_GROUP }} \
+              --linux-fx-version "NODE|20"
