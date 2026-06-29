@@ -58,44 +58,96 @@ jobs:
           publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
           package: deploy
 
-      - name: Enable Managed Identity on API Web App
-        uses: azure/cli@v2
-        with:
-          inlineScript: |
-            az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }} || true
-            # Enable system-assigned managed identity if not already enabled
-            az webapp identity assign --name ${{ vars.AZURE_API_APP_NAME }} --resource-group ${{ vars.AZURE_API_RESOURCE_GROUP }} --output none || true
-
       - name: Configure Azure Web App settings for Managed Identities
-        uses: azure/cli@v2
+        uses: azure/appservice-settings@v1
         with:
-          inlineScript: |
-            az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }} || true
-             
-            # Set app settings
-            az webapp config appsettings set \
-              --name ${{ vars.AZURE_API_APP_NAME }} \
-              --resource-group ${{ vars.AZURE_API_RESOURCE_GROUP }} \
-              --settings \
-                PGHOST="${{ secrets.PGHOST }}" \
-                PGPORT="${{ secrets.PGPORT || '5432' }}" \
-                PGDATABASE="${{ secrets.PGDATABASE || 'resume_builder' }}" \
-                PGUSER="${{ secrets.PGUSER }}" \
-                PGPASSWORD="${{ secrets.PGPASSWORD || '' }}" \
-                PGSSLMODE="${{ secrets.PGSSLMODE || 'require' }}" \
-                PG_AAD_SCOPE="${{ secrets.PG_AAD_SCOPE || 'https://ossrdbms-aad.database.windows.net/.default' }}" \
-                PG_POOL_MAX="${{ secrets.PG_POOL_MAX || '10' }}" \
-                AZURE_SEARCH_SERVICE="${{ secrets.AZURE_SEARCH_SERVICE }}" \
-                AZURE_SEARCH_API_KEY="${{ secrets.AZURE_SEARCH_API_KEY || '' }}" \
-                AZURE_SEARCH_ENDPOINT_SUFFIX="${{ secrets.AZURE_SEARCH_ENDPOINT_SUFFIX || 'search.windows.net' }}" \
-                AZURE_TENANT_ID="${{ secrets.AZURE_TENANT_ID }}" \
-                AZURE_AD_CLIENT_ID="${{ secrets.AZURE_AD_CLIENT_ID }}" \
-                AZURE_AUTHORITY_HOST="${{ secrets.AZURE_AUTHORITY_HOST || 'https://login.microsoftonline.com' }}" \
-                PORT="3001" \
-                NODE_ENV="production" \
-               
-            # Set Linux Node.js runtime version
-            az webapp config set \
-              --name ${{ vars.AZURE_API_APP_NAME }} \
-              --resource-group ${{ vars.AZURE_API_RESOURCE_GROUP }} \
-              --linux-fx-version "NODE|20"
+          app-name: ${{ vars.AZURE_API_APP_NAME }}
+          publish-profile: ${{ secrets.AZURE_API_PUBLISH_PROFILE }}
+          app-settings-json: |
+            [
+              {
+                "name": "PGHOST",
+                "value": "${{ secrets.PGHOST }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PGPORT",
+                "value": "${{ secrets.PGPORT || '5432' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PGDATABASE",
+                "value": "${{ secrets.PGDATABASE || 'resume_builder' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PGUSER",
+                "value": "${{ secrets.PGUSER }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PGPASSWORD",
+                "value": "${{ secrets.PGPASSWORD || '' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PGSSLMODE",
+                "value": "${{ secrets.PGSSLMODE || 'require' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PG_AAD_SCOPE",
+                "value": "${{ secrets.PG_AAD_SCOPE || 'https://ossrdbms-aad.database.windows.net/.default' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PG_POOL_MAX",
+                "value": "${{ secrets.PG_POOL_MAX || '10' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_SEARCH_SERVICE",
+                "value": "${{ secrets.AZURE_SEARCH_SERVICE }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_SEARCH_API_KEY",
+                "value": "${{ secrets.AZURE_SEARCH_API_KEY || '' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_SEARCH_ENDPOINT_SUFFIX",
+                "value": "${{ secrets.AZURE_SEARCH_ENDPOINT_SUFFIX || 'search.windows.net' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_TENANT_ID",
+                "value": "${{ secrets.AZURE_TENANT_ID }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_AD_CLIENT_ID",
+                "value": "${{ secrets.AZURE_AD_CLIENT_ID }}",
+                "slotSetting": false
+              },
+              {
+                "name": "AZURE_AUTHORITY_HOST",
+                "value": "${{ secrets.AZURE_AUTHORITY_HOST || 'https://login.microsoftonline.com' }}",
+                "slotSetting": false
+              },
+              {
+                "name": "PORT",
+                "value": "3001",
+                "slotSetting": false
+              },
+              {
+                "name": "NODE_ENV",
+                "value": "production",
+                "slotSetting": false
+              },
+              {
+                "name": "WEBSITE_NODE_DEFAULT_VERSION",
+                "value": "~20",
+                "slotSetting": false
+              }
+            ]
