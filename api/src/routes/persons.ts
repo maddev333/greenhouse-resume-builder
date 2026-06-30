@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getServiceAuthHeaders } from '../services/entra-token';
+import { getFunctionsBaseUrl } from '../services/functions-host';
 
 /**
  * Persons routes.
@@ -14,9 +15,13 @@ router.post('/deconflict', async (req: any, res: any) => {
   const tenantId = req.body?.tenantId || req.user?.tenantId || req.tenantId || 'tenant-default';
 
   try {
-    const fnHost = process.env.FUNCTIONS_HOST || 'http://localhost:7071';
+    const fnHost = getFunctionsBaseUrl();
     const url = `${fnHost}/api/deconflict`;
-    const authHeaders = await getServiceAuthHeaders(process.env.FUNCTIONS_TOKEN_SCOPE, req.accessToken);
+    // Trusted-subsystem auth: present the API's own managed identity (app-only token), NOT OBO.
+    // The Functions endpoint validates only audience/issuer/tenant — it doesn't read the user
+    // identity — and FUNCTIONS_AUTH_AUDIENCE reuses this API's app registration, so an OBO
+    // exchange would target the same app ("OBO to self") and fail. Mirrors pg-client's MI path.
+    const authHeaders = await getServiceAuthHeaders(process.env.FUNCTIONS_TOKEN_SCOPE);
 
     console.log(`[Persons] Deconflict requested: tenant=${tenantId} → ${fnHost}`);
     const resp = await fetch(url, {

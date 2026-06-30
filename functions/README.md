@@ -193,8 +193,9 @@ are set automatically by `az functionapp create`. Every Azure dependency accepts
 | | `AZURE_STORAGE_CONTAINER`, `AZURE_WEB_SNAPSHOT_CONTAINER`, `AZURE_STORAGE_ENDPOINT_SUFFIX` | ⬜ | Defaults `raw`, `web-snapshots`, `core.windows.net` |
 | Document Intelligence | `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` | ✅ | Required to extract text from uploads |
 | | `AZURE_DOCUMENT_INTELLIGENCE_KEY`, `AZURE_DOCUMENT_INTELLIGENCE_AUDIENCE` | ⬜ | Omit key for MI; audience for sovereign clouds |
-| Azure OpenAI | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT` | 🟡 | Recommended; without it the agent uses heuristics |
+| Azure OpenAI | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT` | 🟡 | Recommended; without it the agent uses heuristics. Set the endpoint to an APIM gateway to track token usage |
 | | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_API_VERSION`, `AZURE_OPENAI_TOKEN_SCOPE`, `AZURE_OPENAI_TIMEOUT_MS`, `AGENT_MODE` | ⬜ | Omit key for MI |
+| | `AZURE_OPENAI_APIM_SUBSCRIPTION_KEY`, `AZURE_OPENAI_API_PATH` | ⬜ | APIM in front of Azure OpenAI: subscription key (sent as `Ocp-Apim-Subscription-Key`) + path prefix before `/deployments` (default `openai`) |
 | Azure AI Search | `AZURE_SEARCH_SERVICE` | 🟡 | Needed for the search feature / indexing |
 | | `AZURE_SEARCH_API_KEY`, `AZURE_SEARCH_ENDPOINT_SUFFIX` | ⬜ | Omit key for MI (needs Search Index Data Contributor) |
 | Caller auth | `AZURE_TENANT_ID` | ✅ | Validates the API→orchestrator call |

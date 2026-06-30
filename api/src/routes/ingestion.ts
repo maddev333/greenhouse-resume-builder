@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { CreateIngestionRequestInput, ExtractionRun, IngestionRunResponse } from '@greenhouse-resume-builder/shared';
 import { extractionRunRepo, sourceDocRepo, personRepo } from '../db/repo';
 import { getServiceAuthHeaders } from '../services/entra-token';
+import { getFunctionsBaseUrl } from '../services/functions-host';
 
 import crypto from 'crypto';
 
@@ -93,7 +94,7 @@ router.post('/', async (req: any, res: any) => {
       sourceDocumentIds: sourceDocIds,
     } satisfies IngestionRunResponse);
 
-    const fnHost = process.env.FUNCTIONS_HOST || 'http://localhost:7071';
+    const fnHost = getFunctionsBaseUrl();
     const orchestratorUrl = `${fnHost}/api/orchestrators/IngestCandidateOrchestrator`;
     // Forward web source URLs to the orchestrator. The pipeline fetches/normalizes these from the
     // input payload; they are NOT otherwise recoverable inside the pipeline (storeUploadsAndExtract
@@ -108,7 +109,11 @@ router.post('/', async (req: any, res: any) => {
       .map((d) => ({ name: d.name, mimeType: d.mimeType, data: (d as any).data as string }));
     console.log(`[Ingestion] Run ${run.id} created with ${sourceDocIds.length} source doc(s) (${webUrls.length} web URL(s), ${documentBlobs.length} upload(s)) → triggering orchestrator at ${fnHost}`);
     void (async () => {
-      const authHeaders = await getServiceAuthHeaders(process.env.FUNCTIONS_TOKEN_SCOPE, req.accessToken);
+      // Trusted-subsystem auth: present the API's own managed identity (app-only token), NOT OBO.
+      // The Functions endpoint validates only audience/issuer/tenant — it doesn't read the user
+      // identity — and FUNCTIONS_AUTH_AUDIENCE reuses this API's app registration, so an OBO
+      // exchange would target the same app ("OBO to self") and fail. Mirrors pg-client's MI path.
+      const authHeaders = await getServiceAuthHeaders(process.env.FUNCTIONS_TOKEN_SCOPE);
       const resp = await fetch(orchestratorUrl, {
         method: 'POST',
         headers: {

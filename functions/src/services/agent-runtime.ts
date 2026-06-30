@@ -8,10 +8,17 @@
  *
  *   AGENT_MODE                = heuristic | model | hybrid   (default: hybrid)
  *   AZURE_OPENAI_ENDPOINT     = https://<resource>.openai.azure.com
+ *                               (or an API Management gateway, e.g.
+ *                                https://<apim>.azure-api.net, to track token usage)
  *   AZURE_OPENAI_API_KEY      = <key>
  *   AZURE_OPENAI_DEPLOYMENT   = <chat deployment name>
  *   AZURE_OPENAI_API_VERSION  = 2024-10-21 (default)
  *   AZURE_OPENAI_TIMEOUT_MS   = 30000 (default)
+ *
+ *   APIM (Azure OpenAI fronted by API Management — for usage/token tracking, quotas):
+ *   AZURE_OPENAI_APIM_SUBSCRIPTION_KEY = <apim subscription key> (sent as Ocp-Apim-Subscription-Key)
+ *   AZURE_OPENAI_API_PATH              = openai (default) — path segment before /deployments;
+ *                                        set to your APIM API URL suffix if it differs
  *
  * Design rules (see mvp_implementation_plan.md Priority 2):
  *  - Model calls happen only inside activities, via this module.
@@ -110,12 +117,20 @@ export function shouldUseModel(logger?: MiniLogger): boolean {
 let _aoaiCredential: DefaultAzureCredential | undefined;
 
 /**
- * Build the auth header for Azure OpenAI. Uses AZURE_OPENAI_API_KEY when present;
- * otherwise acquires a Microsoft Entra ID bearer token via managed identity (required
- * for DoD IL5). The token scope is cloud-configurable via AZURE_OPENAI_TOKEN_SCOPE
- * (Gov: https://cognitiveservices.azure.us/.default).
+ * Build the auth header for Azure OpenAI (or the API Management gateway in front of it).
+ * Precedence:
+ *  1. AZURE_OPENAI_APIM_SUBSCRIPTION_KEY -> Ocp-Apim-Subscription-Key (APIM tracks usage per
+ *     subscription; APIM authenticates to the Azure OpenAI backend itself, so no AOAI key/token
+ *     is sent from here).
+ *  2. AZURE_OPENAI_API_KEY -> api-key (direct Azure OpenAI, local dev).
+ *  3. Otherwise a Microsoft Entra ID bearer token via managed identity (required for DoD IL5;
+ *     also works when APIM validates the caller JWT). The token scope is cloud-configurable via
+ *     AZURE_OPENAI_TOKEN_SCOPE (Gov: https://cognitiveservices.azure.us/.default).
  */
 async function getAoaiAuthHeaders(): Promise<Record<string, string>> {
+  const apimKey = process.env.AZURE_OPENAI_APIM_SUBSCRIPTION_KEY;
+  if (apimKey) return { 'Ocp-Apim-Subscription-Key': apimKey };
+
   const apiKey = process.env.AZURE_OPENAI_API_KEY;
   if (apiKey) return { 'api-key': apiKey };
 
@@ -132,7 +147,12 @@ async function chatJson(system: string, user: string, logger?: MiniLogger, label
   const deployment = process.env.AZURE_OPENAI_DEPLOYMENT!;
   const apiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-10-21';
   const timeoutMs = Number(process.env.AZURE_OPENAI_TIMEOUT_MS || 30000);
-  const url = `${endpoint}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${apiVersion}`;
+  // Path segment before /deployments. Azure OpenAI (and the standard APIM Azure OpenAI API
+  // import, which uses the "openai" API URL suffix) expose "/openai". Override via
+  // AZURE_OPENAI_API_PATH when your APIM API uses a different URL suffix (set it empty to omit).
+  const pathPrefix = (process.env.AZURE_OPENAI_API_PATH ?? 'openai').replace(/^\/+|\/+$/g, '');
+  const base = pathPrefix ? `${endpoint}/${pathPrefix}` : endpoint;
+  const url = `${base}/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${apiVersion}`;
 
   const promptChars = system.length + user.length;
   logger?.info?.(`[AgentRuntime] ${label}: calling ${deployment} (prompt ${promptChars} chars, timeout ${timeoutMs}ms)…`);
