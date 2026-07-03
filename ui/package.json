@@ -13,6 +13,7 @@
     "@azure/msal-browser": "^5.14.0",
     "@azure/msal-react": "^5.4.5",
     "azure-maps-control": "^3.0.0",
+    "oidc-client-ts": "^3.1.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.0.0"

@@ -96,7 +96,7 @@ app.use('/api/', authMiddleware as any);
         scopes: req.user?.scopes,
         top: parseInt(req.body.top as string) || 20,
         skip: parseInt(req.body.skip as string) || 0,
-        userAssertionToken: req.accessToken,
+        userAssertionToken: req.oboAssertion,
       });
       res.json({ results, total: results.length });
     } catch (err: any) {

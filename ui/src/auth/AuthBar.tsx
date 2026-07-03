@@ -1,6 +1,9 @@
 /** Top auth bar — shows either a Sign-in button or logged-in user state. */
 
 import { useAuth } from './useAuth';
+import { authProvider } from './provider';
+
+const SIGN_IN_LABEL = authProvider === 'keycloak' ? 'Sign in with Keycloak' : 'Sign in with Microsoft';
 
 export function AuthBar() {
   const { authenticated, loading, login, logout, user, error } = useAuth();
@@ -32,7 +35,7 @@ export function AuthBar() {
         onClick={() => void login()}
         style={{ fontSize: '13px', padding: '6px 14px', borderRadius: 6, border: 'none', background: '#2563eb', color: '#fff', cursor: 'pointer' }}
       >
-        Sign in with Microsoft
+        {SIGN_IN_LABEL}
       </button>
     </span>
   );

@@ -54,12 +54,133 @@ function getAzureADKeySet(): ReturnType<typeof createRemoteJWKSet> {
   return _azureKeySet;
 }
 
+// ── Keycloak (generic OIDC) provider ──────────────────────────────
+// Selected with AUTH_PROVIDER=keycloak. The API then verifies Keycloak-issued RS256 access tokens
+// against the realm JWKS and maps Keycloak's claim shape onto AuthenticatedUser. Keycloak tokens are
+// NOT valid Microsoft Entra user assertions, so On-Behalf-Of is disabled for this provider — see
+// `oboAssertion` in the middleware, which keeps it undefined so downstream Azure calls fall back to
+// managed identity instead of attempting (and failing) an OBO exchange.
+const AUTH_PROVIDER = (process.env.AUTH_PROVIDER ?? 'entra').trim().toLowerCase();
+const IS_KEYCLOAK = AUTH_PROVIDER === 'keycloak';
+
+const KEYCLOAK_ISSUER = (process.env.KEYCLOAK_ISSUER ?? '').replace(/\/+$/, '');
+const KEYCLOAK_JWKS_URI = process.env.KEYCLOAK_JWKS_URI
+  || (KEYCLOAK_ISSUER ? `${KEYCLOAK_ISSUER}/protocol/openid-connect/certs` : '');
+const KEYCLOAK_CLIENT_ID = process.env.KEYCLOAK_CLIENT_ID ?? '';
+const KEYCLOAK_VALID_AUDIENCES = splitEnv(process.env.KEYCLOAK_AUDIENCE);
+// Multi-tenant id claim. Keycloak has no Entra `tid`, so add a protocol mapper that emits this claim
+// (default `tenant_id`) to preserve tenant isolation. Fallbacks (in order): KEYCLOAK_DEFAULT_TENANT,
+// then the realm name parsed from the issuer, then 'unknown'.
+const KEYCLOAK_TENANT_CLAIM = process.env.KEYCLOAK_TENANT_CLAIM || 'tenant_id';
+const KEYCLOAK_DEFAULT_TENANT = process.env.KEYCLOAK_DEFAULT_TENANT || '';
+// Client whose resource_access roles are merged with realm_access roles (defaults to the token client).
+const KEYCLOAK_ROLES_CLIENT = process.env.KEYCLOAK_ROLES_CLIENT || KEYCLOAK_CLIENT_ID;
+
+let _keycloakKeySet: ReturnType<typeof createRemoteJWKSet> | null = null;
+
+function getKeycloakKeySet(): ReturnType<typeof createRemoteJWKSet> {
+  if (_keycloakKeySet) return _keycloakKeySet;
+  _keycloakKeySet = createRemoteJWKSet(new URL(KEYCLOAK_JWKS_URI), { cooldownDuration: 60_000 });
+  return _keycloakKeySet;
+}
+
+/** True when the active provider has a JWKS endpoint configured (production verification is possible). */
+function activeJwksConfigured(): boolean {
+  return IS_KEYCLOAK ? Boolean(KEYCLOAK_JWKS_URI) : Boolean(AZURE_AD_JWKS_URI && AZURE_AD_JWKS_URI.trim());
+}
+
+/** Parse the Keycloak realm name out of an issuer like `https://host/realms/<realm>`. */
+function realmFromIssuer(issuer: string): string {
+  const match = /\/realms\/([^/]+)\/?$/.exec(issuer);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+/** Map the active provider's verified/decoded claims onto the shared AuthenticatedUser shape. */
+function mapClaims(payload: JWTPayload): AuthenticatedUser {
+  return IS_KEYCLOAK ? keycloakClaimsToUser(payload) : claimsToUser(payload);
+}
+
+/**
+ * Verify a Keycloak-issued RS256 access token against the realm JWKS. jose validates the signature,
+ * expiration and (when configured) audience; issuer is pinned to KEYCLOAK_ISSUER. When no explicit
+ * audience is configured we fall back to checking `azp` against KEYCLOAK_CLIENT_ID so that tokens
+ * whose default `aud` is "account" still validate when they were issued to our client.
+ */
+async function validateKeycloakProd(accessToken: string): Promise<AuthenticatedUser> {
+  if (!KEYCLOAK_JWKS_URI) {
+    throw new Error('Keycloak JWKS URI not configured — set KEYCLOAK_ISSUER or KEYCLOAK_JWKS_URI');
+  }
+  if (KEYCLOAK_VALID_AUDIENCES.length === 0 && !KEYCLOAK_CLIENT_ID) {
+    throw new Error('Keycloak audience not configured — set KEYCLOAK_AUDIENCE or KEYCLOAK_CLIENT_ID');
+  }
+
+  const result = await jwtVerify(accessToken, getKeycloakKeySet(), {
+    issuer: KEYCLOAK_ISSUER || undefined,
+    audience: KEYCLOAK_VALID_AUDIENCES.length > 0 ? KEYCLOAK_VALID_AUDIENCES : undefined,
+  });
+
+  if (KEYCLOAK_VALID_AUDIENCES.length === 0 && KEYCLOAK_CLIENT_ID) {
+    const azp = typeof result.payload.azp === 'string' ? result.payload.azp : '';
+    if (azp !== KEYCLOAK_CLIENT_ID) {
+      throw new Error(`JWT authorized party ${azp || '(none)'} does not match Keycloak client ${KEYCLOAK_CLIENT_ID}`);
+    }
+  }
+
+  return keycloakClaimsToUser(result.payload);
+}
+
+/** Map Keycloak's claim shape (sub, realm_access.roles, scope, …) onto AuthenticatedUser. */
+function keycloakClaimsToUser(payload: JWTPayload): AuthenticatedUser {
+  const userId = String(payload.sub ?? '');
+  if (!userId) throw new Error('JWT is missing subject claim (sub)');
+
+  const claimTenant = (payload as Record<string, unknown>)[KEYCLOAK_TENANT_CLAIM];
+  const issuer = typeof payload.iss === 'string' ? payload.iss : KEYCLOAK_ISSUER;
+  const tenantId = (typeof claimTenant === 'string' && claimTenant)
+    || KEYCLOAK_DEFAULT_TENANT
+    || realmFromIssuer(issuer)
+    || 'unknown';
+
+  const realmAccess = (payload as Record<string, any>).realm_access;
+  const resourceAccess = (payload as Record<string, any>).resource_access;
+  const realmRoles: unknown[] = Array.isArray(realmAccess?.roles) ? realmAccess.roles : [];
+  const clientRoles: unknown[] = KEYCLOAK_ROLES_CLIENT && Array.isArray(resourceAccess?.[KEYCLOAK_ROLES_CLIENT]?.roles)
+    ? resourceAccess[KEYCLOAK_ROLES_CLIENT].roles
+    : [];
+  const roles = [...new Set([...realmRoles, ...clientRoles].map(String))];
+
+  const scope = (payload as Record<string, unknown>).scope;
+  const groups = (payload as Record<string, unknown>).groups;
+
+  return {
+    id: userId,
+    userId,
+    tenantId: String(tenantId),
+    username: typeof payload.preferred_username === 'string'
+      ? payload.preferred_username
+      : typeof payload.email === 'string'
+        ? payload.email
+        : undefined,
+    name: typeof payload.name === 'string' ? payload.name : undefined,
+    roles: roles.length > 0 ? roles : undefined,
+    groups: Array.isArray(groups) ? groups.map(String) : undefined,
+    scopes: typeof scope === 'string' ? scope.split(' ').filter(Boolean) : undefined,
+    claims: payload,
+  };
+}
+
 export interface AuthenticatedRequest extends Request {
   userId: string;
   tenantId: string;
   user: AuthenticatedUser;
   /** Raw validated Bearer token — used as the user assertion for On-Behalf-Of downstream calls. */
   accessToken: string;
+  /**
+   * Bearer token to use as the On-Behalf-Of user assertion for downstream Azure calls. Set only when
+   * the active provider issues Entra tokens (OBO-eligible); undefined for Keycloak, so consumers fall
+   * back to managed identity instead of attempting an OBO exchange that Azure AD would reject.
+   */
+  oboAssertion?: string;
 }
 
 export interface AuthenticatedUser {
@@ -104,7 +225,7 @@ function expectedAudiences(): string[] {
 async function validateTokenClaimsDev(accessToken: string): Promise<AuthenticatedUser> {
   if (accessToken) {
     try {
-      return claimsToUser(decodeJwt(accessToken));
+      return mapClaims(decodeJwt(accessToken));
     } catch {
       // Dev mode may use opaque placeholder tokens.
     }
@@ -124,6 +245,8 @@ async function validateTokenClaimsDev(accessToken: string): Promise<Authenticate
  * expiration and audience via jose, then validates issuer/tenant/user claims explicitly.
  */
 async function validateTokenClaimsProd(accessToken: string): Promise<AuthenticatedUser> {
+  if (IS_KEYCLOAK) return validateKeycloakProd(accessToken);
+
   if (!AZURE_AD_JWKS_URI) {
     throw new Error('Microsoft Entra JWKS URI not configured — set AZURE_AD_JWKS_URI or AZURE_TENANT_ID');
   }
@@ -204,7 +327,7 @@ export const authMiddleware: RequestHandler = async (req, res, next) => {
   let accessToken = ''; // default to empty for dev bypass mode
   let user: AuthenticatedUser;
 
-  if (AZURE_AD_JWKS_URI?.trim() && !(ALLOW_DEV_AUTH_BYPASS && !IS_PRODUCTION)) {
+  if (activeJwksConfigured() && !(ALLOW_DEV_AUTH_BYPASS && !IS_PRODUCTION)) {
     // ── Production: cryptographically verify the Bearer token ──
     if (!authHeader.toLowerCase().startsWith('bearer ')) {
       return res.status(401).json({ error: 'Missing or invalid Authorization header (expected Bearer token)' });
@@ -226,10 +349,12 @@ export const authMiddleware: RequestHandler = async (req, res, next) => {
   } else {
     // ── Fail closed: not configured for verification, and no (non-prod) dev bypass. ──
     // We deliberately do NOT decode-and-trust unverified claims here, so a production deploy that
-    // forgets AZURE_TENANT_ID/AZURE_AD_JWKS_URI rejects requests instead of silently failing open.
+    // forgets the provider's JWKS/audience config rejects requests instead of silently failing open.
     const detail = IS_PRODUCTION && ALLOW_DEV_AUTH_BYPASS
       ? 'ALLOW_DEV_AUTH_BYPASS cannot be used in production'
-      : 'set AZURE_TENANT_ID + an audience (AZURE_AD_CLIENT_ID/AZURE_AD_AUDIENCE) for production, or ALLOW_DEV_AUTH_BYPASS=true for local development';
+      : IS_KEYCLOAK
+        ? 'set KEYCLOAK_ISSUER + an audience (KEYCLOAK_AUDIENCE or KEYCLOAK_CLIENT_ID) for production, or ALLOW_DEV_AUTH_BYPASS=true for local development'
+        : 'set AZURE_TENANT_ID + an audience (AZURE_AD_CLIENT_ID/AZURE_AD_AUDIENCE) for production, or ALLOW_DEV_AUTH_BYPASS=true for local development';
     console.error(`[authMiddleware] Authentication is not configured — ${detail}.`);
     return res.status(500).json({ error: 'Authentication is not configured' });
   }
@@ -240,6 +365,9 @@ export const authMiddleware: RequestHandler = async (req, res, next) => {
   authenticatedReq.tenantId = user.tenantId;
   // Carry the validated token so handlers can exchange it On-Behalf-Of the user (no shared secret).
   authenticatedReq.accessToken = accessToken;
+  // Only Entra tokens are valid Azure OBO user assertions; Keycloak tokens are not, so leave the
+  // assertion undefined for Keycloak and let downstream Azure calls use managed identity.
+  authenticatedReq.oboAssertion = IS_KEYCLOAK ? undefined : (accessToken || undefined);
 
   next();
 };

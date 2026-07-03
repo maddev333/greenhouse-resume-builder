@@ -4,10 +4,9 @@ import type { ExtractionRun, BulletDiff, RelationshipEdge, AnnotationItem } from
 import { MapView } from './MapView';
 import { RelationshipsExplorer } from './RelationshipGraph';
 import { extractLocationRecords } from './geo';
-import { useAuth } from './auth/useAuth';
+import { useAuth, isAuthConfigured } from './auth/useAuth';
 import { fetchWithAuth, setAuthToken, setAuthTokenProvider } from './auth/api-auth';
 import { AuthBar } from './auth/AuthBar';
-import { isAuthConfigured } from './auth/msal-config';
 
 // ── Auth helpers — attach MSAL Bearer token to API requests ────
 

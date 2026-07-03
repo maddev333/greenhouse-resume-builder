@@ -327,11 +327,11 @@ export const markStaleRunsFailed = async (cutoffIso: string, reason: string): Pr
   return res.rowCount ?? 0;
 };
 
-/** Cleanup: delete completed runs created before `cutoffIso`. Returns deleted count. */
-export const deleteCompletedRunsBefore = async (cutoffIso: string): Promise<number> => {
+/** Cleanup: delete failed runs created before `cutoffIso`. Completed runs are retained so successful runs stay visible in the UI. Returns deleted count. */
+export const deleteFailedRunsBefore = async (cutoffIso: string): Promise<number> => {
   const pool = await getPool();
   const res = await pool.query(
-    `DELETE FROM ${TABLES.extractionRuns} WHERE data->>'status' = 'completed' AND data->>'createdAt' < $1`,
+    `DELETE FROM ${TABLES.extractionRuns} WHERE data->>'status' = 'failed' AND data->>'createdAt' < $1`,
     [cutoffIso],
   );
   return res.rowCount ?? 0;
