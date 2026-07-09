@@ -8,12 +8,14 @@
  * shapes (see the sibling `*.json` files and `README.md`).
  *
  * Framework-free on purpose: on Platform Day-1 this file drops straight into
- * `shared/src/` and each entity gets a JSONB table (pg-client.ts) + repo (base-repo.ts).
+ * `shared/src/`; each entity is stored as per-source JSON blobs in Blob Storage
+ * (source of record) and indexed into one Azure AI Search index — no Postgres.
  *
- * ENVELOPE NOTE: the seed JSON carries only DOMAIN fields. The loader stamps the
- * BaseEntity envelope (`tenantId`, `createdAt`, `updatedAt`) at load time — exactly as a
- * real ETL "load" step would stamp tenant + audit columns. Those fields are therefore
- * declared here (the true target shape) but are absent from the staged JSON.
+ * ENVELOPE NOTE: each record carries an envelope the AI Search indexer maps to
+ * filterable trim fields — `tenantId`, `source`, `aclGroups[]`, `sensitivity`
+ * (plus `createdAt`/`updatedAt`) — baked into the blob (no separate relational loader).
+ * The staged `*.json` here still carry only DOMAIN fields; the Day-1 data task bakes in
+ * the envelope and writes one blob per record per source (see README.md).
  */
 
 // ── Shared scalars ──────────────────────────────────────────────────────

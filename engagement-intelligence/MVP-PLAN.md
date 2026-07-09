@@ -149,6 +149,11 @@ Delivery: **in-app preview by default**; **optional** real send via Graph `sendM
 The planner and the pre-brief layer read/write the **same** contacts, engagements, and events — so a
 per-stop pre-brief reflects the trip, and the trip reflects relationship history.
 
+**Storage (MVP): no database.** The CRM spine is **JSON in Blob Storage** (one blob per record,
+foldered by source), indexed into **Azure AI Search** (vectors + a Keycloak-claim `$filter` security
+trim) as the queryable read model; **add/update/delete a record and reindex that source** to show
+changes live. See `ARCHITECTURE.md` §5.
+
 ### 5.1 Batching & feasibility (net-new geo logic — the heart of the demo)
 
 The entry point is **proactive**: when a leader's travel or event attendance is known, the planner
@@ -209,6 +214,11 @@ Every meeting is anchored to a **Topic** and a **specific intended Message that 
 
 > Naming is deliberately generic so it fits the customer's terms after editing. In the recruiting
 > analogy we explored: **Leader ≈ recruiter**, **Contact ≈ target**.
+>
+> **Storage (MVP):** every entity below is a **JSON blob** in `sources/<entity>/…` (Blob Storage =
+> source of record) with `tenantId` / `source` / `aclGroups[]` / `sensitivity` **baked in**, indexed
+> into one **Azure AI Search** `engagements` index (vectors + `$filter` trim). **No Postgres.** See
+> `ARCHITECTURE.md` §5.
 
 **Planner core (net-new):**
 
@@ -252,7 +262,7 @@ approved per-topic talking-points library exists (and who approves it).
 The planner and pre-brief engines never talk to a data source directly — they consume the normalized
 records above. Sources plug in behind one adapter interface, so mock and real data are interchangeable:
 
-- **MockAdapter** — scripted, **pre-geocoded** JSON scenarios (Day-1 scaffold; unblocks the team).
+- **MockAdapter** — scripted, **pre-geocoded** JSON scenarios written as **per-source Blob records** and indexed into AI Search (Day-1 scaffold; unblocks the team).
 - **PdfDocIntelAdapter** — real after-action PDF → **Document Intelligence** → extraction → records.
 - **SharePointListAdapter** — Graph read of a list → column mapping → records _(stretch)_.
 - **CalendarAdapter** — upcoming-meeting / event feed: **Outlook via Graph** (real) or a seeded feed
@@ -366,7 +376,12 @@ capability (geocoding)**; the pre-brief layer reuses the most mature engines.
 | **Version diff** (`version-diff.ts`)                                             | Implemented                       | Intended vs. actual message drift (supporting)                      |
 | **MCP tool host** (`capabilities/mcp-core`, `functions/src/services/agent-runtime.ts`) | Implemented (**tools only**) | **Hosts the `engagements` tools** (promoted to **week 1**); the chat host's model composes them |
 | **MCP-App resource serving** (`resources/*` + `_meta.ui`)                        | **Designed only** (`docs/wiki-app-architecture.md`); deps present | **Net-new in `mcp-core`**: serve `ui://engagements-widget.html` + tag tool results |
-| **Search / discovery** (`api/src/search`)                                        | Code exists; needs a live index   | Find relevant past interactions; who-to-invite                      |
+| **Blob store (source of record)**                                                | pattern exists (AAD/MI blob I/O)  | **Net-new layout:** one JSON blob per record, foldered by source; **no Postgres** |
+| **AI Search read model** (`api/src/search`, `functions/src/persistence`)         | Code exists; **push model, no vector** | **Net-new Azure config:** per-source **indexer + vectorizer skillset**; **fix 2 latent query bugs** |
+| **Security trim** (`capabilities/mcp-core/src/security.ts`)                       | Implemented (`buildFactSecurityFilter`) | Add `aclGroups/any(search.in(…))`; enforce OData `$filter` server-side |
+| **Retrieval orchestrator** (`functions/src/pipeline/*`)                          | pattern exists (`df.Task.all`)    | **Net-new:** fan-out to per-capability search sub-agents, fan-in a trimmed answer |
+| **Keycloak auth** (`api/src/middleware/auth.middleware.ts`)                      | **Already wired** (`AUTH_PROVIDER=keycloak`) | Add `tenant_id`/groups mappers; build the `SecurityContext` |
+| **Personal notes MCP** (`api/src/services/entra-token.ts`)                       | OBO plumbing exists               | **Stretch:** separate **Entra-authenticated** MCP client, decoupled from Keycloak |
 | **Temporal** (staleness/recurrence)                                              | Stubbed                           | **Net-new logic** for staleness/attention scoring                   |
 | **Relationships**                                                                | Stubbed                           | Leader↔contact ties, co-mention                                     |
 | **Pre-brief email** (Graph `sendMail`)                                           | —                                 | **Optional/stretch** — real send to a demo mailbox (app reg + Mail.Send) |
@@ -385,6 +400,11 @@ supporting pre-brief layer reuses **summary**, **Document Intelligence**, **extr
 **In:**
 
 - Synthetic, **pre-geocoded** seed data shaped like SharePoint list + Outlook exports.
+- **Data plane:** records as **JSON blobs** (source of record) indexed into **Azure AI Search**
+  (vectors + Keycloak-claim `$filter` trim); **add/update/delete + manual reindex per source** is an
+  on-stage beat. **No Postgres.**
+- **Auth & retrieval:** **Keycloak** at the UI → `SecurityContext` at the **API trust boundary**
+  (already wired) → a **Durable retrieval orchestrator** fans out to security-trimmed search sub-agents.
 - Layer 1 planner: **map + trip builder + batch suggestions + greedy route ordering + all 5
   conflicts + recommendations + trip-ROI + staleness + who-to-invite**, entered via a proactive
   **nudge**, rendered in the chat host's **engagements widget**.
@@ -404,7 +424,9 @@ supporting pre-brief layer reuses **summary**, **Document Intelligence**, **extr
 - Real Graph `sendMail` outbound — **optional/stretch** now (preview-first), since the pre-brief is a
   supporting feature.
 - Live Microsoft Graph **reads** (SharePoint list / Outlook calendar) — simulated via seed/exports.
-- Production auth/IL5 hardening, multi-tenant, real Azure AI Search at scale.
+- Production auth/IL5 hardening, multi-tenant, **AI Search at scale** (the MVP uses one small index),
+  Keycloak↔Entra token brokering.
+- **Postgres / any relational DB** — the MVP is **Blob + AI Search only**.
 - Anything classified; unclassified demo data only. **[CONFIRM]**
 
 ---
@@ -424,7 +446,7 @@ pre-brief, and consistency verdict. **The model never does the math itself.**
 
 | Team | Owns | Builds |
 | ---- | ---- | ------ |
-| **T1 — Platform & Framework** | data spine, seed, tools, **capability server + widget + basic-host shell**, deploy | JSONB tables + repos; **pre-geocoded seed**; the deterministic **planner tools** (`distance/score/suggest/route/conflicts/roi/on_site_slot_plan/who_to_invite`) exposed as **MCP tools (+ optional REST)**; **mcp-core `resources/read` serving `ui://engagements-widget.html` + `_meta.ui` on tool results**; the **widget shell** (tabs + ported `MapView`+legs + official **ext-apps SDK** `App`/`useApp` + single-file build + text fallback); the **ext-apps `basic-host` host shell**; **auth-bypass**; publishes **tool schemas + mocks** Day 1 |
+| **T1 — Platform & Framework** | data spine, seed, tools, **capability server + widget + basic-host shell**, deploy | **seed as per-source JSON blobs** (envelope baked in); **AI Search index + per-source indexers + vectorizer skillset (manual reindex)**; **Keycloak realm + `tenant_id`/groups mappers + `SecurityContext`** at the API trust boundary; a **Durable retrieval orchestrator** (fan-out to security-trimmed search sub-agents); the deterministic **planner tools** (`distance/score/suggest/route/conflicts/roi/on_site_slot_plan/who_to_invite`) exposed as **MCP tools (+ optional REST)**; **mcp-core `resources/read` serving `ui://engagements-widget.html` + `_meta.ui` on tool results**; the **widget shell** (tabs + ported `MapView`+legs + official **ext-apps SDK** `App`/`useApp` + single-file build + text fallback); the **ext-apps `basic-host` host shell**; **auth-bypass**; publishes **tool schemas + mocks** Day 1 |
 | **T2 — Trip Planner tab** ★ | the star beat | the proactive **nudge → batch → itinerary → conflicts → ROI** tab; calls `suggest/route/conflicts/roi`; renders the nudge + itinerary on map/timeline; "shows the math" |
 | **T3 — Conference Roster tab** | the magnet | the **event-anchor** tab: attendees **on-site** (zero-travel) + **on-site slot plan** + light **prospecting** one-liner + **who-to-invite**; calls `conference_roster/on_site_slot_plan/score/who_to_invite`; renders the roster + slot lane |
 | **T4 — Pre-brief / Consistency tab** | the supporting loop | per-stop **pre-brief** (reuse `summary`) with citations; **after-action** PDF → **Document Intelligence** → **version-diff** → drift verdict; feeds the next pre-brief |
@@ -435,13 +457,13 @@ the demo script across teams. _Acronyms inferred — adjust freely:_
 
 | Team | People (18 total) |
 | ---- | ----------------- |
-| **T1 — Platform & Framework** (9) | **Tech Lead** (also integration owner) · 2× **DevSecOps** · **DPS Lead** · **Data Lead** · 2× **Data Eng** _(own the data stores/seed — this task)_ · 2× **Power Platform** _(SharePoint/Dataverse source adapters, post-demo ETL seam)_ |
+| **T1 — Platform & Framework** (9) | **Tech Lead** (also integration owner) · 2× **DevSecOps** · **DPS Lead** · **Data Lead** · 2× **Data Eng** _(own the Blob JSON stores + AI Search indexers/skillset + reindex — this task)_ · 2× **Power Platform** _(SharePoint/Dataverse source adapters, post-demo ETL seam)_ |
 | **T2 — Trip Planner tab** ★ (3) | 1× **Dev (AST1)** · 1× **Engagements PoC** (domain SME) · 1× **Business Analyst** |
 | **T3 — Conference Roster tab** (3) | 1× **PEC** (dev) · 1× **Engagements PoC** (event/roster SME) · 1× **Business Analyst** |
 | **T4 — Pre-brief / Consistency tab** (3) | 1× **PEC** (dev) · 1× **Cyber** (message-consistency/compliance) · 1× **Process Owner** (message-approval process) |
 
 The **Data contingent** (DPS Lead + Data Lead + 2× Data Eng, with 2× Power Platform on source shape)
-sits in T1 and owns the **staged data stores** described in §8 / `DEMO-DATASET.md`. **[CONFIRM]** the
+sits in T1 and owns the **staged Blob JSON stores + AI Search indexers** described in §8 / `DEMO-DATASET.md`. **[CONFIRM]** the
 inferred acronyms (DPS, PEC, AST1) and whether these assignments match intended skills.
 
 **Contracts-first (the anti-blocking rule):** by **end of Day 1** the Platform team publishes (a) the
@@ -454,8 +476,9 @@ blocked on the Platform's real implementation.
 
 - **Day 0 — Prereqs.** Azure Maps key, Azure OpenAI deployment reachable, repo access, env files.
   Platform smoke-tests the **Azure OpenAI** round-trip (`max_completion_tokens`) used for pre-brief prose.
-- **Day 1 — Contracts & scaffold (unblock everyone).** T1: tables+repos, **seed + pre-geocode**
-  (map shows pins), stand up the **`engagements` capability server** (stub tools tagged `_meta.ui`) +
+- **Day 1 — Contracts & scaffold (unblock everyone).** T1: **seed as per-source JSON blobs +
+  pre-geocode** (map shows pins), **AI Search index + indexers + vectorizer skillset**, **Keycloak realm +
+  mappers + `SecurityContext`**, **retrieval-orchestrator scaffold**, stand up the **`engagements` capability server** (stub tools tagged `_meta.ui`) +
   **mcp-core `resources/read`** serving the **widget shell**, publish **schemas + mocks**. T2–T4:
   scaffold each **widget tab** against stubs; each renders a canned tool result. _(Gate: seed loads,
   pins render, every tab round-trips a stub tool via the ext-apps SDK.)_

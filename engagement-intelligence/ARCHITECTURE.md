@@ -17,8 +17,9 @@
    are pure, unit-testable functions. The LLM (Azure OpenAI) is used only for pre-brief prose and
    message-consistency — never for the feasibility math.
 3. **Advisor, not optimizer.** The engine flags and recommends; the human decides (fit never blocks).
-4. **Offline-reliable demo.** All locations are **pre-geocoded once at seed time** and cached in
-   Postgres, so the live demo makes **no** Maps call and can't fail on a network blip.
+4. **Offline-reliable demo.** All locations are **pre-geocoded once at seed time** and baked into the
+   JSON **blobs** (mirrored into the **AI Search** index), so the live demo makes **no** Maps geocode
+   call and can't fail on a network blip.
 5. **Chat-native delivery (MCP Apps).** The interface is a **chat UI that renders MCP UI apps.** The
    planner ships as **one `engagements` capability** — a tabbed **hybrid web + MCP App** widget —
    exactly like the repo's six existing capability modules (discovery, geospatial, llmwiki, quality,
@@ -51,13 +52,19 @@
  │  │ distance·score·suggest·route·conflicts·roi·slots        │  │      ┌───────────────────────────┐
  │  └────────────────────────────────────────────────────────┘  │─────▶│ Azure OpenAI (prose/verdict)│
  │  prebrief (REUSE summary) · afteraction (REUSE DI+diff)       │      │ Azure Document Intelligence│
- │  db/repo/* JSONB (REUSE base-repo) · serves the ui:// widget  │      └───────────────────────────┘
+ │  Durable retrieval orchestrator · serves the ui:// widget     │      └───────────────────────────┘
  └───────────────────────────┬─────────────────────────────────┘
                              ▼
-        ┌───────────────────────────┐
-        │  PostgreSQL (JSONB docs)  │  leaders·contacts·events·topics·messages·
-        │  ensureMVPTablesExist()   │  engagements·trips·stops·legs·prebriefs·afteractions
-        └───────────────────────────┘
+   ┌────────────────────────────────────────────────────────────────────────────┐
+   │  Blob Storage — JSON, one blob per record = source of record                 │
+   │  sources/{leaders,contacts,events,topics,messages,engagements,afteractions}/ │
+   └───────────────────────────────┬────────────────────────────────────────────┘
+          per-source indexer + integrated-vectorization skillset (manual reindex)
+                                    ▼
+   ┌────────────────────────────────────────────────────────────────────────────┐
+   │  Azure AI Search index `engagements` — vectors + filterable trim fields      │
+   │  (tenantId · aclGroups · sensitivity · source) ◀─ Keycloak-claim $filter     │
+   └────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **The only live external call during the demo is the pre-geocode at seed time.** Everything on the
@@ -82,12 +89,17 @@ renders the result and can call tools back through the **official MCP Apps SDK**
 | **Map rendering**      | ✅ reuse | `ui/src/MapView.tsx` (azure-maps-control `atlas`, HtmlMarkers, bounds-fit) | Ported into the widget's **Trip tab**: **trip-colored pins** + **leg polylines** |
 | **Geocoding**          | ✅ reuse | `ui/src/geo.ts` → Geospatial MCP `project_map_pins` (`capabilities/geospatial/mcp/geospatial/src/tools.ts`, **cap 25**) | A **seed script** that geocodes the dataset in chunks of ≤25 and caches lat/lng |
 | **API shell**          | ✅ reuse | `api/src/server.ts` (Express, `/api/v1/*`, `authMiddleware` on `/api/`)     | Engine hosted as **MCP tools** on the `engagements` capability (primary); Express `/api/v1/*` optional for the widget's **standalone-web** fallback |
-| **Persistence**        | ✅ reuse | `api/src/db/pg-client.ts` (`ensureMVPTablesExist`) + `db/repo/base-repo.ts` (JSONB) | New JSONB doc tables + repos for the CRM spine + trip model     |
+| **Persistence (source of record)** | ✅ reuse pattern | Repo already does **AAD/MI blob access** (`functions/src/activities/document-intelligence.ts`); storage account has shared-key **disabled** (RBAC only) | **One JSON blob per record**, foldered by source; **no Postgres** for the MVP (§5) |
 | **MCP Apps SDK (official)** | ❌ new (deps present) | `@modelcontextprotocol/ext-apps` already in root `package.json`; `mcp-bridge.ts` is a hand-rolled precedent | **Client:** `App`/`useApp`. **Server:** `registerAppTool`/`registerAppResource`. `mcp-bridge.ts` reused only for the standalone-web fallback |
 | **Summarization**      | ✅ reuse | `functions/src/activities/summary.ts` (Azure OpenAI, `max_completion_tokens`) | Call it from a **pre-brief service** (per-stop)                |
 | **Doc Intelligence**   | ✅ reuse | `functions/src/activities/document-intelligence.ts` (Form Recognizer)      | Call it from an **after-action ingest** endpoint               |
 | **Message drift**      | ✅ reuse | `functions/src/activities/version-diff.ts`                                 | Diff **actual vs. approved** talking points                    |
-| **Auth**               | ✅ reuse | `api/src/middleware/auth.middleware.ts` (jose jwtVerify), `ui` MSAL         | **Demo bypass flag**; real Entra path stays intact             |
+| **Auth (UI → API trust boundary)** | ✅ **already wired** | `api/src/middleware/auth.middleware.ts` **already supports `AUTH_PROVIDER=keycloak`** (RS256 vs realm JWKS, `keycloakClaimsToUser` maps sub/groups/roles/`tenant_id`) | Add 2 Keycloak protocol mappers (`tenant_id` claim + Group Membership); build the `SecurityContext` (§5.4). Demo bypass flag optional |
+| **Read model / indexing** | ❌ new (Azure config) | `api/src/search/index.ts`, `functions/src/persistence/index.ts` (push model, **no vector field**) | **Per-source blob indexer + integrated-vectorization skillset** → one `engagements` index; **fix the 2 latent query bugs** (§5.2) |
+| **Semantic search tool** | ✅ reuse skeleton | `capabilities/discovery/mcp/search/src/tools.ts` (`search_facts`, backing `rawResults=[]`) | Wire live `searchClient.search(query, { filter })`; return **trimmed** snippets |
+| **Security trim** | ✅ reuse | `capabilities/mcp-core/src/security.ts` (`buildFactSecurityFilter`, `isSensitiveFactKey`) | Add the **`aclGroups/any(g: search.in(g,…))`** clause; wire into every retrieval call (§5.4) |
+| **Retrieval orchestration** | ✅ reuse pattern | `functions/src/pipeline/orchestrator.ts` (`df.Task.all` fan-out/in) + `http-start.ts` (trusted-subsystem seam) | **Retrieval orchestrator** fanning out to per-capability search sub-agents (§5.3) |
+| **Personal notes (stretch)** | ✅ reuse OBO | `api/src/services/entra-token.ts` (`getOboToken`) | Separate **Entra-ID-authenticated MCP client**, decoupled from Keycloak (§5.4) |
 | **Distance / routing** | ❌ new  | — (repo has geocoding only; **no routing**)                                | **haversine** + ETA heuristic; optional Azure Maps Route Matrix |
 | **Planner engine**     | ❌ new  | —                                                                          | `api/src/planner/*` deterministic modules (§6)                 |
 | **MCP-App resource serving** | ❌ new | **designed only** (`docs/wiki-app-architecture.md`); deps present (`@modelcontextprotocol/ext-apps`, `@mcp-ui/server`); `mcp-core/mcp-server.ts` is **tools-only** | **net-new in `mcp-core`**: `resources/list`+`resources/read` for `ui://…` + `_meta.ui.resourceUri` on tool results |
@@ -127,34 +139,137 @@ fallback), the **data spine**, and the optional agent-runtime host — see the b
 
 ---
 
-## 5. Data model & storage
+## 5. Data plane, indexing & authorization
 
-Follows the repo convention: **JSONB "document" rows** (id + tenantId + `data`), auto-provisioned by
-extending `ensureMVPTablesExist()` (`api/src/db/pg-client.ts`), each with a repo extending
-`base-repo.ts`. Entity fields are specified in `MVP-PLAN.md` §6; tables:
+> **MVP decision (locked): no Postgres.** Raw records are **JSON in Blob Storage** (the system of
+> record); **Azure AI Search** is the queryable **read model** (vectors + server-side security trim).
+> The demo explicitly shows **add / update / delete JSON + manual reindex, per data source.** Entity
+> fields are specified in `MVP-PLAN.md` §6.
 
-| Table            | Purpose                              | Repo (new)               |
-| ---------------- | ------------------------------------ | ------------------------ |
-| `leaders`        | Pool A (SME, level, home base, budget) | `leader-repo`          |
-| `contacts`       | Pool B (value, staleness, location)  | `contact-repo`           |
-| `events`         | Travel anchors                       | `event-repo`             |
-| `topics`         | Meeting subjects                     | `topic-repo`             |
-| `messages`       | Approved per-topic talking points (versioned) | `message-repo`  |
-| `engagements`    | Meetings (contact × leaders × topic) | `engagement-repo`        |
-| `trips`          | Leader × region × window × stops/legs/ROI | `trip-repo`         |
-| `stops`          | A trip's stop (engagement or event)  | `stop-repo`              |
-| `legs`           | Between-stop travel (distance/ETA/cost) | `leg-repo`            |
-| `prebriefs`      | Generated per-stop briefs (supporting) | `prebrief-repo`        |
-| `afteractions`   | DI-ingested notes (supporting)       | `afteraction-repo`       |
+### 5.1 Storage layout — Blob (source of record)
 
-All rows carry `tenantId` (reuse the tenant-scoping already in `server.ts`/middleware). Geocoded
-`lat/lng` is stored **on** each contact/leader/event at seed time (no runtime geocode).
+**One JSON blob per record**, foldered by **data source** so each source can be reindexed
+independently, in a single `sources` container:
 
-**Conference-as-magnet fields (per `MVP-PLAN.md` §6):** `contacts.status(active|prospect)` + `source`
-— **prospects** (new companies) live in the same `contacts` table with `status='prospect'` and **no**
-`lastInteractionDate`. `events` carry `attendingContactIds[]`, `exhibitorProspectIds[]`, and
-`topicIds[]` (topics present) — the attendee/exhibitor **rosters** that drive on-site (zero-travel) and
-prospect-**initiate** suggestions.
+```
+sources/leaders/L1.json          sources/contacts/C1.json         sources/events/E-AUSA.json
+sources/engagements/EX-003.json  sources/topics/T1.json           sources/messages/M-T1-v2.json
+sources/afteractions/AA-drift.json                                sources/trips/<runId>.json …
+```
+
+Because there is **no loader/ETL step**, each blob **bakes in the envelope** the indexer maps to
+filterable trim fields — `tenantId`, `source`, `aclGroups[]`, `sensitivity` — alongside the domain
+fields. Geocoded `lat/lng` stays baked in at seed time (no runtime geocode).
+
+| Source folder (`sources/…`) | Entity | In seed? |
+| --------------------------- | ------ | -------- |
+| `leaders/`      | Leader — Pool A (SME, level, home base, days-away budget)              | ✅ |
+| `contacts/`     | Contact — Pool B (`status active\|prospect`, `source`; prospects have no `lastInteractionDate`) | ✅ |
+| `events/`       | Event — travel anchors (`attendingContactIds[]`, `exhibitorProspectIds[]`, `topicIds[]` = the on-site/prospect rosters) | ✅ |
+| `topics/`       | Topic — meeting subjects                                               | ✅ |
+| `messages/`     | Message — approved per-topic talking points (versioned)               | ✅ |
+| `engagements/`  | Engagement — meetings (contact × leaders × topic)                     | ✅ |
+| `afteractions/` | AfterActionNote — Document-Intelligence-ingested notes (supporting)   | ✅ |
+| `trips/` · `stops/` · `legs/` · `prebriefs/` | Runtime planner output                   | ✖ (written back at runtime, then reindexed) |
+
+All records carry `tenantId` (reuse the tenant-scoping already in `server.ts`/middleware).
+
+### 5.2 Indexing & reindex (Blob → indexer → AI Search)
+
+**One AI Search index per capability** (`engagements`), populated by **per-source blob indexers** (all
+writing the same index, distinguished by the `source` field). Each indexer:
+
+- `parsingMode: "json"` — **one blob = one document**; maps `id` → a globally-unique index key
+  (`contact_C1`, `event_E-AUSA`), so records from different sources never collide.
+- attaches an **integrated-vectorization skillset** (`AzureOpenAIEmbeddingSkill`) that embeds
+  `searchText` into `contentVector` **at index time** — no manual embedding code, no drift between add
+  and vector.
+- carries a **soft-delete deletion policy** — `SoftDeleteColumnDeletionDetectionPolicy`,
+  `softDeleteColumnName: "IsDeleted"`, `softDeleteMarkerValue: "true"` (read from blob **metadata**).
+
+**The search document — the flattened, indexable projection:**
+
+| Field | Attribute | Purpose |
+| ----- | --------- | ------- |
+| `id`                                                    | **key**        | globally unique (`<entity>_<recordId>`) |
+| `entityType`, `source`                                  | **filterable** | per-capability routing / **per-source reindex** |
+| `tenantId`                                              | **filterable** | mandatory row trim (fail-closed) |
+| `aclGroups` (`Collection(Edm.String)`)                  | **filterable** | group ACL trim via `search.in` |
+| `sensitivity`                                           | **filterable** | role-gated need-to-know |
+| `topicIds` (`Collection`)                               | **filterable** | topic-relevance narrowing |
+| `searchText`                                            | **searchable** | keyword + semantic recall |
+| `contentVector` (`Collection(Edm.Single)` + vectorizer) | **vector**     | hybrid / vector recall |
+| `name, city, lat, lng, strategicValue, lastInteractionDate…` | retrievable | display only |
+
+> ⚠️ The repo's existing query path has **two latent bugs** that make **every** trimmed query silently
+> return `[]` — both must be fixed: `searchResumeContents` (`api/src/search/index.ts`) omits the
+> `INDEX_NAME` arg to `new SearchClient(...)`, and the current `resume-facts` index sets **no** field
+> `filterable: true`, so any `$filter` is rejected. (Functions-side `indexFactsToSearch` already passes
+> the index name correctly; the bug is query/API-side.)
+
+**Reindex demo (manual, per source):**
+
+- **add / update** — create/edit the blob → **Run** that source's indexer (change-tracked by blob
+  `LastModified`) → the doc appears/updates (re-embedded automatically).
+- **delete** — `az storage blob metadata update … --metadata IsDeleted=true` → **Run** the indexer →
+  the doc is removed from the index (hard-delete the blob later). Editing one JSON record and re-running
+  one indexer is the on-stage "reindex per data source" beat.
+
+### 5.3 Retrieval path (orchestrator → sub-agents → trim)
+
+The chat host's model invokes the `engagements` capability, which runs a **Durable Functions retrieval
+orchestrator** modeled on the repo's `ingestCandidateOrchestrator` (`functions/src/pipeline/`): it
+**fans out** (`df.Task.all`) to per-capability **retrieval sub-agents**, each calling a
+`search_facts`-style MCP tool (`capabilities/discovery`) that queries the index **security-trimmed**
+(§5.4), then **fans in** to compose an answer from **only the returned, already-authorized** snippets.
+The deterministic planner engine (§6) reads the same records for the feasibility math; the Maps MCP UI
+app (§5.4) renders the trimmed result at fan-in.
+
+**Temporary storage (in-flight):** the **Durable Task Hub** in `AzureWebJobsStorage` (queues + tables +
+blobs) checkpoints each sub-agent's **return value** into orchestration history for deterministic
+replay; large payloads overflow to blob; `cleanup-orchestrator` discards it after the run. Because each
+sub-agent trims **before** it returns, this transient store only ever holds authorized data — the
+filter is never re-applied to it.
+
+### 5.4 Authorization & the security trim
+
+**Keycloak** authenticates the **UI**; the **API / Express tier is the trust boundary** — and it is
+**already wired**: `api/src/middleware/auth.middleware.ts` supports `AUTH_PROVIDER=keycloak`, verifies
+the RS256 token against the realm JWKS, and maps claims (`keycloakClaimsToUser`) into a
+**`SecurityContext { tenantId, userId, aclGroups[], roles[] }`**. Because a Keycloak token is **not** an
+Azure OBO assertion, `oboAssertion` is left undefined → **downstream Azure (Search, Maps, OpenAI) is
+reached with the API's managed identity** (the trusted-subsystem pattern). The `SecurityContext` is
+forwarded to the Durable orchestrator as **immutable input** (Functions trust it only because they
+authenticated the API's service token — `http-start.ts` / `validate-caller.ts`) and threaded into
+**every** sub-agent's search call.
+
+**Enforcement — `buildFactSecurityFilter(ctx)` in `capabilities/mcp-core/src/security.ts`:** the claims
+become an OData `$filter` that **Azure AI Search evaluates server-side before returning any row** — for
+keyword, semantic, and vector/hybrid queries alike:
+
+```
+$filter =  tenantId eq 'army'                                        ← mandatory; fail-closed if absent
+       and aclGroups/any(g: search.in(g, '/army/g8,/army/g8/plans')) ← group ACL      (NET-NEW clause)
+       [and topicIds/any(t: search.in(t, '…'))]                      ← optional narrowing
+```
+
+A second layer (`canReadSensitiveAttributes` + `isSensitiveFactKey`) redacts sensitive **fields** by
+role/scope. The **LLM controls only the query text — never the `$filter`**, so prompt injection can
+change what is *asked*, not what is *authorized*. Trimming happens **at retrieval, server-side — never**
+by asking the model to drop rows.
+
+**Two adjacent auth planes:**
+
+- **Personal notes (stretch):** a **separate MCP client that authenticates with Entra ID** — its own
+  token, fully **decoupled** from Keycloak (no cross-IdP brokering) — fetches per-user free-form notes
+  (e.g. history of a past interaction) and folds them into the pre-brief. The API's OBO plumbing
+  (`entra-token.ts`, `getOboToken`) already exists; the notes store must be one the user is
+  **personally** authorized to read.
+- **Maps render:** the **geospatial MCP UI app** (`capabilities/geospatial`) is invoked by the
+  orchestrator **at fan-in, over already-trimmed data**, so it needs **no user identity**. Its server
+  authenticates to Azure Maps with a **key** (`AZURE_MAPS_KEY`) / MI; the **raw key stays server-side**,
+  the browser map control uses Azure Maps **AAD** auth (not the subscription key) with a CSP allowlist
+  for `atlas.microsoft.com` (§10, §15).
 
 ---
 
@@ -217,7 +332,8 @@ Tool names drop the path prefix (e.g. `planner/suggest` → tool `suggest`).
 | `GET/POST/PATCH /trips[...]`          | Trip CRUD (draft→proposed→approved)                               |
 | `POST /prebrief/:stopId`              | Generate a per-stop pre-brief (REUSE summary); `?send=true` → Graph `sendMail` (optional) |
 | `POST /afteraction/:engagementId`     | Upload PDF → Document Intelligence extract → structure → consistency (REUSE version-diff) |
-| `POST /seed`                          | (dev) load `DEMO-DATASET.md` records; pre-geocode via Geospatial MCP in ≤25 chunks |
+| `POST /seed`                          | (dev) write `DEMO-DATASET.md` records as **per-source JSON blobs** (envelope baked in); pre-geocode via Geospatial MCP in ≤25 chunks; then **Run each source indexer** |
+| `POST /reindex/:source`               | (dev, optional) **Run** the named source's AI Search indexer — the on-stage add/update/delete-then-reindex beat |
 
 ---
 
@@ -225,7 +341,16 @@ Tool names drop the path prefix (e.g. `planner/suggest` → tool `suggest`).
 
 **Seed (once, offline-prep):**
 ```
-dataset JSON ─▶ seed ─▶ Geospatial MCP project_map_pins (×2 chunks) ─▶ cache lat/lng ─▶ Postgres
+dataset JSON ─▶ seed ─▶ Geospatial MCP project_map_pins (×2 chunks) ─▶ cache lat/lng
+             ─▶ write per-source JSON blobs (envelope baked in) ─▶ Run indexers ─▶ AI Search
+```
+
+**Answer a question (security-trimmed retrieval):**
+```
+host model ─▶ engagements capability ─▶ Durable retrieval orchestrator
+   fan-out df.Task.all ─▶ per-capability search sub-agents
+      each: search_facts(query, $filter = tenantId + aclGroups)   ← Keycloak SecurityContext
+   fan-in ─▶ compose from trimmed snippets ─▶ Maps MCP UI render ─▶ widget
 ```
 
 **Proactive nudge (demo entry point):**
@@ -238,7 +363,7 @@ open Trip tab / ask the host ─▶ suggest tool {leader, anchor}
 **Build itinerary (accept the nudge):**
 ```
 Trip tab "Build itinerary" CTA / model ─▶ build-itinerary tool
-   engine: greedyOrder ─▶ legs+ETAs ─▶ conflicts ─▶ tripRoi ─▶ persist Trip
+   engine: greedyOrder ─▶ legs+ETAs ─▶ conflicts ─▶ tripRoi ─▶ persist Trip (blob + reindex)
    ─▶ widget Trip tab: pins + leg polylines, timeline, ROI badge
 ```
 
@@ -314,24 +439,30 @@ covers any non-App renderer. The main open item is the widget's CSP allowlist fo
 | Service                      | Role                                   | Auth (demo → prod)                             |
 | ---------------------------- | -------------------------------------- | ---------------------------------------------- |
 | **Azure Maps**               | Geocode at seed (opt. Route Matrix)    | `AZURE_MAPS_KEY` (dev) → `AZURE_MAPS_CLIENT_ID` MI; `AZURE_MAPS_ENDPOINT` for Gov |
-| **Azure OpenAI**             | Pre-brief prose, consistency           | key (dev) → MI; `max_completion_tokens`        |
+| **Azure OpenAI**             | Pre-brief prose, consistency, **+ embeddings** (integrated vectorization) | key (dev) → MI; `max_completion_tokens`        |
 | **Azure Document Intelligence** | After-action PDF extract            | key or MI (`document-intelligence.ts` supports both) |
-| **PostgreSQL (Flexible)**    | JSONB persistence                      | password (dev) → MI (`pg-client.ts` pattern)   |
+| **Blob Storage**             | JSON **source of record** (one blob/record, foldered by source) | **MI / RBAC** (shared-key disabled → `Storage Blob Data *`) |
+| **Azure AI Search**          | **Read model**: per-source indexer + vectorizer skillset; query-time `$filter` trim | key (dev) → **MI**; OData `$filter` server-side |
 | **App Service (Windows)**    | API host (iisnode; `PORT` is a pipe)   | —                                              |
 | **App Service (static)**     | UI host (Vite `VITE_*` baked at build) | —                                              |
 | **Azure Functions**          | Geospatial MCP (+ existing pipeline)   | anonymous MCP + bearer presence check          |
-| **Entra ID**                 | API auth; **optional** Graph `sendMail`| MSAL (UI) / jose (API); app-reg + Mail.Send (stretch) |
+| **Keycloak**                 | **UI auth** (OIDC); origin of `SecurityContext` claims | `AUTH_PROVIDER=keycloak` (RS256 vs realm JWKS) — **already wired** |
+| **Entra ID**                 | **Notes MCP client** (OBO); **optional** Graph `sendMail` | jose (API) / OBO (`entra-token.ts`); app-reg + Mail.Send (stretch) |
 
 ---
 
 ## 11. Security / IL5 posture
 
-- **Managed identity everywhere in prod** (Maps, OpenAI, DI, Postgres) — no shared keys. Consistent
-  with repo memories (storage shared-key disabled → RBAC; Maps via client-id MI).
+- **Managed identity everywhere in prod** (Maps, OpenAI, DI, **Blob**, **AI Search**) — no shared keys.
+  Consistent with repo memories (storage shared-key disabled → RBAC; Maps via client-id MI).
+- **Authorization = server-side trim, never LLM redaction.** Keycloak authenticates the UI; the **API
+  is the trust boundary** (already wired) and mints a `SecurityContext`; retrieval applies an OData
+  `$filter` (`buildFactSecurityFilter`) **inside AI Search before any row returns**, **fail-closed** on a
+  missing tenant (§5.4).
 - **Gov-cloud aware:** `AZURE_MAPS_ENDPOINT` (and OpenAI/DI endpoints) are configurable; the
   Geospatial `maps.ts` already parameterizes the cloud.
 - **Demo shortcuts (explicitly scoped):** auth-bypass flag on the API; dev keys; unclassified
-  synthetic data only. None of these touch the real Entra/MI code paths, which stay intact.
+  synthetic data only. None of these touch the real **Keycloak/Entra/MI** code paths, which stay intact.
 - **No secrets in source;** the pre-brief email (if enabled) sends only to a controlled demo mailbox.
 - **Data sensitivity:** geocoding is coarse (city/region), matching the Geospatial tool's stated
   guidance; sensitive/home locations are out of scope.
@@ -343,8 +474,8 @@ covers any non-App renderer. The main open item is the widget's CSP allowlist fo
 | Day | Platform (T1) | Trip Planner ★ (T2) | Conference Roster (T3) | Pre-brief (T4) |
 | --- | ------------- | --------------------- | ---------------------- | ---------------------------- |
 | 0   | Maps key + Azure OpenAI reachable; **OpenAI prose smoke** | — | — | — |
-| 1   | tables+repos; **seed + pre-geocode** (pins); **engagements capability scaffold + mcp-core `resources/read` (`ui://`) + stub tools tagged `_meta.ui`**; **widget shell** (tabs + ext-apps `App`/`useApp` + single-file + text fallback); **ext-apps `basic-host` shell**; publish **schemas + mocks** | scaffold Trip tab vs. stubs; canned nudge round-trips | scaffold Roster tab vs. stubs; canned roster | scaffold Pre-brief tab vs. stubs; canned pre-brief |
-| 2   | real `distance/score/suggest` tools; trip persistence; results tag `_meta.ui.resourceUri` | Trip-tab nudge v1 from real suggest | attendee list + who-to-invite v1 | pre-brief v1 (reuse `summary`) |
+| 1   | **seed as per-source JSON blobs (envelope baked in) + pre-geocode** (pins); **AI Search index + per-source indexers + vectorizer skillset (Run/reindex)**; **Keycloak realm + `tenant_id`/groups mappers + `SecurityContext` at the API**; **retrieval-orchestrator scaffold**; **engagements capability scaffold + mcp-core `resources/read` (`ui://`) + stub tools tagged `_meta.ui`**; **widget shell** (tabs + ext-apps `App`/`useApp` + single-file + text fallback); **ext-apps `basic-host` shell**; publish **schemas + mocks** | scaffold Trip tab vs. stubs; canned nudge round-trips | scaffold Roster tab vs. stubs; canned roster | scaffold Pre-brief tab vs. stubs; canned pre-brief |
+| 2   | real `distance/score/suggest` tools; trip persistence (**blob + reindex**); **wire `search_facts` live + `buildFactSecurityFilter` trim**; results tag `_meta.ui.resourceUri` | Trip-tab nudge v1 from real suggest | attendee list + who-to-invite v1 | pre-brief v1 (reuse `summary`) |
 | 3   | `route/conflicts/roi/on_site_slot_plan` tools; leg-polyline data | ordering + 5 conflicts + ROI "shows the math"; drag/evaluate | on-site slot plan + prospecting one-liner | after-action DI → version-diff → **drift** |
 | 4   | wire E2E; recommendation plumbing; _(opt)_ `sendMail` | integrate nudge→itinerary→ROI on map/timeline | Roster tab integrated | consistency view; loop feeds next pre-brief |
 | 5   | freeze seed; harden; **run full E2E** | beat tests (planner beats) | beat tests (roster/invite, **1b**) | beat tests (pre-brief/drift); _(stretch)_ 2nd host |
@@ -371,6 +502,9 @@ live DI (pre-extracted fallback) → prospecting one-liner.
 | Web host must implement the MCP Apps host side    | **Start from the official SDK host utilities / ext-apps `basic-host`** (§9, §15); the **required text fallback** covers any non-App renderer |
 | `mcp-core` serves tools only (no `resources/*`)   | **Net-new Day-1 task (T1):** add `resources/list`+`resources/read` for `ui://` + `_meta.ui` on tool results (§3, §12) |
 | Data doesn't fire a beat                          | Beat-keyed unit tests (§12) catch it before rehearsal             |
+| Trimmed query silently returns `[]`               | **Fix the 2 latent bugs (§5.2):** pass `INDEX_NAME` to `SearchClient`; add `filterable` trim fields; smoke-test a `$filter` on Day 1 |
+| Deleted record lingers in the index               | **Soft-delete metadata policy** + Run indexer (§5.2); one-blob-per-record makes deletes per-doc |
+| Over-broad access (claim not enforced)            | Server-side `$filter` **fail-closed** on missing tenant; **never** ask the LLM to drop rows (§5.4) |
 
 ---
 
@@ -392,7 +526,8 @@ live DI (pre-extracted fallback) → prospecting one-liner.
    Confirm the `_meta.ui.csp` origins the widget needs — chiefly the **Azure Maps** `atlas` SDK +
    tile/style endpoints (and the Gov-cloud variants) — so the sandboxed iframe can load the map (§9, §10).
 2. **Route realism** — ship with the ETA heuristic, or wire **Route Matrix** in week 1?
-3. **Persistence granularity** — trips/stops/legs as separate tables (above) vs. one `trips` doc with
-   embedded stops/legs (fewer joins, simpler for a demo). Recommend **embedded** unless the Kanban
-   needs stop-level queries.
-4. **Auth for the demo** — bypass flag, or a single seeded demo user through the real MSAL path?
+3. **Trip persistence granularity** — one `trips/<id>.json` blob with **embedded** stops/legs, vs.
+   separate `stops/`+`legs/` blobs. Recommend **one embedded trip blob** (clean soft-delete + a single
+   indexer Run per trip) unless the Kanban needs stop-level queries.
+4. **Auth for the demo** — Keycloak is the decided UI IdP (**already wired**). Bypass flag, or a seeded
+   demo user + realm groups through the **real Keycloak** path? Confirm realm + group→`aclGroups` seeding.

@@ -32,12 +32,13 @@ seeded (their shapes are defined in `schema.ts` for completeness).
 node validate.mjs   # exits 1 on any error; prints a per-entity + staleness report
 ```
 
-## Envelope note (ETL "load" framing)
+## Envelope note (baked into each blob)
 
-The staged JSON carries **only domain fields**. The (deferred) Platform Day-1 loader stamps the
-`BaseEntity` envelope — `tenantId` (= `demo`), `createdAt`, `updatedAt` — at load time, exactly
-as a real ETL *load* step stamps tenant + audit columns. `schema.ts` still declares those fields
-because they are part of the true target shape in Postgres.
+The staged JSON currently carries **only domain fields**. In the locked MVP model the **envelope is
+baked into each per-source blob** — `tenantId` (= `demo`), `source`, `aclGroups[]`, `sensitivity`,
+plus `createdAt`/`updatedAt` — because the AI Search indexer maps those to the **filterable trim
+fields** (see `ARCHITECTURE.md` §5). The Day-1 data task adds the envelope and writes one blob per
+record per source; there is **no relational loader**.
 
 ## Source → target ETL mapping (what we would extract from, per entity)
 
@@ -94,16 +95,17 @@ today and by the Day-1 loader later:
 
 ## Day-1 wiring (deferred, per user decision)
 
-Schema + JSON only for now — no DB dependency. On Platform Day-1:
+Schema + JSON only for now — **no database**. On Platform Day-1 (see `ARCHITECTURE.md` §5):
 
 1. Move `schema.ts` types into `shared/src/interfaces.ts` (+ any enums to `shared/src/enums.ts`),
    re-export from `shared/src/index.ts`.
-2. Register one JSONB table per entity in `api/src/db/pg-client.ts` (`TABLE_DDL` +
-   `CONTAINER_TABLES` + `physicalTable()`), following the existing `{ id TEXT PRIMARY KEY, data
-   JSONB }` convention.
-3. Add a `Repo<T>` per entity (extends `api/src/db/repo/base-repo.ts`).
-4. Write a small loader that reads each `*.json`, applies the demo-clock shift to every date field
-   via `clock.mjs` (`shiftDateByMonths(date, config.shiftMonths)`), stamps the envelope
-   (`tenantId='demo'`, `createdAt`/`updatedAt=now`), and `upsert`s via the repos.
+2. Write a small **seed script** that reads each `*.json`, applies the demo-clock shift to every date
+   field via `clock.mjs` (`shiftDateByMonths(date, config.shiftMonths)`), **bakes in the envelope**
+   (`tenantId='demo'`, `source`, `aclGroups[]`, `sensitivity`, `createdAt`/`updatedAt=now`), and writes
+   **one JSON blob per record** under `sources/<entity>/<id>.json` in Blob Storage.
+3. Create **one Azure AI Search index** (`engagements`) with the filterable trim fields, a
+   `contentVector`, and an **integrated-vectorization skillset** (`AzureOpenAIEmbeddingSkill`).
+4. Create a **per-source blob indexer** (`parsingMode: json`, `SoftDeleteColumnDeletionDetectionPolicy`
+   on `IsDeleted`) per `sources/<entity>/` folder; **Run** an indexer to (re)index that source.
 5. A `geo` adapter maps our `GeoPoint {lat,lng}` to whatever coordinate key `project_map_pins`
    expects (only needed if we ever re-geocode live).
