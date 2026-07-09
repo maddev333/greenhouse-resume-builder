@@ -99,6 +99,13 @@ export interface Contact extends BaseEntity {
   status: 'active' | 'prospect';
   source?: string; // provenance, e.g. 'sharepoint:contacts' | 'exhibitor-directory:ausa-2026'
   lastInteractionDate?: string; // ISO date; ABSENT for prospects
+  /**
+   * DERIVED labels (projection-computed from Interactions × CadencePolicy — NOT authored;
+   * recomputed on reindex, so agents stay stateless). `nextEligibleDate` = lastInteractionDate +
+   * cooldownDays: the contacts agent suppresses or down-ranks a contact until this date, so a
+   * just-held meeting isn't re-recommended (see ARCHITECTURE.md §16.4).
+   */
+  nextEligibleDate?: string; // ISO date; derived
 }
 
 /** A travel anchor AND an attendee/exhibitor magnet (people/prospects gather here). */
@@ -143,6 +150,42 @@ export interface AfterActionNote extends BaseEntity {
   sentiment?: string;
   /** 'document-intelligence' when parsed live; 'seed' when pre-extracted (demo fallback). */
   ingestedVia?: 'document-intelligence' | 'seed';
+}
+
+// ── Recency & cadence (scale: stateless agents, state as labels — ARCHITECTURE.md §16) ──
+
+/**
+ * Append-only INTERACTION event — the canonical recency signal.
+ * One immutable record per touch (meeting/call/email/event-touch), landed from Outlook/Kanban.
+ * Unlike `Engagement` (a rich meeting record with message + after-action linkage), an Interaction
+ * is minimal and NEVER mutated; a projection step rolls the latest ones up into the derived
+ * `Contact.lastInteractionDate` / `Contact.nextEligibleDate` labels that drive the cooldown
+ * (ARCHITECTURE.md §16.4). In the demo these can be projected from held Engagements.
+ */
+export interface Interaction extends BaseEntity {
+  contactId: string;
+  leaderIds: string[];
+  topicId?: string;
+  occurredAt: string; // ISO date/datetime — immutable
+  kind: 'meeting' | 'call' | 'email' | 'event-touch';
+  outcome?: string;
+  engagementId?: string; // link back when this touch corresponds to a full Engagement
+}
+
+/**
+ * Tunable cooldown policy (policy-as-data) — how long to wait before re-recommending a contact.
+ * Stored as its own `policy` source so cadence is a DATA edit, not a deploy. The projection picks
+ * the most specific matching rule (topicId > contactType > minStrategicValue) and computes
+ * `Contact.nextEligibleDate = lastInteractionDate + cooldownDays` (ARCHITECTURE.md §16.4).
+ */
+export interface CadencePolicy extends BaseEntity {
+  appliesTo: {
+    minStrategicValue?: number; // e.g. 5
+    contactType?: 'individual' | 'company' | 'org';
+    topicId?: string;
+  };
+  cooldownDays: number; // e.g. value-5 → 90, value-2 → 270
+  description?: string;
 }
 
 // ── Planner core (RUNTIME-PRODUCED — not seeded) ─────────────────────────

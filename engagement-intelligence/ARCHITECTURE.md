@@ -516,7 +516,8 @@ live DI (pre-extracted fallback) → prospecting one-liner.
 - **Live Graph reads** behind the existing adapter seam (`MVP-PLAN.md` §6.1): SharePoint lists,
   Outlook calendars, the Kanban — replacing the synthetic seed incrementally.
 - **Azure Maps Route Matrix** for true multi-stop travel times; per-diem/airfare cost tables.
-- Full auth/MI hardening and IL5 review; real Azure AI Search index for interaction history at scale.
+- Full auth/MI hardening and IL5 review; real Azure AI Search index for interaction history at scale
+  (**see §16 for the scaling & data-labeling model**).
 
 ---
 
@@ -531,3 +532,94 @@ live DI (pre-extracted fallback) → prospecting one-liner.
    indexer Run per trip) unless the Kanban needs stop-level queries.
 4. **Auth for the demo** — Keycloak is the decided UI IdP (**already wired**). Bypass flag, or a seeded
    demo user + realm groups through the **real Keycloak** path? Confirm realm + group→`aclGroups` seeding.
+
+---
+
+## 16. Scaling & data labeling (post-MVP, forward-looking)
+
+The MVP is a one-week build with a one-week planning outlook; production is an **always-on** system
+serving leaders / EAs / XOs who travel ~70% of the time, with data **pulled in and ETL'd continuously**
+(deferred here — §14). Two rules keep that scalable and **modular**, so *new data that unlocks a new
+capability is additive, never a refactor*.
+
+### 16.1 Two orthogonal axes
+
+- **Physical segmentation** — *what an agent is pointed at*: the **index** and its **data-source +
+  indexer**. Governs relevance tuning, per-capability ACL, and reindex blast-radius.
+- **Logical labeling** — *facets on every record*: the metadata agents filter/rank on and governance
+  enforces. Governs retrieval, authorization, and **behavior** (e.g. cooldown).
+
+Segmentation decides *where* a fact lives; labels decide *who sees it and how agents reason about it*.
+Conflating them is the root of most scaling pain.
+
+### 16.2 Segmentation — capability = index, source = label
+
+- **One index per capability / agent** — `contacts`, `events`, `interactions`, `guidance` (messages),
+  `signals` (news), `notes`. **Not** one mega-index (kills per-capability ACL + tuning), **not** one
+  index per origin system.
+  - **Modularity payoff:** a new capability = **new index + new retrieval sub-agent + register it with
+    the orchestrator (§5.3)**. Existing capabilities are untouched — that is the whole point of the
+    fan-out / fan-in shape.
+- **Within an index, each origin system = its own AI Search data-source + indexer** (SharePoint list,
+  Kanban, exhibitor directory, Outlook). `source` is a **label**, so one origin reindexes independently
+  — the §5.2 add/update/delete loop, at scale.
+- **Blob container / folder per source** is the ETL landing zone; the deferred "pull-in" (§14) lands
+  here with **zero** downstream change.
+
+### 16.3 Labeling — one consistent envelope on every record
+
+Generalizes the §5 envelope (and the existing `tenantId / personId / sectionId / factKey` precedent in
+the `resume-facts` index). Three tiers; **tiers 1–2 are identical for every source**, so anything ETL
+pulls in is trim-able and governable on day one:
+
+| Tier | Purpose | Fields |
+| ---- | ------- | ------ |
+| **Identity & provenance** | segmentation + change tracking | `id` (`<entityType>_<rid>`), `entityType`, `source`, `sourceRecordId`, `schemaVersion`, `ingestedAt`, `contentHash`, `IsDeleted` |
+| **Governance** (the `$filter` trim, fail-closed) | who may see it | `tenantId`, `aclGroups[]`, `sensitivity`, `retentionClass` / `legalHold` |
+| **Semantics & behavior** | agent match / rank / react | `topicIds[]`, `smeAreas[]`, `domain`, `geo` (`Edm.GeographyPoint`), `strategicValue`, `lastInteractionDate`, `validFrom` / `validUntil`, `freshnessTier`, **`nextEligibleDate` (derived)**, `lifecycleState` |
+
+Every Tier-1/2 facet (and any behavior label an agent trims on) must be **`filterable`** in the index —
+today's `resume-facts` has none, so *making the envelope filterable is itself part of "labeling"* (§5.2).
+
+### 16.4 Stateless agents, state as labels — the cooldown pattern
+
+The rule that makes behaviors like *"don't re-recommend a just-met high-value contact for X days"* both
+correct and modular: **agents never remember; state lives as labels on the data.**
+
+1. **Append-only `interactions` source** — every touch is an immutable `Interaction` event
+   (`contactId`, `occurredAt`, `kind`, `topicId`), landed from Outlook / Kanban. Never mutated.
+2. **A projection / enrichment step** (an ETL job or an AI Search skill) rolls the latest events into
+   **derived labels** on the contact doc: `lastInteractionDate = max(occurredAt)` and
+   `nextEligibleDate = lastInteractionDate + cooldownDays`.
+3. **`cooldownDays` is policy-as-data** — a `CadencePolicy` record
+   (`appliesTo {minStrategicValue | contactType | topicId}` → `cooldownDays`), so cadence
+   (value-5 → 90d, value-2 → 270d) is a **data edit, not a deploy**.
+4. **The contacts agent just filters / ranks** — `nextEligibleDate le <today>` to suppress, or return
+   with a `cooldownRemainingDays` penalty so the contact is **shown-but-deprioritized** (advisory — the
+   planner never hard-blocks, `MVP-PLAN.md` §4.1).
+
+Because the label is recomputed on **reindex**, "a meeting happened → suppress for X days" is automatic,
+auditable, and needs **no agent memory and no record mutation**. The same pattern models every derived
+signal — `freshnessTier` (staleness), a `hot` topic flag, message `drift` — as a **projected label, not
+agent logic**. New signal ⇒ new projection + one filter/rank clause.
+
+### 16.5 Two rules that fall out of scale
+
+- **Bitemporal labels** (`validFrom` / `validUntil` + `ingestedAt`) — with continuous ETL and 70%
+  travel you need *as-of* pre-briefs ("what did we know on the brief date") and correct expiry of
+  message versions / guidance. Model both **valid time** (when a fact is true) and **ingest time** (when
+  we learned it).
+- **No server-side joins in AI Search** — **denormalize** the hot labels an agent needs onto its own doc
+  (project `nextEligibleDate` onto contacts); when a live cross-capability join is genuinely required,
+  the **orchestrator** fans out (contacts + interactions agents) and joins at fan-in (§5.3).
+
+### 16.6 Anti-patterns
+
+- One **mega-index** for everything → no per-capability ACL, no relevance tuning, huge reindex
+  blast-radius.
+- **Index-per-origin-system** → join explosion; origin belongs as a `source` **label** inside a
+  capability index.
+- **Mutating records to hold state** → loses auditability and breaks as-of briefs; always **append +
+  project**.
+- **Derived-only / unlabeled facets** the index can't filter → the trim or behavior can't be enforced
+  server-side; every governance + behavior label must be `filterable`.
