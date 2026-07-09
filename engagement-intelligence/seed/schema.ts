@@ -188,6 +188,22 @@ export interface CadencePolicy extends BaseEntity {
   description?: string;
 }
 
+/**
+ * Caller PREFERENCES (leader / EA profile) — a RUNTIME input, not a stored record. The orchestrator
+ * forwards it to each sub-agent to RANK and FILTER candidates for the "menu of options"
+ * (ARCHITECTURE.md §5.3, §9). It NEVER widens access — the security trim (§5.4) is separate and
+ * authoritative; preferences only re-order or narrow what the trim already allowed.
+ */
+export interface Preferences {
+  leaderId?: string;
+  topicFocus?: string[];        // topicIds to boost in ranking
+  seniorityFloor?: number;      // drop contacts below this strategicValue (1–5)
+  doNotMeet?: string[];         // contactIds to exclude from menus
+  blackoutDates?: { from: string; to: string }[]; // ISO ranges the leader is unavailable
+  maxDaysAway?: number;         // trip-length budget the nudge respects
+  homeBaseId?: string;          // origin leader id/location for distance + ETA
+}
+
 // ── Planner core (RUNTIME-PRODUCED — not seeded) ─────────────────────────
 // The planner engine emits these at demo time; they are defined here for completeness.
 

@@ -11,8 +11,8 @@
 
 1. **Reuse-first.** The live capability is **geocoding** (Azure Maps via the Geospatial MCP) and the
    **map is already wired** in the UI. Summarization, Document Intelligence, and version-diff exist.
-   We build a **deterministic planner engine** and a **chat-rendered MCP-App widget** on top — not a
-   new platform.
+   We build a **deterministic planner engine**, a **chat-native option-menu UX**, and **one Azure
+   Maps MCP UI app** (`ui://trip-map`) on top — not a new platform.
 2. **Deterministic core, LLM at the edges.** Distance, batching, route ordering, conflicts, and ROI
    are pure, unit-testable functions. The LLM (Azure OpenAI) is used only for pre-brief prose and
    message-consistency — never for the feasibility math.
@@ -20,12 +20,15 @@
 4. **Offline-reliable demo.** All locations are **pre-geocoded once at seed time** and baked into the
    JSON **blobs** (mirrored into the **AI Search** index), so the live demo makes **no** Maps geocode
    call and can't fail on a network blip.
-5. **Chat-native delivery (MCP Apps).** The interface is a **chat UI that renders MCP UI apps.** The
-   planner ships as **one `engagements` capability** — a tabbed **hybrid web + MCP App** widget —
-   exactly like the repo's six existing capability modules (discovery, geospatial, llmwiki, quality,
-   relationships, temporal). The host is a **web page** — the ext-apps **`basic-host`** reference
-   shell — that renders the widget in a **sandboxed iframe** via the **official MCP Apps SDK**
-   (`@modelcontextprotocol/ext-apps`); not a standalone SPA.
+5. **Chat-native delivery; one map app.** The interface is a **chat UI**: the assistant answers in the
+   thread as **prose + selectable option cards ("menus," §9)**, and the **only MCP UI app is Azure
+   Maps** (`ui://trip-map`) — rendered when a tool result carries geospatial payload (candidate pins →
+   selected route). The planner ships as **one `engagements` capability** (built on `mcp-core`, like the
+   repo's six existing modules: discovery, geospatial, llmwiki, quality, relationships, temporal); its
+   tools return chat-native content and **geo-bearing results tag `_meta.ui.resourceUri`**. The host is
+   a **web page** — the ext-apps **`basic-host`** reference shell — that renders the map app in a
+   **sandboxed iframe** via the **official MCP Apps SDK** (`@modelcontextprotocol/ext-apps`); not a
+   standalone SPA.
 
 ---
 
@@ -34,15 +37,15 @@
 ```
  ┌───────────────────────────────────────────────────────────────────────────────────────────┐
  │  WEB CHAT HOST (ext-apps basic-host shell) renders MCP Apps in a sandboxed iframe           │
- │   chat thread · model composes tools · pushes each tool result to the widget                │
+ │   chat thread · model routes to sub-agents + composes tools · answers = prose + option cards│
  │   ┌─────────────────────────────────────────────────────────────────────────────────────┐  │
- │   │  ENGAGEMENTS WIDGET  (one hybrid web+MCP App, tabbed)  ◀── ui://engagements-widget.html│  │
- │   │   [ Trip Planner ★ | Conference Roster | Pre-brief / Consistency ]                     │  │
- │   │   map (atlas: pins + leg lines) · itinerary · conflict badges · ROI · roster · brief    │  │
+ │   │  ui://trip-map  —  THE ONLY MCP UI app  (Azure Maps atlas)  ◀── on geo results         │  │
+ │   │   candidate pins → selected route + leg polylines · bounds-fit                         │  │
+ │   │   menus · roster · itinerary · conflicts · ROI · briefs are CHAT-NATIVE                 │  │
  │   │   official MCP Apps SDK (ext-apps): App / useApp over the ui/ postMessage channel       │  │
  │   └───────────────────────────────────────────────┬─────────────────────────────────────┘  │
  └─────────────────────────────────────────────────────┼───────────────────────────────────────┘
-     tools/call  +  resources/read (ui:// widget)       │  each tool result carries _meta.ui.resourceUri
+     tools/call  +  resources/read (ui://trip-map)      │  geo-bearing results tag _meta.ui.resourceUri
                                                          ▼
  ┌─────────────────────────────────────────────────────────────┐      ┌───────────────────────────┐
  │  ENGAGEMENTS MCP CAPABILITY  (capabilities/engagements/)      │      │  Geospatial MCP (LIVE)     │
@@ -52,7 +55,7 @@
  │  │ distance·score·suggest·route·conflicts·roi·slots        │  │      ┌───────────────────────────┐
  │  └────────────────────────────────────────────────────────┘  │─────▶│ Azure OpenAI (prose/verdict)│
  │  prebrief (REUSE summary) · afteraction (REUSE DI+diff)       │      │ Azure Document Intelligence│
- │  Durable retrieval orchestrator · serves the ui:// widget     │      └───────────────────────────┘
+ │  Durable orchestrator routes → sub-agents · ui://trip-map     │      └───────────────────────────┘
  └───────────────────────────┬─────────────────────────────────┘
                              ▼
    ┌────────────────────────────────────────────────────────────────────────────┐
@@ -70,15 +73,16 @@
 **The only live external call during the demo is the pre-geocode at seed time.** Everything on the
 demo path (nudge → build → evaluate → pre-brief) runs off cached data + the local engine + Azure OpenAI.
 
-**Delivery = one MCP-App capability.** The planner is packaged as `capabilities/engagements/`,
-following the repo's six existing capability modules: a **hybrid web + MCP App** widget with three
-**tabs** (Trip Planner ★, Conference Roster, Pre-brief + Consistency), served to the chat host as the
-`ui://engagements-widget.html` resource and surfaced by each tool's **`_meta.ui.resourceUri`**. The
-host's model **composes the deterministic planner tools** and narrates in the chat thread; the widget
-renders the result and can call tools back through the **official MCP Apps SDK**
-(`@modelcontextprotocol/ext-apps` — `App`/`useApp` over the `ui/` postMessage channel; server side uses
-`registerAppTool`/`registerAppResource`). The engine stays deterministic; the model is the LLM edge
-(see §4, §9 and `MVP-PLAN.md` §11).
+**Delivery = one capability, chat-native output + one map app.** The planner is packaged as
+`capabilities/engagements/`, following the repo's six existing capability modules. It exposes MCP
+**tools** (routing/retrieval sub-agents + the deterministic planner) whose results are **chat-native**
+(prose + selectable option cards); the **only `ui://` resource is `ui://trip-map`** (Azure Maps),
+surfaced by tagging **`_meta.ui.resourceUri`** on the tool results that carry geospatial payload. The
+host's model **routes to sub-agents and composes the deterministic planner tools**, narrating in the
+chat thread; the map app renders pins/route and can call tools back through the **official MCP Apps
+SDK** (`@modelcontextprotocol/ext-apps` — `App`/`useApp` over the `ui/` postMessage channel; server
+side uses `registerAppTool`/`registerAppResource`). The engine stays deterministic; the model is the
+LLM edge (see §4, §5.3, §9 and `MVP-PLAN.md` §11).
 
 ---
 
@@ -86,9 +90,9 @@ renders the result and can call tools back through the **official MCP Apps SDK**
 
 | Concern                | Reuse? | Where it lives today                                                       | What we add                                                     |
 | ---------------------- | ------ | -------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| **Map rendering**      | ✅ reuse | `ui/src/MapView.tsx` (azure-maps-control `atlas`, HtmlMarkers, bounds-fit) | Ported into the widget's **Trip tab**: **trip-colored pins** + **leg polylines** |
+| **Map rendering**      | ✅ reuse | `ui/src/MapView.tsx` (azure-maps-control `atlas`, HtmlMarkers, bounds-fit) | Ported into the **`ui://trip-map`** MCP UI app (the only one): **trip-colored pins** + **leg polylines** |
 | **Geocoding**          | ✅ reuse | `ui/src/geo.ts` → Geospatial MCP `project_map_pins` (`capabilities/geospatial/mcp/geospatial/src/tools.ts`, **cap 25**) | A **seed script** that geocodes the dataset in chunks of ≤25 and caches lat/lng |
-| **API shell**          | ✅ reuse | `api/src/server.ts` (Express, `/api/v1/*`, `authMiddleware` on `/api/`)     | Engine hosted as **MCP tools** on the `engagements` capability (primary); Express `/api/v1/*` optional for the widget's **standalone-web** fallback |
+| **API shell**          | ✅ reuse | `api/src/server.ts` (Express, `/api/v1/*`, `authMiddleware` on `/api/`)     | Engine hosted as **MCP tools** on the `engagements` capability (primary); Express `/api/v1/*` optional for a **standalone-web** fallback |
 | **Persistence (source of record)** | ✅ reuse pattern | Repo already does **AAD/MI blob access** (`functions/src/activities/document-intelligence.ts`); storage account has shared-key **disabled** (RBAC only) | **One JSON blob per record**, foldered by source; **no Postgres** for the MVP (§5) |
 | **MCP Apps SDK (official)** | ❌ new (deps present) | `@modelcontextprotocol/ext-apps` already in root `package.json`; `mcp-bridge.ts` is a hand-rolled precedent | **Client:** `App`/`useApp`. **Server:** `registerAppTool`/`registerAppResource`. `mcp-bridge.ts` reused only for the standalone-web fallback |
 | **Summarization**      | ✅ reuse | `functions/src/activities/summary.ts` (Azure OpenAI, `max_completion_tokens`) | Call it from a **pre-brief service** (per-stop)                |
@@ -103,7 +107,7 @@ renders the result and can call tools back through the **official MCP Apps SDK**
 | **Distance / routing** | ❌ new  | — (repo has geocoding only; **no routing**)                                | **haversine** + ETA heuristic; optional Azure Maps Route Matrix |
 | **Planner engine**     | ❌ new  | —                                                                          | `api/src/planner/*` deterministic modules (§6)                 |
 | **MCP-App resource serving** | ❌ new | **designed only** (`docs/wiki-app-architecture.md`); deps present (`@modelcontextprotocol/ext-apps`, `@mcp-ui/server`); `mcp-core/mcp-server.ts` is **tools-only** | **net-new in `mcp-core`**: `resources/list`+`resources/read` for `ui://…` + `_meta.ui.resourceUri` on tool results |
-| **Engagements widget** | ❌ new (pattern reuse) | 6 capability UIs are templates (`capabilities/*/ui`, hybrid web+MCP App) | **One tabbed hybrid web+MCP App** (`capabilities/engagements/ui`): Trip / Roster / Pre-brief tabs |
+| **Trip-map MCP UI app** | ❌ new (pattern reuse) | 6 capability UIs are templates (`capabilities/*/ui`, hybrid web+MCP App) | **One** hybrid web+MCP App (`capabilities/engagements/ui`) = **`ui://trip-map`** (Azure Maps); menus/roster/briefs are **chat-native** |
 
 **Note on the 25-pin cap:** `project_map_pins` slices to 25 locations per call. The seed (~6 home
 bases + 20 contacts + 3 events ≈ 29 places) is geocoded in **2 chunks** at seed time — never on the
@@ -118,24 +122,27 @@ framework-free and trivially unit-testable (critical — the demo's credibility 
 
 **Delivery (decided — in week 1):** the same pure modules are **registered as MCP tools** on the
 **`engagements` capability server** (built on `@greenhouse-resume-builder/mcp-core`, like the six
-existing capabilities). That server also **serves the widget** as the `ui://engagements-widget.html`
-resource, and each user-facing tool tags its result with **`_meta.ui.resourceUri`** so the chat host
-renders the widget. Inside the host, **the model is the agent**: it composes the deterministic tools
-and narrates (nudge, pre-brief prose, consistency verdict); the widget renders results and calls tools
-back via the official SDK (`useApp`). Keeping the modules framework-free means the same code also backs an
-optional Express `/api/v1/*` surface for the widget's **standalone-web** mode — no duplication.
+existing capabilities). That server also **serves the one `ui://trip-map` resource** (Azure Maps), and
+**geo-bearing** tool results tag **`_meta.ui.resourceUri`** so the chat host renders the map; all other
+results are **chat-native** (prose + option cards, §9). Inside the host, **the model is the agent**: it
+**routes to the retrieval sub-agents (§5.3)**, composes the deterministic tools, and narrates (nudge,
+pre-brief prose, consistency verdict); the map app renders pins/route and calls tools back via the
+official SDK (`useApp`). Keeping the modules framework-free means the same code also backs an optional
+Express `/api/v1/*` surface for a **standalone-web** mode — no duplication.
 
-**Widget tabs (who owns which tab + tools):**
+**Capability surfaces (who owns what):**
 
-| Tab (in the one widget) | Team | Tools it calls | Produces |
-| ----------------------- | ---- | -------------- | -------- |
-| **Trip Planner** ★ | T2 | `suggest` · `distance` · `route` · `conflicts` · `roi` | proactive nudge, ordered itinerary, conflict recs, ROI rationale |
-| **Conference Roster** | T3 | `conference_roster` · `on_site_slot_plan` · `score` · `who_to_invite` | attendees on-site + slot plan, light prospecting, invite ranking |
-| **Pre-brief / Consistency** | T4 | `summarize` (reuse) · `extract_document` (DI) · `diff_versions` (version-diff) | per-stop pre-brief w/ citations, after-action drift verdict |
+| Surface | Rendered as | Team | Tools it calls | Produces |
+| ------- | ----------- | ---- | -------------- | -------- |
+| **Trip Planner** ★ | chat cards **+ `ui://trip-map`** | T2 | `suggest` · `distance` · `route` · `conflicts` · `roi` | proactive nudge, ordered itinerary, conflict recs, ROI rationale |
+| **Conference Roster** | chat cards | T3 | `conference_roster` · `on_site_slot_plan` · `score` · `who_to_invite` | attendees on-site + slot plan, light prospecting, invite ranking |
+| **Pre-brief / Consistency** | chat cards | T4 | `summarize` (reuse) · `extract_document` (DI) · `diff_versions` (version-diff) | per-stop pre-brief w/ citations, after-action drift verdict |
 
-The **Platform team (T1)** owns the **`engagements` capability server** (tools + `ui://` resource
-serving added to mcp-core), the **widget shell** (tabs + ext-apps `App`/`useApp` + single-file build + text
-fallback), the **data spine**, and the optional agent-runtime host — see the build sequence in §12.
+Only the **Trip Planner** surface has a map; the others are pure chat. The **Platform team (T1)** owns
+the **`engagements` capability server** (tools + the `ui://trip-map` resource serving added to
+mcp-core), the **orchestrator/router (§5.3)** + the **`ui://trip-map` app shell** (ext-apps
+`App`/`useApp` + single-file build + text fallback), the **data spine**, and the optional agent-runtime
+host — see the build sequence in §12.
 
 ---
 
@@ -217,13 +224,32 @@ writing the same index, distinguished by the `source` field). Each indexer:
 
 ### 5.3 Retrieval path (orchestrator → sub-agents → trim)
 
-The chat host's model invokes the `engagements` capability, which runs a **Durable Functions retrieval
-orchestrator** modeled on the repo's `ingestCandidateOrchestrator` (`functions/src/pipeline/`): it
-**fans out** (`df.Task.all`) to per-capability **retrieval sub-agents**, each calling a
-`search_facts`-style MCP tool (`capabilities/discovery`) that queries the index **security-trimmed**
-(§5.4), then **fans in** to compose an answer from **only the returned, already-authorized** snippets.
-The deterministic planner engine (§6) reads the same records for the feasibility math; the Maps MCP UI
-app (§5.4) renders the trimmed result at fan-in.
+The chat host's model calls the `engagements` capability's **orchestrator agent** — a thin LLM step
+modeled on the repo's `ingestCandidateOrchestrator` (`functions/src/pipeline/`). It does two things:
+
+1. **Routes (LLM tool-selection).** Each capability is registered as a **tool** (`contacts`, `events`,
+   `prebrief`, …) with a description + input schema; the model picks **which** sub-agent(s)/API a
+   question needs — *"who to meet on UAS/drone at AUSA"* → the **contacts** sub-agent (topic ∩ geo).
+   This is dynamic (not a blind fan-out to everything), which is what lets new capabilities drop in
+   (§16). For the small MVP set, static fan-out with the model composing is an acceptable fallback.
+2. **Dispatches + fans in.** Durable Functions `callActivity`/`df.Task.all` invokes only the
+   **selected** sub-agents; each calls a `search_facts`-style MCP tool that queries the index
+   **security-trimmed** (§5.4) **and preference-ranked** (below), returning **ranked candidates**; the
+   orchestrator **fans in** and composes from **only the returned, already-authorized** items.
+
+**Not everything is an agent.** The deterministic planner engine (§6) and Azure Maps are **tools/APIs**,
+not LLM agents — the orchestrator picks *agent or API* per step. **A2A is out of scope:** these
+sub-agents are co-deployed capability *tools* behind one orchestrator (MCP, not agent-to-agent); A2A
+would only earn its keep if a sub-agent became an independently owned/hosted service (the Entra-auth
+**Notes** MCP, §5.4, is the natural future seam).
+
+**Response = a menu, then a build (two-step).** A retrieval answer is a **menu of ranked, trimmed
+option cards** rendered **in chat** ("✅ add / skip") — *not* an MCP app. Ranking honors the caller's
+**preferences** (leader priorities, topic focus, blackout dates, seniority floor, do-not-meet, cadence;
+`Preferences` in `schema.ts`), which the orchestrator forwards to each sub-agent alongside the
+`SecurityContext`. When the user/EA picks options, `build-itinerary` runs the planner (§6) and **only
+then** does `ui://trip-map` render the pins + route at fan-in. The deterministic planner engine (§6)
+reads the same records for the feasibility math.
 
 **Temporary storage (in-flight):** the **Durable Task Hub** in `AzureWebJobsStorage` (queues + tables +
 blobs) checkpoints each sub-agent's **return value** into orchestration history for deterministic
@@ -317,13 +343,15 @@ legs/ETAs.
 ## 7. Tool & API surface
 
 Every operation below is exposed as an **MCP tool** on the `engagements` capability — the **primary**
-path: the host's model composes them, and each **user-facing** tool tags its result with
-**`_meta.ui.resourceUri`** so the chat host renders the engagements widget. The same handlers are
-**also** mounted as Express `/api/v1/*` routes to back the widget's **standalone-web** fallback (§9).
-Tool names drop the path prefix (e.g. `planner/suggest` → tool `suggest`).
+path: the host's model **routes to and composes** them (§5.3). Results are **chat-native** (prose +
+option cards); a **geo-bearing** result additionally tags **`_meta.ui.resourceUri = ui://trip-map`** so
+the chat host renders the **one** map app (§9). The same handlers are **also** mounted as Express
+`/api/v1/*` routes to back a **standalone-web** fallback (§9). Tool names drop the path prefix (e.g.
+`planner/suggest` → tool `suggest`).
 
 | Method & path                         | Purpose                                                            |
 | ------------------------------------- | ----------------------------------------------------------------- |
+| `POST /engage/candidates`             | `{leaderId, topicIds[], near `\|` eventId, prefs?}` → **ranked candidate menu** (security-trimmed §5.4, preference-ranked, cooldown-aware §16.4) — the *"who should I meet"* answer |
 | `POST /planner/suggest`               | `{leaderId, anchorId}` → **nudge cards** (nearby opportunities + extend-stay trade) |
 | `POST /planner/build-itinerary`       | `{leaderId, anchorId, stopIds[]}` → ordered trip (legs, ETAs, conflicts, ROI) |
 | `POST /planner/evaluate`              | `{trip}` (edited) → recomputed conflicts + ROI (for drag/edit)    |
@@ -347,42 +375,42 @@ dataset JSON ─▶ seed ─▶ Geospatial MCP project_map_pins (×2 chunks) ─
 
 **Answer a question (security-trimmed retrieval):**
 ```
-host model ─▶ engagements capability ─▶ Durable retrieval orchestrator
-   fan-out df.Task.all ─▶ per-capability search sub-agents
-      each: search_facts(query, $filter = tenantId + aclGroups)   ← Keycloak SecurityContext
-   fan-in ─▶ compose from trimmed snippets ─▶ Maps MCP UI render ─▶ widget
+host model ─▶ orchestrator agent ─▶ ROUTE (LLM tool-select): which sub-agent(s)? e.g. contacts
+   Durable callActivity ─▶ selected sub-agent(s)
+      each: search_facts(query, $filter = tenantId + aclGroups, rank by prefs)  ← SecurityContext + Preferences
+   fan-in ─▶ compose ranked candidates ─▶ CHAT menu of option cards ("✅ add / skip")   ← no map yet
 ```
 
 **Proactive nudge (demo entry point):**
 ```
-open Trip tab / ask the host ─▶ suggest tool {leader, anchor}
+ask the host / accept a nudge ─▶ suggest tool {leader, anchor}
    engine: filter nearby ∩ available ─▶ score ─▶ extend-stay trade vs. days-away budget
-   ─▶ widget Trip tab nudge: "stay +2 days, batch these N — ROI ↑"  (+ model narration in chat)
+   ─▶ CHAT nudge card: "stay +2 days, batch these N — ROI ↑"  (+ ui://trip-map shows the batched pins)
 ```
 
 **Build itinerary (accept the nudge):**
 ```
-Trip tab "Build itinerary" CTA / model ─▶ build-itinerary tool
+"Build itinerary" (user picks options) ─▶ build-itinerary tool
    engine: greedyOrder ─▶ legs+ETAs ─▶ conflicts ─▶ tripRoi ─▶ persist Trip (blob + reindex)
-   ─▶ widget Trip tab: pins + leg polylines, timeline, ROI badge
+   ─▶ ui://trip-map: pins + leg polylines   ·   CHAT: timeline + ROI badge + conflicts
 ```
 
 **Conference roster & prospecting (magnet):**
 ```
 event anchor ─▶ conference tool {eventId}
    engine: attendees(travel≈0) ∪ nearby ∪ topic-matched prospects ─▶ score/tag ─▶ on-site slot plan
-   ─▶ widget Roster tab: "6 attending — engage on-site; 3 exhibitors — want intros?" + venue-day slot lane
+   ─▶ CHAT roster cards: "6 attending — engage on-site; 3 exhibitors — want intros?" + venue-day slot lane
 ```
 
 **Edit / drag (interactive advisor):**
 ```
-Trip tab: drag stop / add C6(Austin) ─▶ evaluate tool ─▶ conflict badges + recommendations (live)
+ui://trip-map: drag stop / add C6(Austin) ─▶ evaluate tool ─▶ CHAT: conflict badges + recommendations (live)
 ```
 
 **Per-stop pre-brief (supporting):**
 ```
-Pre-brief tab: select stop / model ─▶ prebrief tool ─▶ summary(Azure OpenAI) over history + approved message
-   ─▶ brief w/ citations ─▶ (optional) Graph sendMail to demo mailbox
+CHAT: select stop / model ─▶ prebrief tool ─▶ summary(Azure OpenAI) over history + approved message
+   ─▶ brief w/ citations (in chat) ─▶ (optional) Graph sendMail to demo mailbox
 ```
 
 **After-action + consistency (supporting, closes the loop):**
@@ -395,42 +423,47 @@ upload PDF ─▶ afteraction tool ─▶ Document Intelligence extract ─▶ s
 
 ## 9. UI architecture
 
-The delivery surface is **one hybrid web + MCP App**: `capabilities/engagements/ui`, built with the
-same React + Vite pattern as the repo's six existing capability UIs and bundled to a **single file**
-(`vite-plugin-singlefile` + the ext-apps bundle) so it can be served as the
-`ui://engagements-widget.html` resource with **no CDN/CSP escape**. The chat host renders it in an
-iframe whenever a tool result carries `_meta.ui.resourceUri`.
+**The chat UI is the primary surface; Azure Maps is the only MCP UI app.** The assistant answers in the
+thread as **prose + selectable option cards** (the "menus"); a **single** hybrid web + MCP App —
+`capabilities/engagements/ui`, built with the same React + Vite pattern as the repo's six capability UIs
+and bundled to a **single file** (`vite-plugin-singlefile` + the ext-apps bundle) — is served as the
+**`ui://trip-map`** resource with **no CDN/CSP escape**. The chat host renders it in an iframe **only
+when a tool result carries `_meta.ui.resourceUri`** (i.e. it has geospatial payload).
 
-**One widget, three tabs** (teams own tabs — see §4, `MVP-PLAN.md` §11):
+**What renders where:**
 
-- **Trip Planner ★ (T2):** the money moment. **`MapView` ported from `ui/src/MapView.tsx`**
-  (azure-maps `atlas`, HtmlMarkers, bounds-fit) **+** a new **line layer** for legs
-  (`atlas.layer.LineLayer` over a `DataSource`), pins colored by trip / stale-value; the proactive
-  **nudge** + extend-stay math + "Build itinerary" CTA; **itinerary timeline** + unassigned-engagement
-  rail; **conflict badges** + recommendations from `evaluate` rendered inline.
-- **Conference Roster (T3):** for an event anchor — attendee list with **on-site / zero-travel**
-  badges and an **on-site slot plan** lane (venue-day columns, no legs) as the **headline**; a small
-  **prospects** strip (topic-matched exhibitors) with an **"Introduce"** CTA as a **secondary add-on**;
-  plus the **who-to-invite** ranking.
-- **Pre-brief / Consistency (T4):** per-stop **pre-brief** with citations; after-action **drift
-  verdict** ("on message ✅" / flag). Supporting layer.
+| Output | Surface | Why |
+| ------ | ------- | --- |
+| Ranked candidates, nudge, roster, invite list, conflicts, ROI rationale, pre-brief, drift verdict | **Chat** — prose + **option cards** | Text / list / selection content; no map needed; keeps the app surface tiny |
+| Trip pins, candidate / stop locations, leg polylines, bounds-fit | **`ui://trip-map`** (the only MCP UI app) | Geospatial — the one thing chat can't draw |
 
-**Tool calling — official MCP Apps SDK:** the widget uses `@modelcontextprotocol/ext-apps` — the React
-`useApp` hook (or the `App` class) manages the `ui/` postMessage handshake and delivers tool results
-via `ontoolresult`, and user actions call server tools through the SDK. The server registers the tools
-+ the widget resource with `registerAppTool`/`registerAppResource` (each user-facing tool tags
-`_meta.ui.resourceUri`). The repo's hand-rolled `mcp-bridge.ts` is kept only as the **standalone-web**
-fallback (HTTP JSON-RPC against the optional Express `/api/v1/*` surface, §7). Geocoding is baked in at
-seed time, so the widget never calls the Geospatial MCP live.
+**`ui://trip-map` (Azure Maps).** **`MapView` ported from `ui/src/MapView.tsx`** (azure-maps `atlas`,
+HtmlMarkers, bounds-fit) **+** a new **line layer** for legs (`atlas.layer.LineLayer` over a
+`DataSource`), pins colored by trip / stale-value. It renders **candidate pins** during selection and
+the **selected route + legs** after `build-itinerary`. Geocoding is baked in at seed time, so the app
+never calls the Geospatial MCP live.
 
-**Text fallback (required):** every user-facing tool also returns a `content[]` text block (nudge
-summary, roster list, brief) so hosts that don't render MCP UI apps still get a usable answer — the
-demo degrades to chat-only, never to nothing.
+**Option cards (chat-native menu).** The two-step **propose → select → build** UX (§5.3): the
+orchestrator emits N ranked candidates as selectable cards; the user/EA's picks are sent back as a tool
+call (`build-itinerary`, `evaluate`), which then updates the map. Selection state lives in the chat
+client, not in an MCP app. The former "Trip / Roster / Pre-brief tabs" are just **teams owning
+chat-native surfaces** (§4), not separate apps.
+
+**Tool calling — official MCP Apps SDK:** the map app uses `@modelcontextprotocol/ext-apps` — the React
+`useApp` hook (or the `App` class) manages the `ui/` postMessage handshake and delivers geo results via
+`ontoolresult`; map interactions (drag / add stop) call server tools through the SDK. The server
+registers the tools + the `ui://trip-map` resource with `registerAppTool`/`registerAppResource`
+(geo-bearing tools tag `_meta.ui.resourceUri`). The repo's hand-rolled `mcp-bridge.ts` is kept only as
+the **standalone-web** fallback (HTTP JSON-RPC against the optional Express `/api/v1/*` surface, §7).
+
+**Text fallback (required):** because the substantive output is already chat-native, non-map hosts lose
+only the map — every tool still returns a `content[]` text block (candidate list, nudge summary, roster,
+brief), and geo results include a text stop / route list. The demo degrades to chat-only, never to
+nothing.
 
 **Host:** the demo runs **inside a web page** — the ext-apps **`basic-host`** reference shell
-(decided) — which acts as the MCP host and embeds the widget in a **sandboxed iframe** via the official
-SDK's host side. Because we control the host, MCP-App support is guaranteed; the text fallback still
-covers any non-App renderer. The main open item is the widget's CSP allowlist for Azure Maps — see §15.
+(decided) — which acts as the MCP host and embeds `ui://trip-map` in a **sandboxed iframe** via the
+official SDK's host side. The main open item is the map app's CSP allowlist for Azure Maps — see §15.
 
 ---
 
@@ -474,15 +507,15 @@ covers any non-App renderer. The main open item is the widget's CSP allowlist fo
 | Day | Platform (T1) | Trip Planner ★ (T2) | Conference Roster (T3) | Pre-brief (T4) |
 | --- | ------------- | --------------------- | ---------------------- | ---------------------------- |
 | 0   | Maps key + Azure OpenAI reachable; **OpenAI prose smoke** | — | — | — |
-| 1   | **seed as per-source JSON blobs (envelope baked in) + pre-geocode** (pins); **AI Search index + per-source indexers + vectorizer skillset (Run/reindex)**; **Keycloak realm + `tenant_id`/groups mappers + `SecurityContext` at the API**; **retrieval-orchestrator scaffold**; **engagements capability scaffold + mcp-core `resources/read` (`ui://`) + stub tools tagged `_meta.ui`**; **widget shell** (tabs + ext-apps `App`/`useApp` + single-file + text fallback); **ext-apps `basic-host` shell**; publish **schemas + mocks** | scaffold Trip tab vs. stubs; canned nudge round-trips | scaffold Roster tab vs. stubs; canned roster | scaffold Pre-brief tab vs. stubs; canned pre-brief |
-| 2   | real `distance/score/suggest` tools; trip persistence (**blob + reindex**); **wire `search_facts` live + `buildFactSecurityFilter` trim**; results tag `_meta.ui.resourceUri` | Trip-tab nudge v1 from real suggest | attendee list + who-to-invite v1 | pre-brief v1 (reuse `summary`) |
+| 1   | **seed as per-source JSON blobs (envelope baked in) + pre-geocode** (pins); **AI Search index + per-source indexers + vectorizer skillset (Run/reindex)**; **Keycloak realm + `tenant_id`/groups mappers + `SecurityContext` at the API**; **retrieval-orchestrator scaffold**; **engagements capability scaffold + mcp-core `resources/read` (`ui://`) + stub tools tagged `_meta.ui`**; **`ui://trip-map` app shell** (ext-apps `App`/`useApp` + single-file + text fallback) + **orchestrator/router scaffold**; **ext-apps `basic-host` shell**; publish **schemas + mocks** | scaffold Trip cards + map vs. stubs; canned nudge round-trips | scaffold Roster cards vs. stubs; canned roster | scaffold Pre-brief cards vs. stubs; canned pre-brief |
+| 2   | real `distance/score/suggest` tools; trip persistence (**blob + reindex**); **wire `search_facts` live + `buildFactSecurityFilter` trim**; results tag `_meta.ui.resourceUri` | Trip nudge card v1 from real suggest | attendee list + who-to-invite v1 | pre-brief v1 (reuse `summary`) |
 | 3   | `route/conflicts/roi/on_site_slot_plan` tools; leg-polyline data | ordering + 5 conflicts + ROI "shows the math"; drag/evaluate | on-site slot plan + prospecting one-liner | after-action DI → version-diff → **drift** |
-| 4   | wire E2E; recommendation plumbing; _(opt)_ `sendMail` | integrate nudge→itinerary→ROI on map/timeline | Roster tab integrated | consistency view; loop feeds next pre-brief |
+| 4   | wire E2E; recommendation plumbing; _(opt)_ `sendMail` | integrate nudge→itinerary→ROI on map/timeline | Roster cards integrated | consistency view; loop feeds next pre-brief |
 | 5   | freeze seed; harden; **run full E2E** | beat tests (planner beats) | beat tests (roster/invite, **1b**) | beat tests (pre-brief/drift); _(stretch)_ 2nd host |
 
 **Contracts-first:** T1 publishes **tool schemas + the `_meta.ui` resource contract + mock responses**
-by end of Day 1, so T2–T4 never block on T1's real tools. **Critical path:** T1 seed + pins + widget
-shell + contracts (Day 1) → all three tabs. **Top prerequisite:** an Azure Maps key (dev, seed-time
+by end of Day 1, so T2–T4 never block on T1's real tools. **Critical path:** T1 seed + pins + `ui://trip-map`
+shell + router + contracts (Day 1) → all three surfaces. **Top prerequisite:** an Azure Maps key (dev, seed-time
 only) + a reachable Azure OpenAI deployment for pre-brief prose + consistency. **Test strategy:** each
 beat in `DEMO-DATASET.md` §7 (incl. **1b** conference roster) ships as a unit/integration test asserting
 the expected flag/rank/ROI/verdict — a data tweak that breaks a beat fails CI, not the live demo.
@@ -512,7 +545,7 @@ live DI (pre-extracted fallback) → prospecting one-liner.
 
 - **Harden the `capabilities/engagements` MCP** (built in week 1) — tool auth, rate limits, richer
   server-side agent orchestration for hands-free planning; add **standalone-web / Teams / SharePoint
-  embeds** of the same widget over the optional Express surface.
+  embeds** of the same map app + chat client over the optional Express surface.
 - **Live Graph reads** behind the existing adapter seam (`MVP-PLAN.md` §6.1): SharePoint lists,
   Outlook calendars, the Kanban — replacing the synthetic seed incrementally.
 - **Azure Maps Route Matrix** for true multi-stop travel times; per-diem/airfare cost tables.
@@ -523,8 +556,8 @@ live DI (pre-extracted fallback) → prospecting one-liner.
 
 ## 15. Open architecture questions
 
-1. **Widget CSP allowlist** — the host shell is the ext-apps **`basic-host`** reference (decided).
-   Confirm the `_meta.ui.csp` origins the widget needs — chiefly the **Azure Maps** `atlas` SDK +
+1. **Map-app CSP allowlist** — the host shell is the ext-apps **`basic-host`** reference (decided).
+   Confirm the `_meta.ui.csp` origins the `ui://trip-map` app needs — chiefly the **Azure Maps** `atlas` SDK +
    tile/style endpoints (and the Gov-cloud variants) — so the sandboxed iframe can load the map (§9, §10).
 2. **Route realism** — ship with the ETA heuristic, or wire **Route Matrix** in week 1?
 3. **Trip persistence granularity** — one `trips/<id>.json` blob with **embedded** stops/legs, vs.

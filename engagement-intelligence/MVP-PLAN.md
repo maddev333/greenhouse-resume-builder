@@ -70,7 +70,7 @@ stale, well-matched contacts into that trip, then checks **feasibility** and **R
 startup luncheon nearby, and 4 stale, skill-matched, high-value contacts within 50 mi are available.
 Stay two extra days and you hit all of them — two birds, one stone. Want me to set up the itinerary?"_
 Accept → the planner **batches** the stops, orders and checks them, and the itinerary **densifies on a
-map + timeline inside the chat host's engagements widget (Trip tab)** while a live **trip-ROI** score
+map (the one `ui://trip-map` app) + a chat-native itinerary timeline** while a live **trip-ROI** score
 climbs (1-purpose trip → multi-touch sweep at ~$0 extra airfare). The **extend-the-stay** trade is
 quantified against the leader's **days-away budget**.
 
@@ -281,7 +281,7 @@ real send via Graph `sendMail` to a demo mailbox (requires an Entra app registra
   planner surfaces nearby **events** and **stale, high-value, matched contacts**, quantifies an
   **extend-the-stay** trade ("stay +2 days → +3 high-value touches"), and offers a one-click **"Build
   itinerary."** This is the demo's entry point. Delivered as a **tool result in the chat thread** —
-  the host's model narrates and the **engagements widget (Trip tab)** renders the nudge; **the chat UI
+  the host's model narrates and the nudge renders **chat-native** (option cards), the batched stops on the **`ui://trip-map`** app; **the chat UI
   is the interface**, not a stretch.
 - **Conference roster** (+ light prospecting) — for an **event anchor**, list existing **contacts
   attending** (engage **on-site**, ~zero travel) and build an **on-site slot plan** across the event
@@ -364,18 +364,18 @@ capability (geocoding)**; the pre-brief layer reuses the most mature engines.
 | Capability                                                                       | Status in repo                    | Use here                                                             |
 | -------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------- |
 | **Geospatial / geocoding** (Azure Maps)                                          | **Live** (the only live capability) | **Pre-geocode all locations; map pins; distance inputs** — the star |
-| **Map UI** (`MapView` + `project_map_pins`, caps 25 pins)                        | Implemented / wired               | Ported into the widget's **Trip tab**: trips, stops, legs           |
+| **Map UI** (`MapView` + `project_map_pins`, caps 25 pins)                        | Implemented / wired               | Ported into the **`ui://trip-map`** app (the only MCP UI app): trips, stops, legs |
 | **Distance (haversine from lat/lng)**                                            | —                                 | **Net-new but trivial** — feasibility + clustering                  |
 | **Route / travel-time** (Azure Maps **Route Matrix**)                            | **Not called yet**; same account/key | **Optional** real drive-times; demo default = haversine + speed heuristic |
 | **Trip model + greedy route ordering / batching**                                | —                                 | **Net-new** (deterministic, unit-testable)                          |
 | **5-conflict + trip-ROI engine**                                                 | —                                 | **Net-new** (deterministic, unit-testable)                          |
-| **Engagements widget** (tabbed hybrid web+MCP App)                               | pattern exists (6 capability UIs) | **Net-new**: one widget, Trip/Roster/Pre-brief tabs; reuses `MapView`; built with the official **ext-apps SDK** (`App`/`useApp`) |
+| **Trip-map MCP UI app** (hybrid web+MCP App)                                     | pattern exists (6 capability UIs) | **Net-new**: the **one** `ui://trip-map` app (Azure Maps); menus/roster/briefs are **chat-native**; reuses `MapView`; built with the official **ext-apps SDK** (`App`/`useApp`) |
 | **Summarization** (`functions/src/activities/summary.ts` + Azure OpenAI)         | Implemented                       | Per-stop pre-briefs, interaction roll-ups (supporting)              |
 | **Document Intelligence** (`document-intelligence.ts`)                           | **Implemented**                   | After-action / feedback PDF ingest (supporting loop)                |
 | **Fact extraction + citations + versioning**                                     | Implemented                       | EXSUM → commitments/talking points; message as versioned facts      |
 | **Version diff** (`version-diff.ts`)                                             | Implemented                       | Intended vs. actual message drift (supporting)                      |
 | **MCP tool host** (`capabilities/mcp-core`, `functions/src/services/agent-runtime.ts`) | Implemented (**tools only**) | **Hosts the `engagements` tools** (promoted to **week 1**); the chat host's model composes them |
-| **MCP-App resource serving** (`resources/*` + `_meta.ui`)                        | **Designed only** (`docs/wiki-app-architecture.md`); deps present | **Net-new in `mcp-core`**: serve `ui://engagements-widget.html` + tag tool results |
+| **MCP-App resource serving** (`resources/*` + `_meta.ui`)                        | **Designed only** (`docs/wiki-app-architecture.md`); deps present | **Net-new in `mcp-core`**: serve **`ui://trip-map`** + tag geo tool results |
 | **Blob store (source of record)**                                                | pattern exists (AAD/MI blob I/O)  | **Net-new layout:** one JSON blob per record, foldered by source; **no Postgres** |
 | **AI Search read model** (`api/src/search`, `functions/src/persistence`)         | Code exists; **push model, no vector** | **Net-new Azure config:** per-source **indexer + vectorizer skillset**; **fix 2 latent query bugs** |
 | **Security trim** (`capabilities/mcp-core/src/security.ts`)                       | Implemented (`buildFactSecurityFilter`) | Add `aclGroups/any(search.in(…))`; enforce OData `$filter` server-side |
@@ -391,7 +391,7 @@ capability (geocoding)**; the pre-brief layer reuses the most mature engines.
 is wired, so distance (haversine) and the trip/route logic are the tractable net-new work. The
 supporting pre-brief layer reuses **summary**, **Document Intelligence**, **extraction**, and
 **version-diff**. Net-new hot spots: the **Trip model + batching/route ordering**, the
-**5-conflict/ROI engine**, and the **engagements widget** (tabbed web+MCP App).
+**5-conflict/ROI engine**, and the **`ui://trip-map`** app (web+MCP App) + chat-native surfaces.
 
 ---
 
@@ -407,17 +407,17 @@ supporting pre-brief layer reuses **summary**, **Document Intelligence**, **extr
   (already wired) → a **Durable retrieval orchestrator** fans out to security-trimmed search sub-agents.
 - Layer 1 planner: **map + trip builder + batch suggestions + greedy route ordering + all 5
   conflicts + recommendations + trip-ROI + staleness + who-to-invite**, entered via a proactive
-  **nudge**, rendered in the chat host's **engagements widget**.
+  **nudge**, rendered **chat-native** (option cards) with geo results on the **`ui://trip-map`** app.
 - Layer 2 (supporting): **per-stop pre-brief** (preview) + after-action **Document Intelligence**
   ingest + message-consistency view.
-- Reuse the **map** + AI summarization; build the widget with the official **ext-apps SDK**
+- Reuse the **map** + AI summarization; build the **`ui://trip-map`** app with the official **ext-apps SDK**
   (`App`/`useApp` + `registerAppTool`/`registerAppResource`); deliver as **one `engagements` MCP-App
-  capability** (tabbed widget) on **mcp-core**; auth bypass for the demo.
+  capability** (chat-native surfaces + one `ui://trip-map` app) on **mcp-core**; auth bypass for the demo.
 
 **Out (week 1):**
 
 - Real routing **optimization solver** — the planner is a greedy **advisor**, not an auto-optimizer.
-- **Standalone-web deployment** of the widget (SharePoint/Teams embed) — **optional fallback**; the
+- **Standalone-web deployment** of the map app + chat client (SharePoint/Teams embed) — **optional fallback**; the
   committed surface is the **chat-host MCP-App**.
 - Azure Maps **Route Matrix** real drive-times — **optional** (haversine + speed heuristic by
   default); wire only if time permits.
@@ -433,9 +433,9 @@ supporting pre-brief layer reuses **summary**, **Document Intelligence**, **extr
 
 ## 11. One-Week Delivery Plan (team)
 
-**Team shape (decided):** **1 Platform team + 3 feature teams (one widget tab each).** The Platform
-team stands up the framework, data, **grounded tools**, and the **widget shell**; each feature team
-builds one **tab** of the single `engagements` widget, whose tools the **chat host's model composes**
+**Team shape (decided):** **1 Platform team + 3 feature teams (one chat-native surface each).** The Platform
+team stands up the framework, data, **grounded tools**, and the **`ui://trip-map` app shell + orchestrator/router**; each feature team
+builds one **chat-native surface** of the single `engagements` capability, whose tools the **chat host's model routes to + composes**
 to accomplish an MVP job. This leans on the repo's `capabilities/mcp-core` (tool host + — net-new —
 `ui://` resource serving) and `functions/src/services/agent-runtime.ts` (Azure OpenAI, for prose).
 
@@ -446,10 +446,10 @@ pre-brief, and consistency verdict. **The model never does the math itself.**
 
 | Team | Owns | Builds |
 | ---- | ---- | ------ |
-| **T1 — Platform & Framework** | data spine, seed, tools, **capability server + widget + basic-host shell**, deploy | **seed as per-source JSON blobs** (envelope baked in); **AI Search index + per-source indexers + vectorizer skillset (manual reindex)**; **Keycloak realm + `tenant_id`/groups mappers + `SecurityContext`** at the API trust boundary; a **Durable retrieval orchestrator** (fan-out to security-trimmed search sub-agents); the deterministic **planner tools** (`distance/score/suggest/route/conflicts/roi/on_site_slot_plan/who_to_invite`) exposed as **MCP tools (+ optional REST)**; **mcp-core `resources/read` serving `ui://engagements-widget.html` + `_meta.ui` on tool results**; the **widget shell** (tabs + ported `MapView`+legs + official **ext-apps SDK** `App`/`useApp` + single-file build + text fallback); the **ext-apps `basic-host` host shell**; **auth-bypass**; publishes **tool schemas + mocks** Day 1 |
-| **T2 — Trip Planner tab** ★ | the star beat | the proactive **nudge → batch → itinerary → conflicts → ROI** tab; calls `suggest/route/conflicts/roi`; renders the nudge + itinerary on map/timeline; "shows the math" |
-| **T3 — Conference Roster tab** | the magnet | the **event-anchor** tab: attendees **on-site** (zero-travel) + **on-site slot plan** + light **prospecting** one-liner + **who-to-invite**; calls `conference_roster/on_site_slot_plan/score/who_to_invite`; renders the roster + slot lane |
-| **T4 — Pre-brief / Consistency tab** | the supporting loop | per-stop **pre-brief** (reuse `summary`) with citations; **after-action** PDF → **Document Intelligence** → **version-diff** → drift verdict; feeds the next pre-brief |
+| **T1 — Platform & Framework** | data spine, seed, tools, **capability server + `ui://trip-map` app + basic-host shell**, deploy | **seed as per-source JSON blobs** (envelope baked in); **AI Search index + per-source indexers + vectorizer skillset (manual reindex)**; **Keycloak realm + `tenant_id`/groups mappers + `SecurityContext`** at the API trust boundary; a **Durable retrieval orchestrator** (fan-out to security-trimmed search sub-agents); the deterministic **planner tools** (`distance/score/suggest/route/conflicts/roi/on_site_slot_plan/who_to_invite`) exposed as **MCP tools (+ optional REST)**; **mcp-core `resources/read` serving `ui://trip-map` + `_meta.ui` on geo tool results**; the **`ui://trip-map` app shell** (ported `MapView`+legs + official **ext-apps SDK** `App`/`useApp` + single-file build + text fallback); the **ext-apps `basic-host` host shell**; **auth-bypass**; publishes **tool schemas + mocks** Day 1 |
+| **T2 — Trip Planner** ★ | the star beat | the proactive **nudge → batch → itinerary → conflicts → ROI** surface; calls `suggest/route/conflicts/roi`; renders the nudge + itinerary on the `ui://trip-map` app + chat timeline; "shows the math" |
+| **T3 — Conference Roster** | the magnet | the **event-anchor** surface: attendees **on-site** (zero-travel) + **on-site slot plan** + light **prospecting** one-liner + **who-to-invite**; calls `conference_roster/on_site_slot_plan/score/who_to_invite`; renders the roster + slot lane as **chat cards** |
+| **T4 — Pre-brief / Consistency** | the supporting loop | per-stop **pre-brief** (reuse `summary`) with citations; **after-action** PDF → **Document Intelligence** → **version-diff** → drift verdict; feeds the next pre-brief |
 
 **Actual staffing (confirmed — 18) → proposed allocation.** Developer roles build; the
 analyst/SME/process roles (PoCs, BAs, Process owner) define choreography, validate the domain, and own
@@ -458,9 +458,9 @@ the demo script across teams. _Acronyms inferred — adjust freely:_
 | Team | People (18 total) |
 | ---- | ----------------- |
 | **T1 — Platform & Framework** (9) | **Tech Lead** (also integration owner) · 2× **DevSecOps** · **DPS Lead** · **Data Lead** · 2× **Data Eng** _(own the Blob JSON stores + AI Search indexers/skillset + reindex — this task)_ · 2× **Power Platform** _(SharePoint/Dataverse source adapters, post-demo ETL seam)_ |
-| **T2 — Trip Planner tab** ★ (3) | 1× **Dev (AST1)** · 1× **Engagements PoC** (domain SME) · 1× **Business Analyst** |
-| **T3 — Conference Roster tab** (3) | 1× **PEC** (dev) · 1× **Engagements PoC** (event/roster SME) · 1× **Business Analyst** |
-| **T4 — Pre-brief / Consistency tab** (3) | 1× **PEC** (dev) · 1× **Cyber** (message-consistency/compliance) · 1× **Process Owner** (message-approval process) |
+| **T2 — Trip Planner** ★ (3) | 1× **Dev (AST1)** · 1× **Engagements PoC** (domain SME) · 1× **Business Analyst** |
+| **T3 — Conference Roster** (3) | 1× **PEC** (dev) · 1× **Engagements PoC** (event/roster SME) · 1× **Business Analyst** |
+| **T4 — Pre-brief / Consistency** (3) | 1× **PEC** (dev) · 1× **Cyber** (message-consistency/compliance) · 1× **Process Owner** (message-approval process) |
 
 The **Data contingent** (DPS Lead + Data Lead + 2× Data Eng, with 2× Power Platform on source shape)
 sits in T1 and owns the **staged Blob JSON stores + AI Search indexers** described in §8 / `DEMO-DATASET.md`. **[CONFIRM]** the
@@ -468,8 +468,8 @@ inferred acronyms (DPS, PEC, AST1) and whether these assignments match intended 
 
 **Contracts-first (the anti-blocking rule):** by **end of Day 1** the Platform team publishes (a) the
 **tool schemas** (name/input/output), (b) the **`_meta.ui` resource contract** (each user-facing tool
-result → `ui://engagements-widget.html`, served by mcp-core `resources/read`), and (c) **mock tool
-responses**. Every feature team builds its tab against those stubs via the ext-apps SDK, so no team is ever
+result → `ui://trip-map`, served by mcp-core `resources/read`), and (c) **mock tool
+responses**. Every feature team builds its surface against those stubs via the ext-apps SDK, so no team is ever
 blocked on the Platform's real implementation.
 
 **Day-by-day (4 teams in parallel):**
@@ -479,12 +479,12 @@ blocked on the Platform's real implementation.
 - **Day 1 — Contracts & scaffold (unblock everyone).** T1: **seed as per-source JSON blobs +
   pre-geocode** (map shows pins), **AI Search index + indexers + vectorizer skillset**, **Keycloak realm +
   mappers + `SecurityContext`**, **retrieval-orchestrator scaffold**, stand up the **`engagements` capability server** (stub tools tagged `_meta.ui`) +
-  **mcp-core `resources/read`** serving the **widget shell**, publish **schemas + mocks**. T2–T4:
-  scaffold each **widget tab** against stubs; each renders a canned tool result. _(Gate: seed loads,
-  pins render, every tab round-trips a stub tool via the ext-apps SDK.)_
-- **Day 2 — Real tools + tab v1.** T1: real `distance/score/suggest`, trip persistence. T2:
-  Trip-tab nudge v1 from real suggestions. T3: attendee list + who-to-invite v1. T4: pre-brief v1
-  (preview). _(Gate: each tab renders a real, non-canned result for its primary beat.)_
+  **mcp-core `resources/read`** serving the **`ui://trip-map` app shell + router**, publish **schemas + mocks**. T2–T4:
+  scaffold each **chat surface** against stubs; each renders a canned tool result. _(Gate: seed loads,
+  pins render, every surface round-trips a stub tool via the ext-apps SDK.)_
+- **Day 2 — Real tools + surface v1.** T1: real `distance/score/suggest`, trip persistence. T2:
+  Trip nudge card v1 from real suggestions. T3: attendee list + who-to-invite v1. T4: pre-brief v1
+  (preview). _(Gate: each surface renders a real, non-canned result for its primary beat.)_
 - **Day 3 — Intelligence in.** T1: `route/conflicts/roi/on_site_slot_plan` tools + leg-polyline data.
   T2: ordering + all 5 conflicts + ROI "shows the math" + drag/evaluate. T3: on-site slot plan across
   event days + prospecting one-liner. T4: after-action DI → version-diff → **drift flag**. _(Gate: all
@@ -494,9 +494,9 @@ blocked on the Platform's real implementation.
   runs once.)_
 - **Day 5 — Harden & rehearse.** Freeze scripted seed; **beat-keyed tests** (each beat in
   `DEMO-DATASET.md` §7 = a test); dry-run twice; buffer. _(Stretch, if ahead: a standalone-web
-  deployment of the same widget in a plain browser via the Express fallback.)_
+  deployment of the same map app + chat client in a plain browser via the Express fallback.)_
 
-**Critical path:** Platform's **seed + pins + widget shell + tool contracts** (Day 1) unblocks all
+**Critical path:** Platform's **seed + pins + `ui://trip-map` app shell + router + tool contracts** (Day 1) unblocks all
 three feature teams. **Top prerequisite (Day 0):** an **Azure Maps** key (dev or MI) — needed only at
 seed time — and a reachable **Azure OpenAI** deployment for pre-brief prose + consistency.
 
@@ -544,10 +544,12 @@ owner** and runs the full end-to-end each afternoon; each feature team owns its 
     **approving authority**; what does a real **EXSUM** look like (format, fields, length)?
 13. **"Nearby" definition + extend-stay** — what radius (miles or drive-time) counts as "nearby," and
     what's the maximum acceptable **trip extension** (days) when suggesting "stay longer"?
-14. _(Decided: the interface is a **web page** (chat UI) that renders MCP UI apps via the **official
-    MCP Apps SDK** (`@modelcontextprotocol/ext-apps`), using the ext-apps **`basic-host`** reference as
-    the host shell; the planner ships as **one `engagements` MCP-App capability with a single tabbed
-    widget** — Trip / Conference Roster / Pre-brief.)_
+14. _(Decided: the interface is a **web page** (chat UI). The assistant answers **chat-native** (prose +
+    selectable option cards / "menus"); the **only MCP UI app is Azure Maps** (`ui://trip-map`),
+    rendered on geo results via the **official MCP Apps SDK** (`@modelcontextprotocol/ext-apps`) inside
+    the ext-apps **`basic-host`** reference host shell. The planner ships as **one `engagements`
+    capability**; Trip / Conference Roster / Pre-brief are **chat-native surfaces**, not separate apps.
+    See `ARCHITECTURE.md` §5.3, §9.)_
 15. **Attendee/exhibitor & prospect source** — where do conference **attendee/exhibitor lists** and
     **prospect** (new-company) records come from (registration exports, exhibitor directories, a CRM
     prospect list)? For the demo they're **synthetic rosters** attached to the event.
