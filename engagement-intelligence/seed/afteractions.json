@@ -1,0 +1,30 @@
+[
+  {
+    "id": "AA-onmsg",
+    "engagementId": "EX-002",
+    "sourceDocRef": null,
+    "extractedSummary": "Meeting stayed on the approved message. Leader stressed multi-year contracting stability, prioritized munitions onshoring, and explicitly avoided committing to specific program dollars.",
+    "actualMessagePoints": [
+      "Multi-year contracting stability is coming",
+      "Prioritize supply-chain onshoring for munitions",
+      "Declined to commit to specific program dollars"
+    ],
+    "commitments": ["Share unclassified industrial-base resilience one-pager"],
+    "sentiment": "positive",
+    "ingestedVia": "seed"
+  },
+  {
+    "id": "AA-drift",
+    "engagementId": "EX-003",
+    "sourceDocRef": "raw/seed/exsum-techcorp-2025-02-20.pdf",
+    "extractedSummary": "Warm, productive session. However, in response to pressure the principal signaled a likely specific program-dollar figure — diverging from the approved message, which bars commitments on program dollars.",
+    "actualMessagePoints": [
+      "Multi-year contracting stability is coming",
+      "Prioritize supply-chain onshoring for munitions",
+      "Signaled a likely specific program-dollar figure (DIVERGENCE from approved message)"
+    ],
+    "commitments": ["Implied a specific program-dollar figure was likely"],
+    "sentiment": "positive",
+    "ingestedVia": "seed"
+  }
+]

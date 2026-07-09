@@ -1,0 +1,68 @@
+[
+  {
+    "id": "L1",
+    "name": "MG D. Whitfield",
+    "role": "ASA(ALT) staff — MG",
+    "domain": "non-technical",
+    "smeAreas": ["industrial-base", "acquisition"],
+    "level": "L4",
+    "homeBase": { "city": "Washington", "state": "DC", "lat": 38.9072, "lng": -77.0369 },
+    "availability": [{ "start": "2025-10-06", "end": "2025-10-20" }],
+    "daysAwayBudget": 10
+  },
+  {
+    "id": "L2",
+    "name": "Ms. P. Anand",
+    "role": "USAREC (SES)",
+    "domain": "non-technical",
+    "smeAreas": ["talent/STEM", "recruiting"],
+    "level": "L4",
+    "homeBase": { "city": "Fort Knox", "state": "KY", "lat": 37.891, "lng": -85.963 },
+    "availability": [{ "start": "2025-10-08", "end": "2025-10-18" }],
+    "daysAwayBudget": 8
+  },
+  {
+    "id": "L3",
+    "name": "Dr. M. Bell",
+    "role": "Army Cyber",
+    "domain": "technical",
+    "smeAreas": ["cyber", "zero-trust", "AI"],
+    "level": "L3",
+    "homeBase": { "city": "Augusta", "state": "GA", "lat": 33.47, "lng": -82.011 },
+    "availability": [{ "start": "2025-10-10", "end": "2025-10-17" }],
+    "daysAwayBudget": 6
+  },
+  {
+    "id": "L4",
+    "name": "COL S. Reyes",
+    "role": "SMDC / Space",
+    "domain": "technical",
+    "smeAreas": ["space", "C5ISR"],
+    "level": "L3",
+    "homeBase": { "city": "Colorado Springs", "state": "CO", "lat": 38.834, "lng": -104.821 },
+    "availability": [{ "start": "2025-10-12", "end": "2025-10-16" }],
+    "daysAwayBudget": 5
+  },
+  {
+    "id": "L5",
+    "name": "LTG A. Cole",
+    "role": "Senior principal — LTG",
+    "domain": "non-technical",
+    "smeAreas": ["strategy", "international"],
+    "level": "L4",
+    "homeBase": { "city": "Washington", "state": "DC", "lat": 38.9072, "lng": -77.0369 },
+    "availability": [{ "start": "2025-10-06", "end": "2025-10-20" }],
+    "daysAwayBudget": 12
+  },
+  {
+    "id": "L6",
+    "name": "Mr. T. Nguyen",
+    "role": "Army Software Factory",
+    "domain": "technical",
+    "smeAreas": ["software", "data", "AI"],
+    "level": "L2",
+    "homeBase": { "city": "Boston", "state": "MA", "lat": 42.36, "lng": -71.059 },
+    "availability": [{ "start": "2025-10-13", "end": "2025-10-19" }],
+    "daysAwayBudget": 6
+  }
+]
