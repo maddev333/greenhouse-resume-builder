@@ -17,7 +17,6 @@ import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@model
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
-  EngagementIndex,
   suggest,
   anchorFromEvent,
   planRoute,
@@ -36,6 +35,7 @@ import {
   type RoiResult,
   type Labeled,
 } from './engine.js';
+import { getReadModel, type ReadModel } from './readmodel.js';
 import type { ResolvedContext } from './context.js';
 import type { TripMapLeg, TripMapPayload, TripMapPoint } from './app-payload.js';
 
@@ -46,7 +46,7 @@ const TRIP_MAP_RESOURCE_URI = 'ui://trip-map/trip-map.html';
 const APP_DIST = resolve(import.meta.dirname, '..', 'dist');
 
 /** Instance type of the retrieval index (the value is default-imported via engine.ts, so name its type here). */
-type Index = InstanceType<typeof EngagementIndex>;
+type Index = ReadModel;
 
 // ── small helpers ─────────────────────────────────────────────────────────
 
@@ -62,16 +62,16 @@ function isRejected(filter: string): boolean {
 }
 
 function findLeader(idx: Index, leaderId: string): Labeled<Leader> | undefined {
-  return idx.labeled.leaders.find((l) => l.id === leaderId);
+  return idx.leaders.find((l) => l.id === leaderId);
 }
 
 /** Resolve the anchor event through the SAME security-trimmed event search the caller would see. */
-function resolveEvent(
+async function resolveEvent(
   idx: Index,
   ctx: ResolvedContext['ctx'],
   opts: { eventId?: string; eventQuery?: string },
-): { event?: Labeled<EngagementEvent>; filter: string; redactedCount: number } {
-  const res = idx.searchEvents({ ctx, query: opts.eventQuery });
+): Promise<{ event?: Labeled<EngagementEvent>; filter: string; redactedCount: number }> {
+  const res = await idx.searchEvents({ ctx, query: opts.eventQuery });
   const event = opts.eventId ? res.items.find((e) => e.id === opts.eventId) : res.items[0];
   return { event, filter: res.filter, redactedCount: res.redactedCount };
 }
@@ -170,11 +170,11 @@ function buildTripMapPayload(
 }
 
 /** Run the shared "resolve leader → resolve anchor → trim contacts → suggest" pipeline once. */
-function runSuggest(
+async function runSuggest(
   idx: Index,
   ctx: ResolvedContext['ctx'],
   args: { leaderId: string; eventId?: string; eventQuery?: string; topicIds?: string[]; requireTopicMatch?: boolean },
-):
+): Promise<
   | { ok: false; rejected: boolean; error: string }
   | {
       ok: true;
@@ -184,11 +184,12 @@ function runSuggest(
       contactsById: Map<string, Labeled<Contact>>;
       filter: string;
       redactedCount: number;
-    } {
+    }
+> {
   const leader = findLeader(idx, args.leaderId);
   if (!leader) return { ok: false, rejected: false, error: `Unknown leader '${args.leaderId}'.` };
 
-  const { event, filter: eventFilter } = resolveEvent(idx, ctx, { eventId: args.eventId, eventQuery: args.eventQuery });
+  const { event, filter: eventFilter } = await resolveEvent(idx, ctx, { eventId: args.eventId, eventQuery: args.eventQuery });
   if (!event) {
     if (isRejected(eventFilter)) {
       return { ok: false, rejected: true, error: 'Access rejected fail-closed — no verified tenant claim.' };
@@ -197,7 +198,7 @@ function runSuggest(
     return { ok: false, rejected: false, error: `No authorized anchor event matched '${which}'.` };
   }
 
-  const contacts = idx.searchContacts({ ctx, topicIds: args.topicIds });
+  const contacts = await idx.searchContacts({ ctx, topicIds: args.topicIds });
   const anchor = { ...anchorFromEvent(event), ...(args.topicIds?.length ? { topicIds: args.topicIds } : {}) };
   const candidates = suggest({
     leader,
@@ -231,8 +232,8 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
     async ({ query, topicIds, status }): Promise<CallToolResult> => {
       const { ctx, label } = getContext();
-      const idx = EngagementIndex.load();
-      const res = idx.searchContacts({ ctx, query, topicIds, status });
+      const rm = getReadModel();
+      const res = await rm.searchContacts({ ctx, query, topicIds, status });
       const contacts = res.items.map((c) => ({
         id: c.id,
         name: c.name,
@@ -275,8 +276,8 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
     async ({ query, topicIds }): Promise<CallToolResult> => {
       const { ctx, label } = getContext();
-      const idx = EngagementIndex.load();
-      const res = idx.searchEvents({ ctx, query, topicIds });
+      const rm = getReadModel();
+      const res = await rm.searchEvents({ ctx, query, topicIds });
       const events = res.items.map((e) => ({
         id: e.id,
         name: e.name,
@@ -324,11 +325,11 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
     async ({ leaderId, eventId, eventQuery, topicIds, requireTopicMatch }): Promise<CallToolResult> => {
       const { ctx, label } = getContext();
-      const idx = EngagementIndex.load();
-      const r = runSuggest(idx, ctx, { leaderId, eventId, eventQuery, topicIds, requireTopicMatch });
+      const rm = getReadModel();
+      const r = await runSuggest(rm, ctx, { leaderId, eventId, eventQuery, topicIds, requireTopicMatch });
       if (!r.ok) {
         if (r.rejected) {
-          const structuredContent = { caller: label, rejected: true, today: idx.today, candidates: [], redactedCount: 0, filter: '(rejected)', reason: r.error };
+          const structuredContent = { caller: label, rejected: true, today: rm.today, candidates: [], redactedCount: 0, filter: '(rejected)', reason: r.error };
           return { content: [{ type: 'text', text: `Access rejected — ${r.error}` }], structuredContent };
         }
         return errorResult(r.error);
@@ -338,7 +339,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       const structuredContent = {
         caller: label,
         rejected: isRejected(r.filter),
-        today: idx.today,
+        today: rm.today,
         leader: { id: r.leader.id, name: r.leader.name, role: r.leader.role },
         event: { id: r.event.id, name: r.event.name, city: r.event.location.city, start: r.event.start, end: r.event.end },
         requireTopicMatch: requireTopicMatch ?? true,
@@ -380,8 +381,8 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
     async ({ leaderId, eventId, eventQuery, acceptedContactIds, topicIds, requireTopicMatch }): Promise<CallToolResult> => {
       const { ctx, label } = getContext();
-      const idx = EngagementIndex.load();
-      const r = runSuggest(idx, ctx, { leaderId, eventId, eventQuery, topicIds, requireTopicMatch });
+      const rm = getReadModel();
+      const r = await runSuggest(rm, ctx, { leaderId, eventId, eventQuery, topicIds, requireTopicMatch });
       if (!r.ok) return errorResult(r.error);
 
       const accepted = r.candidates.filter((c) => acceptedContactIds.includes(c.contactId));
@@ -409,7 +410,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       const tripMap = buildTripMapPayload(r.leader, r.event, accepted, route, roi, label);
       const structuredContent = {
         caller: label,
-        today: idx.today,
+        today: rm.today,
         leader: { id: r.leader.id, name: r.leader.name, role: r.leader.role, daysAwayBudget: r.leader.daysAwayBudget },
         event: { id: r.event.id, name: r.event.name, city: r.event.location.city, start: r.event.start, end: r.event.end },
         accepted: accepted.map(candidateView),

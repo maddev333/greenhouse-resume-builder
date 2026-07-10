@@ -4,7 +4,7 @@ The **capability tier** of the Strategic Engagements Travel Planner (ARCHITECTUR
 deterministic planner engine (`api/src/planner`) and the security-trimmed retrieval shim
 (`api/src/retrieval`) as MCP tools that the orchestrator/chat host calls. Local-first — runs with `tsx`,
 no cloud. `build_itinerary` renders on the **`ui://trip-map`** Azure Maps MCP App (M3, the one UI in
-scope); **M4** swaps the shim for real Azure AI Search.
+scope); **M4** adds a real Azure AI Search backend, selectable with `RETRIEVAL_BACKEND` (see below).
 
 ## Tools
 
@@ -69,6 +69,43 @@ npm run serve     --workspace @greenhouse-resume-builder/cap-engagements-mcp-eng
 # then, in a clone of modelcontextprotocol/ext-apps:
 #   SERVERS='["http://localhost:3010/mcp"]' npm run start   → http://localhost:8080
 ```
+
+## Retrieval backend (`memory` | `search`)
+
+The tools read through one async seam (`src/readmodel.ts`), selected by `RETRIEVAL_BACKEND`:
+
+| Value | Backend | Notes |
+| --- | --- | --- |
+| `memory` (default) | In-memory `EngagementIndex` over the staged seed. | Zero cloud; the trim runs as a predicate. Loaded fresh per call. |
+| `search` | **Real Azure AI Search** — the same tenant + ACL + sensitivity trim is enforced **server-side** as an OData `$filter`. | Falls back to `memory` if no service is configured. |
+
+Both honor the identical `TrimmedResult` contract, so the demo beats (`redactedCount`, the AUSA/UAS
+menu, the "watch C4 disappear" for `EA_BASIC`) are byte-for-byte the same on either backend.
+
+### Cloud config (repo-root `.env`)
+
+```
+AZURE_SEARCH_SERVICE=https://<service>.search.windows.net
+AZURE_SEARCH_API_KEY=<admin-or-query-key>       # omit to use DefaultAzureCredential (az login / managed identity)
+# ENGAGEMENTS_SEARCH_INDEX=engagements          # optional override (default: engagements)
+```
+
+### Provision + reindex
+
+One `engagements` index carries both sources via a `kind` (`contact` | `event`) discriminator, with the
+governance envelope (`tenantId`, `aclGroups[]`, `sensitivity`, `topicIds[]`) as filterable fields and the
+full record in a retrievable `json` field. The CLI is the local stand-in for the ETL/indexer:
+
+```bash
+npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements               # reindex (ensure + upsert seed)
+npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements -- ensure      # create/update index only
+npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements -- sync        # upsert docs only
+npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements -- delete contact C4   # delete one record (demo)
+```
+
+Serve against it with `RETRIEVAL_BACKEND=search npm run serve …`. Add/update/delete a record then
+`reindex` to watch a source change flow through the trim live (indexing is eventually consistent — allow
+a second or two).
 
 ## Interop note
 

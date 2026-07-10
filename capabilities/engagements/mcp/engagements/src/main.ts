@@ -7,6 +7,7 @@
  * Run locally: `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`
  */
 
+import './load-env.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';

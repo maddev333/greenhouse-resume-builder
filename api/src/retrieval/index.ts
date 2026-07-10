@@ -9,3 +9,4 @@ export * from './labels';
 export * from './security';
 export * from './personas';
 export * from './retrieval-index';
+export * from './search-backend';

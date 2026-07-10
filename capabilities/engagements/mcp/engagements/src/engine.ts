@@ -49,6 +49,16 @@ export const {
   canReadSensitive,
   odataEscapeLiteral,
   PERSONAS,
+  applyLabels,
+  // Azure AI Search backend (M4) — the cloud swap-in behind the SAME TrimmedResult contract.
+  isSearchConfigured,
+  ensureEngagementIndex,
+  syncEngagementDocs,
+  upsertEngagementContact,
+  upsertEngagementEvent,
+  deleteEngagementDoc,
+  searchEngagementContacts,
+  searchEngagementEvents,
 } = retrieval;
 
 // ── Planner engine (types) ───────────────────────────────────────────────
@@ -80,6 +90,7 @@ export type {
 export type {
   TrimmedResult,
   Labeled,
+  LabeledDataset,
   EntityType,
   Sensitivity,
 } from '../../../../../api/src/retrieval/types.js';
