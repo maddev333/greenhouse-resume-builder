@@ -1,0 +1,30 @@
+{
+  "name": "@greenhouse-resume-builder/cap-engagements-mcp-engagements",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Engagements MCP capability server — exposes the deterministic travel-planner engine + security-trimmed retrieval as MCP tools (ARCHITECTURE §5.3). Local-first (tsx); ui://trip-map App added at M3.",
+  "main": "src/main.ts",
+  "scripts": {
+    "serve": "tsx src/main.ts",
+    "serve:stdio": "tsx src/main.ts --stdio",
+    "dev": "tsx watch src/main.ts",
+    "typecheck": "tsc -p . --noEmit",
+    "test": "node --import tsx --test \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@greenhouse-resume-builder/shared": "*",
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "zod": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0"
+  }
+}
