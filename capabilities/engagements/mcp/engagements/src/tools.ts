@@ -12,7 +12,10 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
+import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import {
   EngagementIndex,
   suggest,
@@ -30,11 +33,17 @@ import {
   type Conflict,
   type RouteResult,
   type RouteStop,
+  type RoiResult,
   type Labeled,
 } from './engine.js';
 import type { ResolvedContext } from './context.js';
+import type { TripMapLeg, TripMapPayload, TripMapPoint } from './app-payload.js';
 
 type ContextProvider = () => ResolvedContext;
+
+/** The ui://trip-map App: URI the tool advertises + where `vite build` writes the single-file HTML. */
+const TRIP_MAP_RESOURCE_URI = 'ui://trip-map/trip-map.html';
+const APP_DIST = resolve(import.meta.dirname, '..', 'dist');
 
 /** Instance type of the retrieval index (the value is default-imported via engine.ts, so name its type here). */
 type Index = InstanceType<typeof EngagementIndex>;
@@ -101,6 +110,62 @@ function routeView(route: RouteResult) {
     })),
     totalKm: round(route.totalKm),
     totalTravelMins: round(route.totalTravelMins),
+  };
+}
+
+/**
+ * Project the engine's route + accepted candidates into the browser-safe `ui://trip-map` payload
+ * (lat/lng for every pin + travel legs). This is the ONLY place the engine → App wire mapping lives;
+ * `app-payload.ts` stays import-free so Vite can bundle it into the browser App.
+ */
+function buildTripMapPayload(
+  leader: Labeled<Leader>,
+  event: Labeled<EngagementEvent>,
+  accepted: Candidate[],
+  route: RouteResult,
+  roi: RoiResult,
+  caller: string,
+): TripMapPayload {
+  const byContactId = new Map(accepted.map((c) => [c.contactId, c]));
+  const origin: TripMapPoint = {
+    id: `event:${event.id}`,
+    label: event.name,
+    lat: event.location.lat,
+    lng: event.location.lng,
+    kind: 'origin',
+    detail: `${event.location.city}${event.location.state ? `, ${event.location.state}` : ''} · ${event.start}→${event.end}`,
+  };
+  const stops: TripMapPoint[] = route.order.map((s) => {
+    const c = byContactId.get(s.id);
+    // On-site contacts are met AT the anchor venue (they carry no travel leg), so co-locate their pin
+    // with the origin rather than their home city — otherwise a home-based coordinate scatters the map.
+    const atVenue = s.kind === 'on-site';
+    return {
+      id: s.id,
+      label: c?.name ?? s.id,
+      lat: atVenue ? event.location.lat : s.location.lat,
+      lng: atVenue ? event.location.lng : s.location.lng,
+      kind: s.kind, // SuggestionPlacement: 'on-site' | 'off-site'
+      detail: c
+        ? `${c.placement} · ${c.kind}${c.isStale ? ' · STALE' : ''} · val ${c.strategicValue} · score ${fixed(c.score)}`
+        : `${s.location.city}${s.location.state ? `, ${s.location.state}` : ''}`,
+    };
+  });
+  const byPointId = new Map<string, TripMapPoint>([[origin.id, origin], ...stops.map((p) => [p.id, p] as const)]);
+  const legs: TripMapLeg[] = route.legs.map((l) => {
+    const from = byPointId.get(l.fromStopId) ?? origin; // fromStopId === ORIGIN_ID → the anchor venue
+    const to = byPointId.get(l.toStopId) ?? origin;
+    return { fromLat: from.lat, fromLng: from.lng, toLat: to.lat, toLng: to.lng, mode: l.mode, distanceKm: round(l.distanceKm) };
+  });
+  return {
+    title: `${leader.name} @ ${event.name}`,
+    origin,
+    stops,
+    legs,
+    roiScore: fixed(roi.roiScore),
+    overBudget: roi.overBudget,
+    totalKm: round(route.totalKm),
+    caller,
   };
 }
 
@@ -292,8 +357,9 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
   );
 
-  // 4) build_itinerary — route + ROI + conflicts for the accepted picks
-  server.registerTool(
+  // 4) build_itinerary — route + ROI + conflicts for the accepted picks, rendered on ui://trip-map (M3)
+  registerAppTool(
+    server,
     'build_itinerary',
     {
       title: 'Build a trip itinerary',
@@ -310,6 +376,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         topicIds: z.array(z.string()).optional().describe('Same topic focus used for suggest_candidates (keeps the candidate set consistent).'),
         requireTopicMatch: z.boolean().optional().describe('Match suggest_candidates (default true).'),
       },
+      _meta: { ui: { resourceUri: TRIP_MAP_RESOURCE_URI } },
     },
     async ({ leaderId, eventId, eventQuery, acceptedContactIds, topicIds, requireTopicMatch }): Promise<CallToolResult> => {
       const { ctx, label } = getContext();
@@ -339,6 +406,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         ...detectOpportunityCost(roi),
       ];
 
+      const tripMap = buildTripMapPayload(r.leader, r.event, accepted, route, roi, label);
       const structuredContent = {
         caller: label,
         today: idx.today,
@@ -349,6 +417,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         route: routeView(route),
         roi,
         conflicts,
+        tripMap,
         filter: r.filter,
         redactedCount: r.redactedCount,
       };
@@ -363,6 +432,44 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       return {
         content: [{ type: 'text', text: [header, orderLine, ...conflictLines, ...notMatchedLine].join('\n') }],
         structuredContent,
+      };
+    },
+  );
+
+  // ui://trip-map App resource — the single-file HTML the host renders when build_itinerary returns.
+  registerAppResource(
+    server,
+    'Trip Map',
+    TRIP_MAP_RESOURCE_URI,
+    { mimeType: RESOURCE_MIME_TYPE },
+    async (): Promise<ReadResourceResult> => {
+      let html: string;
+      try {
+        html = await readFile(resolve(APP_DIST, 'trip-map.html'), 'utf-8');
+      } catch {
+        html =
+          '<!DOCTYPE html><html><body style="font:14px system-ui;padding:24px">' +
+          '<h3>Trip Map not built</h3><p>Run <code>npm run build:app</code> in the engagements capability to generate <code>dist/trip-map.html</code>.</p>' +
+          '</body></html>';
+      }
+      return {
+        contents: [
+          {
+            uri: TRIP_MAP_RESOURCE_URI,
+            mimeType: RESOURCE_MIME_TYPE,
+            text: html,
+            _meta: {
+              ui: {
+                // Azure Maps fetches tiles/styles/sprites from *.atlas.microsoft.com — the sandboxed
+                // iframe has no same-origin server, so every origin must be declared here.
+                csp: {
+                  connectDomains: ['https://*.atlas.microsoft.com', 'https://atlas.microsoft.com'],
+                  resourceDomains: ['https://*.atlas.microsoft.com', 'https://atlas.microsoft.com'],
+                },
+              },
+            },
+          },
+        ],
       };
     },
   );
