@@ -1,0 +1,93 @@
+# Engagements Orchestrator Agent (`cap-engagements-agent`)
+
+The **chat brain** for the Strategic Engagements Travel Planner (MVP-PLAN **M5**).
+
+It turns a natural-language question —
+
+> *"I'm planning a trip to AUSA, who should I meet on the UAS/drone topic?"*
+
+— into a concrete, **security-trimmed** engagement plan by composing the
+[`engagements` capability](../mcp/engagements)'s MCP tools, then returns:
+
+- **`menu`** — the ranked "who to meet" option cards (`suggest_candidates`)
+- **`itinerary`** — route + trip-ROI + advisory conflicts (`build_itinerary`)
+- **`tripMap`** — the `ui://trip-map` Azure Maps App payload for the chat host to render
+- **`answer`** — an EA-ready narrative
+
+## How it works
+
+```
+question ──▶ orchestrator ──(MCP tools/call, x-demo-persona)──▶ engagements MCP (:3010)
+                │                                                     │ server-side security trim
+                │  Azure OpenAI tool-calling loop (mcp-core)          ▼ (Keycloak-claim $filter)
+                └─ suggest_candidates ──▶ build_itinerary ──▶ menu + itinerary + trip-map
+```
+
+- **Primary path:** an Azure OpenAI tool-calling loop (`runAgentLoop` from `mcp-core`) picks the
+  leader, maps the topic phrase to `topicIds`, resolves the anchor event, and composes
+  `suggest_candidates → build_itinerary`.
+- **Deterministic fallback:** when Azure OpenAI is not configured/reachable, a keyword router runs
+  the same tool sequence — so the demo always works offline.
+- **Auth boundary:** the caller's **persona** is sent as `x-demo-persona` (stand-in for verified
+  Keycloak claims). The capability enforces the trim **server-side**; the orchestrator only ever
+  sees authorized rows and reports `redactedCount`.
+
+## Run it
+
+**1. Start the engagements capability** (the tools + trip-map app), in one terminal:
+
+```bash
+npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements
+# listening on http://localhost:3010/mcp
+```
+
+**2a. Ask via CLI** (default leader `L1`, persona `EA_BASIC`):
+
+```bash
+npm run ask --workspace @greenhouse-resume-builder/cap-engagements-agent -- \
+  "I'm planning a trip to AUSA, who should I meet on the UAS/drone topic?" --persona EA_G8
+```
+
+Add `ENGAGEMENTS_AGENT_JSON=1` to print the full `PlanResult` (incl. `tripMap`).
+
+**2b. Or run the HTTP service** (the seam the chat UI / M6 calls):
+
+```bash
+npm run serve --workspace @greenhouse-resume-builder/cap-engagements-agent
+# POST /ask { question, persona?, leaderId?, topN? }  on http://localhost:3020
+curl -s localhost:3020/ask -H 'content-type: application/json' \
+  -d '{"question":"who should I meet at AUSA on UAS/drone?","persona":"EA_G8"}' | jq
+```
+
+## The security-trim beat (why persona matters)
+
+The same question returns different menus per caller — the trim is enforced by the capability, not
+the orchestrator:
+
+| `--persona`    | AUSA / UAS menu (top picks) | Note |
+| -------------- | --------------------------- | ---- |
+| `EA_BASIC`     | `P2, C3`                    | `C4` redacted (need-to-know group) |
+| `EA_G8`        | `P2, C4, C3`                | reads `/army/g8/plans` (C4) |
+| `NO_TENANT`    | *access rejected*           | fail-closed (no tenant claim) |
+| `CROSS_TENANT` | *empty*                     | tenant isolation trims every Army row |
+
+## Config (repo-root `.env`)
+
+| var | default | purpose |
+| --- | ------- | ------- |
+| `ENGAGEMENTS_MCP_URL` | `http://localhost:3010/mcp` | engagements capability endpoint |
+| `ENGAGEMENTS_AGENT_PORT` | `3020` | HTTP `/ask` port |
+| `ENGAGEMENTS_DEFAULT_LEADER` | first leader (`L1`) | leader used when the ask names none |
+| `ENGAGEMENTS_DEMO_PERSONA` | `EA_BASIC` | default caller persona |
+| `ENGAGEMENTS_TOP_N` | `3` | candidates routed into the itinerary |
+| `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_DEPLOYMENT` | — | enable the LLM path (else deterministic). Auth via `az login` (DefaultAzureCredential) or `AZURE_OPENAI_API_KEY`. |
+
+## Test / typecheck
+
+```bash
+npm run typecheck --workspace @greenhouse-resume-builder/cap-engagements-agent
+npm test          --workspace @greenhouse-resume-builder/cap-engagements-agent
+```
+
+The unit tests cover the pure helpers (catalog, topic mapping, anchor extraction, tool surface,
+prompt) and need neither a live server nor Azure OpenAI.
