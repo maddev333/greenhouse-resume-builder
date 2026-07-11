@@ -23,7 +23,7 @@ async function startHttp(): Promise<void> {
   app.use(
     cors({
       exposedHeaders: ['mcp-session-id'],
-      allowedHeaders: ['content-type', 'mcp-session-id', 'x-demo-persona', 'x-tenant-id', 'x-user-id', 'x-user-groups', 'x-user-roles', 'x-user-scopes'],
+      allowedHeaders: ['content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id', 'x-demo-persona', 'x-tenant-id', 'x-user-id', 'x-user-groups', 'x-user-roles', 'x-user-scopes'],
     }),
   );
 
