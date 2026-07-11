@@ -33,9 +33,37 @@ security self‑test deliberately fails if it can reach `window.top`. So, like t
 serves them on two ports via `serve.ts`, which also sets the sandbox **CSP HTTP header** (so Azure
 Maps tiles from `*.atlas.microsoft.com` are allowed).
 
-## Run the demo (three processes)
+## Prerequisites
 
-From the repo root, in three terminals (`az login` first if you want the LLM path):
+- **Node 20+** (developed on Node 24) and npm. This is an npm‑workspaces monorepo — run
+  `npm install` **once at the repo root**, not inside this folder.
+- **Free ports:** `8080` and `8081` (chat host + sandbox), `3010` (engagements MCP), `3020`
+  (orchestrator).
+- **(Optional) `az login`** — enables the Azure OpenAI LLM path. Without it the orchestrator falls
+  back to a deterministic planner, so the demo still runs fully offline.
+- **(Optional) live map tiles** — set `VITE_AZURE_MAPS_KEY` in the repo‑root `.env` before building;
+  without a key the trip map degrades to a **schematic view** (dots + routes, no basemap).
+
+```powershell
+# from the repo root, one time:
+npm install
+az login          # optional (enables the LLM path)
+```
+
+## Quickstart — one command
+
+From the repo root, build the host bundles and start **all three** servers (engagements MCP,
+orchestrator, chat host) with colour‑labelled output in a single window:
+
+```powershell
+npm run demo --workspace @greenhouse-resume-builder/cap-engagements-ui
+```
+
+Then open **http://localhost:8080**. Press `Ctrl+C` to stop all three.
+
+## Run manually (three terminals)
+
+Prefer separate terminals (e.g. to isolate one server's logs)? Run these from the repo root:
 
 ```powershell
 # 1) engagements MCP capability — MUST pin the port (repo .env sets PORT=3001)
@@ -49,6 +77,8 @@ npm run serve --workspace @greenhouse-resume-builder/cap-engagements-agent
 npm run start --workspace @greenhouse-resume-builder/cap-engagements-ui
 ```
 
+## Try it
+
 Open **http://localhost:8080**, keep the persona on **EA · G8**, and send:
 
 > _I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?_
@@ -58,6 +88,15 @@ to **EA · basic** and re‑ask: one more contact is redacted (the map/menu shri
 is rejected (fail‑closed); **Cross‑tenant** returns nothing (isolation).
 
 During development use `npm run dev` (rebuilds on change + restarts `serve.ts`).
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+| --- | --- |
+| MCP capability won't start, or the trip‑map chip shows `unavailable` | Port collision. The engagements MCP binds `ENGAGEMENTS_MCP_PORT ?? PORT ?? 3010`, but the repo‑root `.env` sets `PORT=3001`. Export `ENGAGEMENTS_MCP_PORT=3010` (the `demo` script already does this). |
+| Trip map shows dots/lines with no basemap | No `VITE_AZURE_MAPS_KEY` at build time → schematic‑view fallback. Set it in the repo‑root `.env` and rebuild. |
+| `EADDRINUSE` on start | One of `8080` / `8081` / `3010` / `3020` is already in use (often a previous `demo` run). Stop it and retry. |
+| Menu cards appear but the map never loads | The host can't reach the MCP server on `:3010`. Confirm terminal 1 is up and `ENGAGEMENTS_MCP_URL` matches. |
 
 ## Config (optional env for `serve.ts`)
 
