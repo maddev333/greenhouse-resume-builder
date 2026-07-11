@@ -31,7 +31,7 @@ persona and re-ask to watch the **server-side security trim** change what's retu
 capabilities/
   engagements/            ← the demo (the only capability wired up)
     mcp/engagements/      MCP capability server: seed data, retrieval, security trim,
-                          suggest_candidates / plan_trip tools, and the ui://trip-map App
+                          suggest_candidates / build_itinerary tools, and the ui://trip-map App
     agent/                M5 orchestrator ("the chat brain") — POST /ask over the MCP tools
     ui/                   M6 chat UI + real MCP-Apps host (the interface you run)
   mcp-core/               shared MCP-server helper, agent loop, identity + governance gate
@@ -66,11 +66,11 @@ Full run details, the manual three-terminal path, config, and troubleshooting li
 
 Copy `.env.example` to `.env` at the repo root to enable the optional integrations:
 
-- **Live map tiles** — set `VITE_AZURE_MAPS_KEY` before building; without it the map falls back
+- **Live map tiles** — set `AZURE_MAPS_KEY` before building; without it the map falls back
   to a schematic dots-and-routes view.
 - **LLM planning** — set `AZURE_OPENAI_*` (and `az login`) to use Azure OpenAI; otherwise the
   orchestrator uses a deterministic planner.
-- **Azure AI Search backend** — set `RETRIEVAL_BACKEND=aisearch` + `AZURE_SEARCH_*` to index the
+- **Azure AI Search backend** — set `RETRIEVAL_BACKEND=search` + `AZURE_SEARCH_*` to index the
   seed data into Azure AI Search; the default `memory` backend needs no cloud resources.
 
 ## How it fits together
@@ -81,7 +81,7 @@ Browser chat host (:8080)
                                  └─ MCP tool calls ────────►  Engagements MCP (:3010)
                                                                 • seed contacts/events/topics
                                                                 • persona security trim
-                                                                • suggest_candidates / plan_trip
+                                                                • suggest_candidates / build_itinerary
                                                                 • ui://trip-map App resource
   ◄──────────────────────────  { answer, menu[], tripMap }
   └─ renders the ui://trip-map MCP App in a sandboxed iframe (:8081, distinct origin)

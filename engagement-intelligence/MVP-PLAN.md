@@ -4,6 +4,14 @@
 > expectations before we produce the architecture. Sections marked **[CONFIRM]** are open
 > questions for the customer; **[ASSUMPTION]** marks a placeholder we chose to keep moving.
 >
+> **⚠️ Repo status (updated).** The repo has since been **reduced to just the engagements demo**. The
+> original resume-builder stack and the other capability stubs were removed, so the reuse mappings
+> below (the capability table) reference code that **no longer exists** — read them as historical
+> planning context. The planner + retrieval engine now lives inside the capability at
+> `capabilities/engagements/mcp/engagements/src/`, and geocoding is **pre-baked into the seed dataset**
+> rather than served by a live geospatial MCP. See the [root `README.md`](../README.md) for the
+> as-built demo.
+>
 > **Direction (locked):** The **travel planner is the centerpiece** — it leans on geocoding, the
 > one capability in the codebase that is actually live. The pre-brief / message-consistency loop we
 > designed earlier survives as a **per-stop supporting feature** inside an itinerary, not the star.

@@ -1,13 +1,12 @@
 /**
- * Engine adapter — the ONE place the ESM capability bridges into the CommonJS `api/src` engine.
+ * Engine adapter — the ONE place the capability wires the deterministic engine into the tool layer.
  *
- * `api` is a CommonJS Express app (iisnode/Windows App Service). Its planner + retrieval barrels use
- * `export *`, which Node's ESM loader (cjs-module-lexer) cannot see through for NAMED imports. So we
- * default-import the compiled module namespace (`module.exports`) and destructure the values from it —
- * this reads real runtime properties and is immune to the lexer limitation. Types are pulled via
- * `typeof import(...)` (a type-only position, fully erased) so every re-export stays strongly typed.
+ * The planner + retrieval barrels (`./planner`, `./retrieval`) live in this ESM package. We import
+ * each as a namespace (`import * as`) and destructure/re-export the values below; the matching types
+ * come via `typeof import(...)` (a type-only position, fully erased) so every re-export stays
+ * strongly typed.
  *
- * Everything else in this capability imports the engine ONLY from here, so the interop lives in one file.
+ * Everything else in this capability imports the engine ONLY from here, so the wiring lives in one file.
  */
 
 import * as plannerNs from './planner/index.js';

@@ -1,7 +1,7 @@
 /**
- * Public entry point for the deterministic planner engine (`api/src/planner`).
- * Pure, framework-free modules (ARCHITECTURE §4/§6); the `engagements` capability server registers
- * these as MCP tools, and an optional Express surface reuses the same functions with no duplication.
+ * Public entry point for the deterministic planner engine (`src/planner`).
+ * Pure, framework-free modules (ARCHITECTURE §4/§6) that the `engagements` capability server
+ * registers as MCP tools.
  */
 export * from './types';
 export * from './weights';

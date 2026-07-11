@@ -41,7 +41,7 @@ Maps tiles from `*.atlas.microsoft.com` are allowed).
   (orchestrator).
 - **(Optional) `az login`** — enables the Azure OpenAI LLM path. Without it the orchestrator falls
   back to a deterministic planner, so the demo still runs fully offline.
-- **(Optional) live map tiles** — set `VITE_AZURE_MAPS_KEY` in the repo‑root `.env` before building;
+- **(Optional) live map tiles** — set `AZURE_MAPS_KEY` in the repo‑root `.env` before building;
   without a key the trip map degrades to a **schematic view** (dots + routes, no basemap).
 
 ```powershell
@@ -94,7 +94,7 @@ During development use `npm run dev` (rebuilds on change + restarts `serve.ts`).
 | Symptom | Likely cause / fix |
 | --- | --- |
 | MCP capability won't start, or the trip‑map chip shows `unavailable` | Port collision. The engagements MCP binds `ENGAGEMENTS_MCP_PORT ?? PORT ?? 3010`, but the repo‑root `.env` sets `PORT=3001`. Export `ENGAGEMENTS_MCP_PORT=3010` (the `demo` script already does this). |
-| Trip map shows dots/lines with no basemap | No `VITE_AZURE_MAPS_KEY` at build time → schematic‑view fallback. Set it in the repo‑root `.env` and rebuild. |
+| Trip map shows dots/lines with no basemap | No `AZURE_MAPS_KEY` at build time → schematic‑view fallback. Set it in the repo‑root `.env` and rebuild. |
 | `EADDRINUSE` on start | One of `8080` / `8081` / `3010` / `3020` is already in use (often a previous `demo` run). Stop it and retry. |
 | Menu cards appear but the map never loads | The host can't reach the MCP server on `:3010`. Confirm terminal 1 is up and `ENGAGEMENTS_MCP_URL` matches. |
 

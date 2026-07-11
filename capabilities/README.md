@@ -20,7 +20,7 @@ optional governance gate — so every module follows the same pattern.
 
 | Capability | MCP server | Agent | UI |
 |------------|------------|-------|----|
-| [engagements](./engagements) | `mcp/engagements` (seed data, security trim, `suggest_candidates` / `plan_trip`, `ui://trip-map` App) | orchestrator "chat brain" (`POST /ask`) | chat UI + MCP-Apps host |
+| [engagements](./engagements) | `mcp/engagements` (seed data, security trim, `suggest_candidates` / `build_itinerary`, `ui://trip-map` App) | orchestrator "chat brain" (`POST /ask`) | chat UI + MCP-Apps host |
 | [mcp-core](./mcp-core) | — (shared library: MCP helper, agent loop, identity, governance) | — | — |
 
 ## Build & run

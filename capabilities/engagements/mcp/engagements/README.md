@@ -1,8 +1,8 @@
 # Engagements MCP capability server
 
 The **capability tier** of the Strategic Engagements Travel Planner (ARCHITECTURE §5.3). It exposes the
-deterministic planner engine (`api/src/planner`) and the security-trimmed retrieval shim
-(`api/src/retrieval`) as MCP tools that the orchestrator/chat host calls. Local-first — runs with `tsx`,
+deterministic planner engine (`src/planner`) and the security-trimmed retrieval shim
+(`src/retrieval`) as MCP tools that the orchestrator/chat host calls. Local-first — runs with `tsx`,
 no cloud. `build_itinerary` renders on the **`ui://trip-map`** Azure Maps MCP App (M3, the one UI in
 scope); **M4** adds a real Azure AI Search backend, selectable with `RETRIEVAL_BACKEND` (see below).
 
@@ -109,6 +109,7 @@ a second or two).
 
 ## Interop note
 
-`engine.ts` is the single bridge from this ESM capability into the CommonJS `api/src` engine
-(default-import the module namespace, then destructure — immune to the `export *` / cjs-module-lexer
-limitation on named imports). Everything else imports the engine only from `./engine.js`.
+The deterministic **planner** (`src/planner`) and **retrieval / security** (`src/retrieval`) engines
+live inside this ESM package. `engine.ts` is the single bridge that adapts them into the MCP tool layer:
+it imports each as a namespace (`import * as planner from './planner/index.js'`), then re-exports the
+pieces the tools use. Everything else imports the engine only from `./engine.js`.

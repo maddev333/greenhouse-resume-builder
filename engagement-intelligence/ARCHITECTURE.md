@@ -1,9 +1,19 @@
 # Strategic Engagements Travel Planner — Architecture
 
-> **Status:** DRAFT for review. Companion to [`MVP-PLAN.md`](./MVP-PLAN.md) (what/why) and
+> **Status:** DRAFT design doc (pre-build). Companion to [`MVP-PLAN.md`](./MVP-PLAN.md) (what/why) and
 > [`DEMO-DATASET.md`](./DEMO-DATASET.md) (the choreographed data). This doc is the **how**:
 > components, data flows, Azure services, the engine internals, and the one-week build sequence.
-> Every "reuse" claim below is grounded in a real file in this repo.
+>
+> **⚠️ Repo status (updated).** The repo has since been **reduced to just the engagements demo**: the
+> original resume-builder stack (`api/`, `functions/`, `ui/`) and the other capability stubs
+> (discovery, geospatial, ingestion, llmwiki, quality, relationships, temporal) were **removed**. The
+> "reuse-first" citations below (e.g. `functions/src/activities/*`, `api/src/search/index.ts`,
+> `capabilities/geospatial/*`, `ui/src/MapView.tsx`) therefore point at code that **no longer exists** —
+> read them as historical design context / future-work pointers, not current files. What was actually
+> built is the self-contained **`capabilities/engagements/`** capability: the deterministic **planner +
+> retrieval engine now lives at `capabilities/engagements/mcp/engagements/src/{planner,retrieval}/`**
+> (not `api/src/`), and the Azure Maps app is the in-capability `ui://trip-map`. See the
+> [root `README.md`](../README.md) and the three capability READMEs for the as-built demo.
 
 ---
 
@@ -299,7 +309,7 @@ by asking the model to drop rows.
 
 ---
 
-## 6. The planner engine (`api/src/planner/`)
+## 6. The planner engine (`capabilities/engagements/mcp/engagements/src/planner/`)
 
 Pure, deterministic, unit-tested modules:
 

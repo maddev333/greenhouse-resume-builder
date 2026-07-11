@@ -17,7 +17,7 @@
  * disappear" beat is reconstructed from the count delta).
  *
  * Auth: admin/query key when `AZURE_SEARCH_API_KEY` is set, else `DefaultAzureCredential`
- * (managed identity / `az login`) — matching `api/src/search/index.ts`.
+ * (managed identity / `az login`).
  */
 import { SearchClient, SearchIndexClient, AzureKeyCredential } from '@azure/search-documents';
 import type { SearchField, SearchIndex } from '@azure/search-documents';
@@ -110,7 +110,7 @@ function eventToDoc(e: Labeled<EngagementEvent>): EngagementDoc {
 /** The single `engagements` index: filterable trim fields + searchable recall + retrievable `json`. */
 function indexDefinition(): SearchIndex {
   // Runtime shape is proven against v13 `createOrUpdateIndex`; the literal → union cast avoids the
-  // SDK's discriminated-field friction (same pragmatism as api/src/search/index.ts).
+  // SDK's discriminated-field friction.
   const fields = [
     { name: 'id', type: 'Edm.String', key: true, filterable: true, sortable: true },
     { name: 'kind', type: 'Edm.String', filterable: true },

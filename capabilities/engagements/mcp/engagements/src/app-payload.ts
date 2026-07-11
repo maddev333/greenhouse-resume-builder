@@ -2,9 +2,9 @@
  * Wire contract for the `ui://trip-map` App — the ONLY thing shared between the server tool
  * (`build_itinerary`, which BUILDS this payload) and the browser map App (which RENDERS it).
  *
- * IMPORTANT: this module must stay browser-safe. It must NOT import from `./engine.js` or any
- * `api/src` module, because Vite bundles it into the App. Keep it plain types only — the mapping
- * from engine results into this shape lives server-side in `tools.ts`.
+ * IMPORTANT: this module must stay browser-safe. It must NOT import from `./engine.js` or the engine
+ * modules (`./planner`, `./retrieval`), because Vite bundles it into the App. Keep it plain types
+ * only — the mapping from engine results into this shape lives server-side in `tools.ts`.
  */
 
 export type TripMapPointKind = 'origin' | 'on-site' | 'off-site';
