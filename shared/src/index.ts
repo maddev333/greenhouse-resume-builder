@@ -1,10 +1,7 @@
 /**
  * Public entry point for the shared package.
  *
- * Re-exports the enums, domain interfaces, and utility helpers so consumers can
- * import everything from `@greenhouse-resume-builder/shared`.
+ * The only thing shared across the engagements demo workspaces is the canonical
+ * Strategic Engagements domain schema (contacts, events, topics, trip-map wire types).
  */
-export * from './enums';
-export * from './interfaces';
-export * from './utils';
 export * from './engagements';

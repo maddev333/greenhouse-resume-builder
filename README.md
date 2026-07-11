@@ -1,225 +1,93 @@
-# Greenhouse Resume Builder MVP
+# Strategic Engagements Travel Planner — MVP Demo
 
-> Agentic resume ingestion pipeline that extracts employment, skills, education, summary, relationship, and temporal-event data from uploaded CVs and web profiles — then normalizes everything into cited resume bullets, version diffs, and recruiter-reviewable predictions.
+A CRM-style planning assistant for U.S. Army senior-leader engagements, delivered as a
+**chat UI that hosts MCP UI Apps**. You ask a natural-language question; an orchestrator
+agent calls a domain capability (living behind MCP tools), applies a persona-based security
+trim, and answers with a menu of who-to-meet cards plus an interactive **Azure Maps** trip
+itinerary rendered as a sandboxed MCP App.
 
-## 🚀 Quick Start
+> The "money moment": _"you're already going there"_ — the planner batches stale or
+> high-value contacts into a trip a leader is already taking.
 
-**New to the project? Start here:**
+## What the demo shows
 
-1. **Read the [Setup Summary](./SETUP_SUMMARY.md)** for a quick overview of recent changes
-2. **Follow the [Development Guide](./DEVELOPMENT.md)** for detailed setup instructions
-3. **Run the quick start script**:
+Open the chat host, keep the persona on **EA · G8**, and ask:
 
-   ```bash
-   # Windows
-   quick-start.bat
+> _I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?_
 
-   # Linux/Mac
-   chmod +x quick-start.sh && ./quick-start.sh
-   ```
+You get an assistant summary, a menu of candidate contacts, and a live trip map. Switch the
+persona and re-ask to watch the **server-side security trim** change what's returned:
 
-### Essential Steps
+| Persona        | Result                                             |
+| -------------- | -------------------------------------------------- |
+| `EA_G8`        | 3 cards (1 redacted)                               |
+| `EA_BASIC`     | 2 cards (2 redacted)                               |
+| `NO_TENANT`    | rejected (fail-closed)                             |
+| `CROSS_TENANT` | empty (tenant isolation)                           |
 
-```bash
-# 1. Environment setup (already done - .env exists with defaults)
-# Edit .env if you need to configure Azure services or PostgreSQL
+## Repository layout
 
-# 2. Install & build
-npm ci
-npm run build -w @greenhouse-resume-builder/shared
-
-# 3. Start the API server (Express REST + PostgreSQL)
-cd api && npm run dev
-# API runs on http://localhost:3001
-
-# 4. Start the React UI (Vite)
-cd ui && npm run dev
-# UI runs on http://localhost:5173
-
-# 5. (Optional) Start Azure Functions (ingestion pipeline)
-cd functions && npm run start:dev
-# Functions run on http://localhost:7071
+```
+capabilities/
+  engagements/            ← the demo (the only capability wired up)
+    mcp/engagements/      MCP capability server: seed data, retrieval, security trim,
+                          suggest_candidates / plan_trip tools, and the ui://trip-map App
+    agent/                M5 orchestrator ("the chat brain") — POST /ask over the MCP tools
+    ui/                   M6 chat UI + real MCP-Apps host (the interface you run)
+  mcp-core/               shared MCP-server helper, agent loop, identity + governance gate
+shared/                   canonical Strategic Engagements domain schema (framework-free types)
+engagement-intelligence/  design docs (ARCHITECTURE, DEMO-DATASET, MVP-PLAN) + seed dataset
+governance/               optional Agent-Governance-Toolkit policy for mcp-core
 ```
 
-Get-Content "$env:TEMP\grb_func.log" -Wait -Tail 80
+## Quickstart
 
-### VS Code Debugging
+Prerequisites: **Node 20+** and npm. This is an npm-workspaces monorepo — run `npm install`
+once at the repo root.
 
-Press `F5` in VS Code and select:
-
-- **Debug Full Stack** - Run API + UI with debugger attached
-- **Debug API Server** - Debug the Express API
-- **Debug Azure Functions** - Debug Functions runtime
-
-See [DEVELOPMENT.md](./DEVELOPMENT.md) for complete debugging guide.
-
-## Architecture Overview
-
-### Data Layer
-
-- **PostgreSQL** — structured store for persons, source docs, extraction runs, fact versions, bullet mappings, annotations, and relationships (auto-provisioned tables on startup)
-- **Azure AI Search** — full-text indexing of resume facts and bullets
-- **Azure Blob Storage** — raw document staging container (`raw` by default)
-
-### Services
-
-| Service                      | Description                                                                                              |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------- |
-| **API** (`api/`)             | Express REST layer — ingestion, bullets/facts, annotations, relationships, search                        |
-| **Functions** (`functions/`) | Durable Functions orchestration: extraction, deduplication, builder, persistence, indexing               |
-| **UI** (`ui/`)               | React 18 + Vite — landing flow, candidate profile, map, diff, annotation, relationship, and search views |
-
-### Capability Modules (`capabilities/`)
-
-Each capability is a self-contained, independently deployable unit for IL5 compliance:
-
-| Capability                                    | MCP Servers                 | UI App                    |
-| --------------------------------------------- | --------------------------- | ------------------------- |
-| [Ingestion](./capabilities/ingestion)         | `acquisition`, `extraction` | Ingestion Console         |
-| [Quality](./capabilities/quality)             | `quality`                   | Review Queue              |
-| [Relationships](./capabilities/relationships) | `relationships`             | Relationship Confirmation |
-| [Temporal](./capabilities/temporal)           | `temporal`                  | Prediction Review         |
-| [Geospatial](./capabilities/geospatial)       | `geospatial`                | Map Pins                  |
-| [Discovery](./capabilities/discovery)         | `search`                    | Resume + Diff             |
-
-Each module bundles:
-
-- **1–2 MCP capability servers** (`mcp/<server>/`) — IL5 Azure Functions apps over Streamable HTTP
-- **Agent framework runtime** (`agent/`) — self-hosted Azure OpenAI tool-calling loop
-- **MCP UI App** (`ui/`) — recruiter surface (hybrid web + MCP App)
-
-All capabilities share [`mcp-core`](./capabilities/mcp-core/) for IL5 identity, credential precedence, and cloud-configurable scopes.
-
-> See `capabilities/README.md` for per-module build/run instructions.
-
-### How MCP servers source their data
-
-MCP clients (the agent loop or a UI App) call a capability server with a JSON-RPC `tools/call`
-over Streamable HTTP. Each tool handler returns a `ToolResult` whose `structuredContent` is the
-JSON payload the client consumes (`mcpToolCaller` unwraps `result.structuredContent ?? result`).
-That payload comes from one of three sources:
-
-| Pattern | How the handler gets data | Examples |
-| ------- | ------------------------- | -------- |
-| **Caller-supplied args** | The agent/UI passes data in (`text`, `locations`, `documents`, `facts`); the handler transforms and returns it. | `acquisition.normalize_text`, `geospatial.project_map_pins` |
-| **Live external service** | The handler calls a real backend over HTTPS. **Only `geospatial` today** — it geocodes via the Azure Maps Geocoding API (subscription key or managed identity). | `geospatial.geocode`, `geospatial.normalize_location` |
-| **Backing stores** (designed, currently stubbed) | Typed handlers meant to wrap the real `functions/src/activities` (PostgreSQL, Azure AI Search, Azure OpenAI, Document Intelligence/Blob). They return placeholder `structuredContent` for now. | `extraction.*`, `discovery.search_facts`, `quality.*`, `relationships.*`, `temporal.*` |
-
-This reflects **two data planes**:
-
-- **Live plane** — UI → Express **API** → Durable **Functions** pipeline → **activities** →
-  PostgreSQL (canonical facts) + Azure AI Search (indexes) + Azure OpenAI (extraction) +
-  Document Intelligence/Blob (ingest) + Azure Maps (geo). The UI reads back through the API.
-- **MCP / agent plane** (`capabilities/`) — exposes those same capabilities as MCP tools,
-  intended to wrap the same activities/stores. Mostly stubs today, with `geospatial` the live exception.
-
-> Even where the backing store is stubbed, the security envelope is real: `discovery.search_facts`
-> applies a fail-closed tenant filter and sensitive-attribute redaction from the caller's verified
-> Entra claims (`buildFactSecurityFilter`), and `index_upsert` tenant-stamps writes. Wiring a real
-> store swaps only the query, not the identity/trimming contract.
-
-## Directory Layout
-
-```bash
-greenhouse-resume-builder/
-├── api/src/                  # Express REST API
-│   ├── db/pg-client.ts       # PostgreSQL connection + auto-provisioned tables
-│   ├── db/repo/              # Repository layer (persons, facts, bullets, etc.)
-│   ├── middleware/           # Auth middleware (jose JWT / dev bypass)
-│   ├── routes/               # REST endpoint modules
-│   └── search/index.ts       # Azure AI Search index + query helpers
-├── functions/src/
-│   ├── pipeline/             # Durable Functions orchestrator + HTTP trigger
-│   ├── activities/           # Section extraction, builder, dedup, summary, diff
-│   ├── persistence/          # PostgreSQL JSONB persistence + search sync helper
-│   └── services/             # Agent runtime bridge
-├── capabilities/
-│   ├── mcp-core/             # Shared MCP server + IL5 identity helpers
-│   ├── ingestion/            # Acquisition + extraction MCP servers
-│   ├── quality/              # Citation + conflict guardrails
-│   ├── relationships/        # Inferred / recruiter-edited relationship edges
-│   ├── temporal/             # Temporal pattern detection + event prediction
-│   ├── geospatial/           # Azure Maps projection
-│   └── discovery/            # Natural-language talent search + resume assembly
-├── ui/src/                   # React 18 + Vite application
-├── shared/src/               # Shared types & DTOs
-└── docs/                     # Operational docs
+```powershell
+# from the repo root, one time:
+npm install
+az login          # optional — enables the Azure OpenAI path; a deterministic fallback runs without it
 ```
 
-## REST API Endpoints
+Then start the whole demo (builds the chat host and launches all three servers) with one command:
 
-| Method             | Endpoint                                     | Purpose                                 |
-| ------------------ | -------------------------------------------- | --------------------------------------- |
-| `POST`             | `/api/v1/ingestion-requests`                 | Submit source doc(s) for ingestion      |
-| `GET`              | `/api/v1/ingestion-requests/:runId/status`   | Poll ingestion status                   |
-| `GET`              | `/api/v1/ingestion-requests`                 | List/filter ingestion runs              |
-| `GET`              | `/api/v1/insights/:personId/bullet-mappings` | Get resume bullets with citations       |
-| `GET`              | `/api/v1/insights/:personId/facts`           | Get extracted fact versions             |
-| `GET`              | `/api/v1/insights/:personId/differences`     | Get bullet-level diffs between runs     |
-| `PUT/PATCH/DELETE` | `/api/v1/annotations/:id`                    | Annotation CRUD                         |
-| `GET`              | `/api/v1/inferences/:personId/suggested`     | Relationship suggestions                |
-| `PATCH`            | `/api/v1/inferences/:relationshipId`         | Confirm/reject relationship suggestions |
-| `POST`             | `/api/v1/search`                             | Search bullets/facts (Azure AI Search)  |
-| `GET`              | `/api/v1/stats`                              | Runtime document counts and status      |
-| `GET`              | `/health`                                    | Health probe                            |
-
-## Authentication
-
-- **UI sign-in**: the Vite app uses MSAL and `VITE_AZURE_AD_CLIENT_ID` to sign in with Microsoft Entra ID, then requests an API token for `VITE_API_SCOPE` or `api://VITE_API_CLIENT_ID/.default`.
-- **API validation**: the Express API verifies Entra access tokens with `jose`, remote JWKS, accepted audiences, issuer prefixes/exact issuers, and tenant/user claims (`api/src/middleware/auth.middleware.ts`). Production verification activates when `AZURE_AD_JWKS_URI` is set, or `AZURE_TENANT_ID` **plus** an audience (`AZURE_AD_CLIENT_ID`/`AZURE_AD_AUDIENCE`/`AZURE_AD_VALID_AUDIENCES`) is set.
-- **Token propagation**: all UI REST calls use the same MSAL access-token provider. The API exposes the validated user as `req.user` and keeps the raw token as `req.accessToken` for OBO-capable downstream calls.
-- **Nested SSO**: Azure AI Search calls use OBO when the API has OBO configuration. The Functions starter call uses OBO or managed identity via `FUNCTIONS_TOKEN_SCOPE`; Durable orchestration receives only user/tenant metadata, not raw bearer tokens, so tokens are not persisted in Durable history.
-- **Function boundary**: the Durable HTTP starter authenticates the calling API (trusted-subsystem) before trusting the forwarded tenant/user identity. Enable it by setting `FUNCTIONS_AUTH_AUDIENCE` (to the resource of `FUNCTIONS_TOKEN_SCOPE`); when unset it is not enforced, so otherwise protect the endpoint with platform auth (EasyAuth/APIM) or network isolation (`functions/src/pipeline/validate-caller.ts`).
-- **Dev mode**: `ALLOW_DEV_AUTH_BYPASS=true` is a local-only bypass — it is ignored when `NODE_ENV=production`. With neither the bypass nor a JWKS audience configured the API **fails closed** (rejects requests) rather than trusting unverified token claims.
-
-## Database (PostgreSQL)
-
-Tables are auto-created on API startup. Each entity stores its data in a JSONB column:
-
-```sql
-CREATE TABLE persons (id TEXT PRIMARY KEY, data JSONB NOT NULL);
--- + 6 more tables
+```powershell
+npm run demo --workspace @greenhouse-resume-builder/cap-engagements-ui
 ```
 
-Supported tables: `persons`, `source_documents`, `extraction_runs`, `fact_versions`, `bullet_mappings`, `annotations`, `relationships`.
+Open **http://localhost:8080**. Press `Ctrl+C` to stop.
 
-Connection supports both password auth and AAD managed identity (default for IL5). When `PGPASSWORD` is blank, the API uses `DefaultAzureCredential` to request an AAD token per connection.
+Full run details, the manual three-terminal path, config, and troubleshooting live in
+[`capabilities/engagements/ui/README.md`](capabilities/engagements/ui/README.md).
 
-## Current implementation guidance
+### Optional configuration
 
-### Verified moved-forward areas
+Copy `.env.example` to `.env` at the repo root to enable the optional integrations:
 
-- Ingestion create responses are documented in current handoff docs as aligned around `sourceDocumentIds`.
-- Production auth is now documented as `jose`-based rather than manual/non-cryptographic parsing.
-- Builder bullet IDs are documented as including `personId`.
-- App root routing is documented as switching between landing and candidate profile views.
-- The previously noted duplicate `searchConfigured` stats-field bug is no longer an active top-level issue.
+- **Live map tiles** — set `VITE_AZURE_MAPS_KEY` before building; without it the map falls back
+  to a schematic dots-and-routes view.
+- **LLM planning** — set `AZURE_OPENAI_*` (and `az login`) to use Azure OpenAI; otherwise the
+  orchestrator uses a deterministic planner.
+- **Azure AI Search backend** — set `RETRIEVAL_BACKEND=aisearch` + `AZURE_SEARCH_*` to index the
+  seed data into Azure AI Search; the default `memory` backend needs no cloud resources.
 
-### Highest-value remaining work
+## How it fits together
 
-1. Validate the landing-page ingestion workflow end to end:
-   - submit ingestion requests with auth headers
-   - poll run status against a running Functions host
-   - navigate to resolved candidate state
-   - show loading/error states under real failures
-   - populate recent runs from `GET /api/v1/ingestion-requests`
-   - stage uploaded files before Document Intelligence processing
-2. Move large uploads toward the TO-BE artifact pattern: Blob/artifact manifest first, Durable receives IDs/handles.
-3. Wire MCP server handlers in each capability module to the real `functions/src/activities` logic.
-4. Runtime-test Azure AI Search index creation, upsert, tenant filtering, and sensitive-fact redaction with a real service.
-5. Harden the Azure Maps map for production: the candidate-profile **Map** tab now renders location-bearing facts (geocoded via the geospatial MCP `project_map_pins`). Before deploying, swap the local-dev subscription key for Azure Maps AAD anonymous auth.
+```
+Browser chat host (:8080)
+  └─ POST /ask ─────────────►  Orchestrator agent (:3020)   "the brain"
+                                 └─ MCP tool calls ────────►  Engagements MCP (:3010)
+                                                                • seed contacts/events/topics
+                                                                • persona security trim
+                                                                • suggest_candidates / plan_trip
+                                                                • ui://trip-map App resource
+  ◄──────────────────────────  { answer, menu[], tripMap }
+  └─ renders the ui://trip-map MCP App in a sandboxed iframe (:8081, distinct origin)
+```
 
-## Known constraints
-
-- Full workspace build/type validation passed on 2026-06-18. Search integration should still be runtime-tested against a real Azure AI Search service before it is treated as production-ready.
-- The UI landing page is partially wired — upload staging, auth/header behavior, runtime polling behavior, and recent-run behavior need end-to-end validation.
-- Temporal event extraction, recurrence detection, event prediction, and recruiter alerts are target architecture/implementation-plan items, not verified runtime behavior.
-- Azure Maps pins render on the candidate profile page's **Map** tab from location-bearing facts (`profile.location`, `employment.location`, `education.location`), geocoded on demand by the geospatial MCP `project_map_pins` tool. The browser map uses a local-dev subscription key baked in at build time; production should use Azure Maps AAD anonymous auth.
-- For petabyte-scale MCP/storage work, use `TOBE_ARCHITECTURE.md` first; for the immediate implementation state and backlog, use `IMPLEMENTATION_STATUS.md` and `AGENT_TASKS.md`.
-
-## Recommended docs to read first
-
-1. `TOBE_ARCHITECTURE.md` - target petabyte-scale, IL5-ready tenant-cell and MCP architecture
-2. `IMPLEMENTATION_STATUS.md` - code-aligned status by subsystem
-3. `AGENT_TASKS.md` - current backlog and acceptance criteria
-4. `mvp_implementation_plan.md` - broader MVP execution plan
+See [`engagement-intelligence/ARCHITECTURE.md`](engagement-intelligence/ARCHITECTURE.md) for the
+full design (data model, blob → AI Search indexing, claims-based trim, and the modular
+capability architecture) and [`engagement-intelligence/MVP-PLAN.md`](engagement-intelligence/MVP-PLAN.md)
+for the milestone roadmap.

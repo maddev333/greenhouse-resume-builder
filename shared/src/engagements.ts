@@ -36,8 +36,16 @@ export interface DateRange {
   end: string;
 }
 
-/** Loader-applied envelope (NOT present in the staged JSON). Reuses the shared {@link BaseEntity}. */
-import type { BaseEntity } from './interfaces';
+/**
+ * Loader-applied envelope base. Every stored entity carries these fields; the AI Search
+ * indexer maps `tenantId` (and timestamps) into filterable trim fields.
+ */
+export interface BaseEntity {
+  id: string;
+  tenantId: string;
+  createdAt: string; // ISO-8601
+  updatedAt?: string; // ISO-8601
+}
 
 // ── CRM spine ───────────────────────────────────────────────────────────
 

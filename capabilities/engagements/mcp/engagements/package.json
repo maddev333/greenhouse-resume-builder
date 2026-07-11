@@ -16,6 +16,8 @@
     "provision:search": "tsx src/provision.ts"
   },
   "dependencies": {
+    "@azure/identity": "^4.13.1",
+    "@azure/search-documents": "^13.0.0",
     "@greenhouse-resume-builder/shared": "*",
     "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/sdk": "^1.29.0",

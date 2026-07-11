@@ -10,11 +10,11 @@
  * Everything else in this capability imports the engine ONLY from here, so the interop lives in one file.
  */
 
-import plannerNs from '../../../../../api/src/planner/index.js';
-import retrievalNs from '../../../../../api/src/retrieval/index.js';
+import * as plannerNs from './planner/index.js';
+import * as retrievalNs from './retrieval/index.js';
 
-type PlannerNs = typeof import('../../../../../api/src/planner/index.js');
-type RetrievalNs = typeof import('../../../../../api/src/retrieval/index.js');
+type PlannerNs = typeof import('./planner/index.js');
+type RetrievalNs = typeof import('./retrieval/index.js');
 
 const planner = plannerNs as unknown as PlannerNs;
 const retrieval = retrievalNs as unknown as RetrievalNs;
@@ -73,28 +73,28 @@ export type {
   RouteLeg,
   RoiResult,
   ScoreFactors,
-} from '../../../../../api/src/planner/types.js';
-export type { Dataset } from '../../../../../api/src/planner/seed-loader.js';
-export type { PlannerWeights } from '../../../../../api/src/planner/weights.js';
+} from './planner/types.js';
+export type { Dataset } from './planner/seed-loader.js';
+export type { PlannerWeights } from './planner/weights.js';
 
 // ── Retrieval shim + security trim (types) ───────────────────────────────
 export type {
   SecurityContext,
   SecurityDecision,
   RetrievalNarrowing,
-} from '../../../../../api/src/retrieval/security.js';
+} from './retrieval/security.js';
 export type {
   ContactQuery,
   EventQuery,
-} from '../../../../../api/src/retrieval/retrieval-index.js';
+} from './retrieval/retrieval-index.js';
 export type {
   TrimmedResult,
   Labeled,
   LabeledDataset,
   EntityType,
   Sensitivity,
-} from '../../../../../api/src/retrieval/types.js';
-export type { PersonaName } from '../../../../../api/src/retrieval/personas.js';
+} from './retrieval/types.js';
+export type { PersonaName } from './retrieval/personas.js';
 
 // ── Canonical domain schema (types) — one source, re-exported for the tools ──
 export type {

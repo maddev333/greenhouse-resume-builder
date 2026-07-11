@@ -2,17 +2,10 @@
   "name": "greenhouse-resume-builder",
   "private": true,
   "workspaces": [
-    "api",
-    "functions",
     "shared",
-    "ui",
     "capabilities/mcp-core",
     "capabilities/*/mcp/*",
     "capabilities/*/agent",
     "capabilities/*/ui"
-  ],
-  "dependencies": {
-    "@mcp-ui/server": "^6.1.0",
-    "@modelcontextprotocol/ext-apps": "^1.7.4"
-  }
+  ]
 }
