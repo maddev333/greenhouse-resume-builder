@@ -32,12 +32,19 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
   return res;
 }
 
-test('tools/list exposes the four engagement tools', async () => {
+test('tools/list exposes the six engagement tools', async () => {
   const { client, close } = await connect('EA_G8');
   try {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ['build_itinerary', 'search_contacts', 'search_events', 'suggest_candidates']);
+    assert.deepEqual(names, [
+      'build_itinerary',
+      'search_contacts',
+      'search_events',
+      'suggest_candidates',
+      'suggest_leaders',
+      'survey_area',
+    ]);
   } finally {
     await close();
   }
@@ -140,6 +147,52 @@ test('build_itinerary: EA_BASIC cannot route through C4 (not in its authorized s
     const acceptedIds = res.structuredContent.accepted.map((c: { contactId: string }) => c.contactId).sort();
     assert.deepEqual(acceptedIds, ['C3', 'P2']);
     assert.deepEqual(res.structuredContent.notMatched, ['C4']);
+  } finally {
+    await close();
+  }
+});
+
+test('survey_area: EA_G8 anchors on the NCR and sees the area topics with an approved-message badge', async () => {
+  const { client, close } = await connect('EA_G8');
+  try {
+    const res = await call(client, 'survey_area', { region: 'NCR' });
+    assert.equal(res.structuredContent.rejected, false);
+    assert.equal(res.structuredContent.area.id, 'R-NCR');
+    const ids = res.structuredContent.topics.map((t: { topicId: string }) => t.topicId);
+    assert.ok(ids.includes('T1'), 'NCR has a T1 footprint');
+    const t1 = res.structuredContent.topics.find((t: { topicId: string }) => t.topicId === 'T1');
+    assert.equal(t1.hasApprovedMessage, true);
+  } finally {
+    await close();
+  }
+});
+
+test('survey_area: NO_TENANT is rejected fail-closed (no topics leak)', async () => {
+  const { client, close } = await connect('NO_TENANT');
+  try {
+    const res = await call(client, 'survey_area', { region: 'NCR' });
+    assert.equal(res.structuredContent.rejected, true);
+    assert.equal(res.structuredContent.topics.length, 0);
+  } finally {
+    await close();
+  }
+});
+
+test('suggest_leaders: returns a ranked menu of every leader as an option for the NCR', async () => {
+  const { client, close } = await connect('EA_G8');
+  try {
+    const res = await call(client, 'suggest_leaders', {
+      region: 'NCR',
+      window: { start: '2025-11-03', end: '2025-11-07' },
+    });
+    assert.equal(res.structuredContent.rejected, false);
+    assert.equal(res.structuredContent.area.id, 'R-NCR');
+    const leaders = res.structuredContent.leaders as Array<{ leaderId: string; score: number }>;
+    assert.ok(leaders.length >= 2, 'always offers options');
+    assert.ok(res.structuredContent.topicIds.length >= 1, 'defaults to the area topics');
+    for (let i = 1; i < leaders.length; i++) {
+      assert.ok(leaders[i - 1].score >= leaders[i].score, 'options are ranked by score');
+    }
   } finally {
     await close();
   }

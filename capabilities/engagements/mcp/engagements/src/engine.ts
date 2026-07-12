@@ -31,6 +31,11 @@ export const {
   detectOpportunityCost,
   loadDataset,
   anchorFromEvent,
+  anchorFromArea,
+  resolveArea,
+  topicsInArea,
+  suggestLeaders,
+  haversineKm,
   demoToday,
   loadConfig,
   isStale,
@@ -73,6 +78,9 @@ export type {
   RoiResult,
   ScoreFactors,
 } from './planner/types.js';
+export type { AreaInput, ResolvedArea } from './planner/area.js';
+export type { TopicInArea, TopicsInAreaInput } from './planner/topics.js';
+export type { LeaderOption, LeaderFactors, SuggestLeadersInput } from './planner/leaders.js';
 export type { Dataset } from './planner/seed-loader.js';
 export type { PlannerWeights } from './planner/weights.js';
 
@@ -101,6 +109,7 @@ export type {
   Contact,
   EngagementEvent,
   Topic,
+  Region,
   Preferences,
   GeoPoint,
   DateRange,

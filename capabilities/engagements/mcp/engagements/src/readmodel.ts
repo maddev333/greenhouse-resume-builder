@@ -21,6 +21,8 @@ import {
   type Contact,
   type EngagementEvent,
   type Leader,
+  type Region,
+  type Topic,
   type Labeled,
   type ContactQuery,
   type EventQuery,
@@ -34,6 +36,10 @@ export interface ReadModel {
   backend: RetrievalBackend;
   today: string;
   leaders: Labeled<Leader>[];
+  /** Topic catalog (labeled, but topics are enterprise-visible reference data). */
+  topics: Labeled<Topic>[];
+  /** Geo gazetteer for area-first anchoring (public reference data). */
+  regions: Region[];
   searchContacts(q: ContactQuery): Promise<TrimmedResult<Labeled<Contact>>>;
   searchEvents(q: EventQuery): Promise<TrimmedResult<Labeled<EngagementEvent>>>;
 }
@@ -50,11 +56,13 @@ export function resolveBackend(): RetrievalBackend {
  */
 export function getReadModel(): ReadModel {
   if (resolveBackend() === 'search') {
-    const labeled = applyLabels(loadDataset()); // leaders + today only; contacts/events come from the index
+    const labeled = applyLabels(loadDataset()); // leaders + today + reference data; contacts/events come from the index
     return {
       backend: 'search',
       today: labeled.today,
       leaders: labeled.leaders,
+      topics: labeled.topics,
+      regions: labeled.regions,
       searchContacts: (q) => searchEngagementContacts(q),
       searchEvents: (q) => searchEngagementEvents(q),
     };
@@ -65,6 +73,8 @@ export function getReadModel(): ReadModel {
     backend: 'memory',
     today: idx.today,
     leaders: idx.labeled.leaders,
+    topics: idx.labeled.topics,
+    regions: idx.labeled.regions,
     searchContacts: async (q) => idx.searchContacts(q),
     searchEvents: async (q) => idx.searchEvents(q),
   };

@@ -62,5 +62,6 @@ export function applyLabels(ds: Dataset): LabeledDataset {
     messages: label('message', ds.messages),
     engagements: label('engagement', ds.engagements),
     afteractions: label('afteraction', ds.afteractions),
+    regions: ds.regions, // public gazetteer — no governance envelope needed
   };
 }

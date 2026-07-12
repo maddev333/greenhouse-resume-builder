@@ -23,6 +23,19 @@
 export type Domain = 'technical' | 'non-technical';
 export type Level = 'L1' | 'L2' | 'L3' | 'L4';
 
+/**
+ * Coarse entity sector for a {@link Contact} — powers the "meet this industry / academic / political
+ * entity" option label and an optional retrieval narrowing (area-first planning). Orthogonal to
+ * `type` (individual/company/org), which is the legal form, not the sector.
+ */
+export type Sector =
+  | 'industry' // defense primes, startups, commercial vendors
+  | 'academic' // universities, labs, FFRDCs, think tanks
+  | 'political' // legislative / policy / elected offices & staff
+  | 'government' // other federal / state / local government
+  | 'nonprofit' // associations, NGOs, foundations
+  | 'international'; // foreign government / multinational / allied partners
+
 /** Pre-geocoded point. `lat/lng` are populated at ETL time by the Azure Maps geocoder. */
 export interface GeoPoint {
   city: string;
@@ -43,6 +56,18 @@ export interface BaseEntity {
   tenantId: string;
   createdAt: string; // ISO-8601
   updatedAt?: string; // ISO-8601
+}
+
+/**
+ * A pre-resolved geographic area for **area-first** planning — a named region (or a city/state)
+ * mapped to a centroid + default radius at seed time, so anchoring on "the National Capital Region"
+ * needs no live geocode (offline-reliable demo). Staged JSON carries only DOMAIN fields.
+ */
+export interface Region extends BaseEntity {
+  name: string;
+  aliases?: string[]; // e.g. ["NCR", "DC metro"]
+  centroid: GeoPoint;
+  defaultRadiusKm: number;
 }
 
 // ── CRM spine ───────────────────────────────────────────────────────────
@@ -88,6 +113,7 @@ export interface Leader extends BaseEntity {
 export interface Contact extends BaseEntity {
   name: string;
   type: 'individual' | 'company' | 'org';
+  sector?: Sector; // coarse entity sector (industry/academic/political/…) — see {@link Sector}
   org?: string;
   domain: Domain;
   smeAreas: string[];

@@ -19,6 +19,10 @@ import { resolve } from 'node:path';
 import {
   suggest,
   anchorFromEvent,
+  resolveArea,
+  topicsInArea,
+  suggestLeaders,
+  haversineKm,
   planRoute,
   tripRoi,
   detectFit,
@@ -29,6 +33,8 @@ import {
   type Contact,
   type Leader,
   type EngagementEvent,
+  type TopicInArea,
+  type LeaderOption,
   type Conflict,
   type RouteResult,
   type RouteStop,
@@ -95,6 +101,42 @@ function candidateView(c: Candidate) {
       value: fixed(c.factors.valueNorm, 2),
       topic: fixed(c.factors.topicRelevance, 2),
     },
+  };
+}
+
+function topicInAreaView(t: TopicInArea) {
+  return {
+    topicId: t.topicId,
+    name: t.name,
+    domain: t.domain,
+    smeAreas: t.smeAreas,
+    ownerOrg: t.ownerOrg,
+    hasApprovedMessage: t.hasApprovedMessage,
+    activeCount: t.activeCount,
+    prospectCount: t.prospectCount,
+    staleCount: t.staleCount,
+    eventCount: t.eventCount,
+    strategicValueSum: t.strategicValueSum,
+    opportunityScore: t.opportunityScore,
+  };
+}
+
+function leaderOptionView(o: LeaderOption) {
+  return {
+    leaderId: o.leaderId,
+    name: o.name,
+    role: o.role,
+    score: fixed(o.score),
+    distanceKm: round(o.distanceKm),
+    availableInWindow: o.availableInWindow,
+    factors: {
+      topicMatch: fixed(o.factors.topicMatch, 2),
+      proximity: fixed(o.factors.proximity, 2),
+      availability: fixed(o.factors.availability, 2),
+      budgetHeadroom: fixed(o.factors.budgetHeadroom, 2),
+      levelFit: fixed(o.factors.levelFit, 2),
+    },
+    notes: o.notes,
   };
 }
 
@@ -305,7 +347,139 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
   );
 
-  // 3) suggest_candidates — the "you're already going there" nudge
+  // 3) survey_area — area-first: which topics have a live footprint in a place?
+  server.registerTool(
+    'survey_area',
+    {
+      title: 'Survey a geographic area',
+      description:
+        'Area-first planning: anchor on a place (a known region like "NCR"/"Bay Area", or a city/state) ' +
+        'and see WHICH topics have a live footprint there — active relationships, stale ones worth ' +
+        're-engaging, never-engaged prospects, and any on-site events — ranked by opportunity. Runs over ' +
+        "the caller's authorized contacts/events only (same server-side trim + $filter reporting). " +
+        'Use this before suggest_leaders to decide where to go and why.',
+      inputSchema: {
+        regionId: z.string().optional().describe('Known region id (e.g. "R-NCR"). Highest precedence.'),
+        region: z.string().optional().describe('Region name or alias (e.g. "NCR", "Bay Area") — case-insensitive.'),
+        city: z.string().optional().describe('City to anchor on when no region matches (e.g. "Huntsville").'),
+        state: z.string().optional().describe('State to disambiguate the city (e.g. "AL").'),
+        radiusKm: z.number().optional().describe('Override the search radius in km (defaults to the region default or 150).'),
+      },
+    },
+    async ({ regionId, region, city, state, radiusKm }): Promise<CallToolResult> => {
+      const { ctx, label } = getContext();
+      const rm = getReadModel();
+      const contacts = await rm.searchContacts({ ctx });
+      if (isRejected(contacts.filter)) {
+        const structuredContent = { caller: label, rejected: true, today: rm.today, area: null, topics: [], redactedCount: 0, filter: contacts.filter };
+        return { content: [{ type: 'text', text: 'Access rejected — no verified tenant claim.' }], structuredContent };
+      }
+      const events = await rm.searchEvents({ ctx });
+      const knownPoints = [...contacts.items.map((c) => c.location), ...events.items.map((e) => e.location)];
+      const area = resolveArea({ regionId, region, city, state, radiusKm }, rm.regions, knownPoints);
+      if (!area) {
+        const known = rm.regions.map((r) => `${r.id} (${r.name})`).join(', ');
+        return errorResult(`Could not resolve an area from the given input. Try a known region: ${known}; or a city/state present in your contacts.`);
+      }
+      const topics = topicsInArea({
+        centroid: area.centroid,
+        radiusKm: area.radiusKm,
+        contacts: contacts.items,
+        events: events.items,
+        topics: rm.topics,
+      });
+      const structuredContent = {
+        caller: label,
+        rejected: false,
+        today: rm.today,
+        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, radiusKm: area.radiusKm, resolvedVia: area.resolvedVia },
+        topicCount: topics.length,
+        topics: topics.map(topicInAreaView),
+        contactsInScope: contacts.items.length,
+        redactedCount: contacts.redactedCount,
+        filter: contacts.filter,
+      };
+      const header = `${area.name} (${area.radiusKm} km): ${topics.length} topic(s) with a live footprint; ${contacts.redactedCount} contact(s) redacted by trim.`;
+      const lines = topics.map(
+        (t) =>
+          `  • ${t.topicId} ${t.name} — ${t.activeCount} active/${t.staleCount} stale/${t.prospectCount} prospect, ${t.eventCount} event(s), msg ${t.hasApprovedMessage ? '✓' : '—'}, opp ${t.opportunityScore}`,
+      );
+      return { content: [{ type: 'text', text: [header, ...lines, `filter: ${contacts.filter}`].join('\n') }], structuredContent };
+    },
+  );
+
+  // 4) suggest_leaders — area-first: who should go, and how well they fit
+  server.registerTool(
+    'suggest_leaders',
+    {
+      title: 'Suggest which leader should go',
+      description:
+        'Area-first planning: given a place + a date window (and optionally the target topics), rank WHICH ' +
+        'senior leader should go — scoring SME/domain fit, proximity to the area, availability overlap with ' +
+        "the window, travel-budget headroom, and echelon fit vs the area's anchor relationships. Always " +
+        'returns a ranked menu of OPTIONS (a poor fit is flagged, never dropped); the human decides. ' +
+        "When topicIds are omitted, the area's in-scope topics are used.",
+      inputSchema: {
+        regionId: z.string().optional().describe('Known region id (e.g. "R-NCR").'),
+        region: z.string().optional().describe('Region name or alias (e.g. "NCR", "Bay Area").'),
+        city: z.string().optional().describe('City to anchor on when no region matches.'),
+        state: z.string().optional().describe('State to disambiguate the city.'),
+        radiusKm: z.number().optional().describe('Override the search radius in km.'),
+        window: z
+          .object({ start: z.string(), end: z.string() })
+          .describe('Planning window (ISO YYYY-MM-DD) the leader must be available in.'),
+        topicIds: z.array(z.string()).optional().describe("Target topics to staff for; defaults to the area's in-scope topics."),
+      },
+    },
+    async ({ regionId, region, city, state, radiusKm, window, topicIds }): Promise<CallToolResult> => {
+      const { ctx, label } = getContext();
+      const rm = getReadModel();
+      const contacts = await rm.searchContacts({ ctx });
+      if (isRejected(contacts.filter)) {
+        const structuredContent = { caller: label, rejected: true, today: rm.today, area: null, leaders: [], redactedCount: 0, filter: contacts.filter };
+        return { content: [{ type: 'text', text: 'Access rejected — no verified tenant claim.' }], structuredContent };
+      }
+      const events = await rm.searchEvents({ ctx });
+      const knownPoints = [...contacts.items.map((c) => c.location), ...events.items.map((e) => e.location)];
+      const area = resolveArea({ regionId, region, city, state, radiusKm }, rm.regions, knownPoints);
+      if (!area) {
+        const known = rm.regions.map((r) => `${r.id} (${r.name})`).join(', ');
+        return errorResult(`Could not resolve an area from the given input. Try a known region: ${known}; or a city/state present in your contacts.`);
+      }
+      const inArea = contacts.items.filter((c) => haversineKm(area.centroid, c.location) <= area.radiusKm);
+      const survey = topicsInArea({ centroid: area.centroid, radiusKm: area.radiusKm, contacts: contacts.items, events: events.items, topics: rm.topics });
+      const resolvedTopicIds = topicIds?.length ? topicIds : survey.map((t) => t.topicId);
+      const leaders = suggestLeaders({
+        centroid: area.centroid,
+        window,
+        topicIds: resolvedTopicIds,
+        leaders: rm.leaders,
+        topics: rm.topics,
+        contacts: inArea,
+      });
+      const structuredContent = {
+        caller: label,
+        rejected: false,
+        today: rm.today,
+        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, radiusKm: area.radiusKm, resolvedVia: area.resolvedVia },
+        window,
+        topicIds: resolvedTopicIds,
+        leaderCount: leaders.length,
+        leaders: leaders.map(leaderOptionView),
+        redactedCount: contacts.redactedCount,
+        filter: contacts.filter,
+      };
+      const header = `Who should staff ${area.name} on [${resolvedTopicIds.join(', ') || 'any topic'}] over ${window.start}→${window.end}? ${leaders.length} option(s).`;
+      const lines = leaders.map(
+        (o, i) =>
+          `  ${i + 1}. ${o.leaderId} ${o.name} — score ${fixed(o.score)}, ${round(o.distanceKm)}km, ${o.availableInWindow ? 'available' : 'UNAVAILABLE'}` +
+          `${o.notes.length ? `, notes: ${o.notes.join('; ')}` : ''}`,
+      );
+      return { content: [{ type: 'text', text: [header, ...lines, `filter: ${contacts.filter}`].join('\n') }], structuredContent };
+    },
+  );
+
+  // 5) suggest_candidates — the "you're already going there" nudge
   server.registerTool(
     'suggest_candidates',
     {
@@ -358,7 +532,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
   );
 
-  // 4) build_itinerary — route + ROI + conflicts for the accepted picks, rendered on ui://trip-map (M3)
+  // 6) build_itinerary — route + ROI + conflicts for the accepted picks, rendered on ui://trip-map (M3)
   registerAppTool(
     server,
     'build_itinerary',

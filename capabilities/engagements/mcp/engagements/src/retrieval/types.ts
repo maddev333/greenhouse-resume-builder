@@ -11,6 +11,7 @@ import type {
   Engagement,
   Leader,
   Message,
+  Region,
   Topic,
 } from '@greenhouse-resume-builder/shared';
 
@@ -59,6 +60,8 @@ export interface LabeledDataset {
   messages: Labeled<Message>[];
   engagements: Labeled<Engagement>[];
   afteractions: Labeled<AfterActionNote>[];
+  /** Static geo gazetteer for area-first planning — public reference data, not security-trimmed. */
+  regions: Region[];
 }
 
 /** A trimmed, ranked retrieval result — same shape the M4 AI Search path will return. */

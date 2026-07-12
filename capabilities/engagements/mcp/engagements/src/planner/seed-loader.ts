@@ -16,6 +16,7 @@ import type {
   Engagement,
   Leader,
   Message,
+  Region,
   Topic,
 } from '@greenhouse-resume-builder/shared';
 import { SEED_DIR } from './paths';
@@ -34,6 +35,7 @@ export interface Dataset {
   events: EngagementEvent[];
   engagements: Engagement[];
   afteractions: AfterActionNote[];
+  regions: Region[];
 }
 
 export interface LoadOptions {
@@ -43,6 +45,16 @@ export interface LoadOptions {
 
 function readJson<T = unknown>(dir: string, file: string): T[] {
   return JSON.parse(readFileSync(join(dir, file), 'utf8')) as T[];
+}
+
+/** Like {@link readJson} but returns `[]` when the file is absent (optional reference data). */
+function readJsonSafe<T = unknown>(dir: string, file: string): T[] {
+  try {
+    return readJson<T>(dir, file);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
 }
 
 /** Load the full staged dataset, clock-shifted and envelope-baked. */
@@ -94,7 +106,10 @@ export function loadDataset(opts: LoadOptions = {}): Dataset {
     ...a,
   }));
 
-  return { cfg, today, topics, messages, leaders, contacts, events, engagements, afteractions };
+  // Regions are static reference data (pre-resolved centroids) — no date shift needed.
+  const regions = readJsonSafe<Region>(dir, 'regions.json').map((r) => ({ ...envelope, ...r }));
+
+  return { cfg, today, topics, messages, leaders, contacts, events, engagements, afteractions, regions };
 }
 
 /** Build a trip anchor from an event (its venue + window + topics). */
