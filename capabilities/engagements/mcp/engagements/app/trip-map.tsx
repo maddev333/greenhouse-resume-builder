@@ -79,6 +79,9 @@ function MapView({ payload }: { payload: TripMapPayload }) {
         showLogo: true,
         authOptions: { authType: atlas.AuthenticationType.subscriptionKey, subscriptionKey: MAPS_KEY },
       });
+      // Disable the traffic tileset so the sandboxed iframe does not attempt the failing
+      // microsoft.traffic.relative request that is currently blocked by CORS in this demo setup.
+      map.setTraffic({ flow: 'none', incidents: false });
     } catch (err) {
       setMapError(err instanceof Error ? err.message : String(err));
       return;
