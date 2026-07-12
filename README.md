@@ -66,8 +66,8 @@ Full run details, the manual three-terminal path, config, and troubleshooting li
 
 Copy `.env.example` to `.env` at the repo root to enable the optional integrations:
 
-- **Live map tiles** — set `AZURE_MAPS_KEY` before building; without it the map falls back
-  to a schematic dots-and-routes view.
+- **Live map tiles** — set `AZURE_MAPS_KEY`; the demo rebuilds the map App on start, so a restart
+  picks up the key. Without it the map falls back to a schematic dots-and-routes view.
 - **LLM planning** — set `AZURE_OPENAI_*` (and `az login`) to use Azure OpenAI; otherwise the
   orchestrator uses a deterministic planner.
 - **Azure AI Search backend** — set `RETRIEVAL_BACKEND=search` + `AZURE_SEARCH_*` to index the

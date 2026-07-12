@@ -46,7 +46,9 @@ stops with lat/lng + travel legs) that the host renders on an Azure Maps map —
 dashed legs; a ROI / over-budget summary sits on top. The wire shape is `src/app-payload.ts` (import-free
 so Vite can bundle it into the browser App); the engine → payload mapping lives in `tools.ts`.
 
-Build the single-file App before serving (the server reads `dist/trip-map.html`; `dist/` is gitignored):
+`npm run serve` rebuilds the single-file App automatically (a `preserve` hook runs `build:app`), so the
+served `dist/trip-map.html` always reflects the current repo-root `AZURE_MAPS_KEY`. Build it manually only
+for the standalone `?demo` preview or to watch for changes (`dist/` is gitignored):
 
 ```bash
 npm run build:app --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements   # → dist/trip-map.html
