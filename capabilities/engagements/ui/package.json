@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "M6 — chat UI that is a real MCP-Apps host over the M5 orchestrator. Chat + persona selector call POST :3020/ask; when a tripMap is returned it is rendered as the sandboxed ui://trip-map MCP App (double-iframe isolation via the ext-apps AppBridge).",
+  "description": "M6 — chat UI that is a real MCP-Apps host over the M5 orchestrator. Chat + persona selector call POST :3020/ask (one-shot) or the interactive area-first planner (:3020/plan-options + /build); when a tripMap is returned it is rendered as the sandboxed ui://trip-map MCP App (double-iframe isolation via the ext-apps AppBridge).",
   "scripts": {
     "build": "tsc --noEmit && concurrently \"cross-env INPUT=index.html vite build\" \"cross-env INPUT=sandbox.html vite build\"",
     "watch": "concurrently \"cross-env INPUT=index.html vite build --watch\" \"cross-env INPUT=sandbox.html vite build --watch\"",

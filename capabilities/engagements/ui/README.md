@@ -7,7 +7,16 @@ _"a chat UI that supports MCP UI apps."_
 ```
 Browser (chat host page :8080)
   │  chat + persona selector
-  ├─► POST http://localhost:3020/ask { question, persona }        ← M5 orchestrator ("the brain")
+  │
+  ├─► "Plan a trip" (area-first, interactive) — pick a region chip or type an area
+  │     ├─ POST :3020/plan-options { regionId | question, persona }   ← M5 orchestrator
+  │     │     ⇒ stage:"clarify" (region chips)  OR
+  │     │       stage:"options" { area, window, areaSurvey[], questions:[leader|duration|extensions] }
+  │     │   render: option cards — who should go (radios) · how long (core/extended) · extensions (checkboxes)
+  │     └─ POST :3020/build { leaderId, durationTier, extensionContactIds[], regionId, persona }
+  │           ⇒ { answer, menu[], itinerary, tripMap, redactedCount, rejected }
+  │
+  ├─► "Ask" (one-shot) — POST :3020/ask { question, persona }
   │      ⇒ { answer, menu[], itinerary, tripMap, redactedCount, rejected, mode }
   │   render: assistant text + candidate cards (chat‑native)
   │
@@ -80,13 +89,28 @@ npm run start --workspace @greenhouse-resume-builder/cap-engagements-ui
 
 ## Try it
 
-Open **http://localhost:8080**, keep the persona on **EA · G8**, and send:
+Open **http://localhost:8080** and keep the persona on **EA · G8**.
+
+**Interactive — "Plan a trip" (area-first):** click a **region quick-pick** (e.g. _Greater Boston_,
+_National Capital Region_) — or type an area and press **Plan a trip ▸**. The orchestrator surveys
+the topics active in that area and asks three things as selectable **option cards**:
+
+- **who should go** — ranked senior leaders (radio; the top pick is pre-selected)
+- **how long** — **core** vs **extended** duration tiers (stops + trip-ROI per tier)
+- **extend the trip?** — each add-on shows *"+N day(s) → meet <entity> on <topic>"* with its
+  approved-vs-coordinate talking points (checkboxes)
+
+Pick a leader/duration, optionally tick an extension, then **Build itinerary ▸** — you get the
+security-trimmed menu + live trip map. If you type something with no recognizable area, the planner
+first asks *"which area?"* and shows region chips.
+
+**One-shot — "Ask":** type a question and press **Ask** for the classic Q→A path:
 
 > _I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?_
 
-You get the assistant summary, a menu of candidate cards, and a live trip map. Switch the persona
-to **EA · basic** and re‑ask: one more contact is redacted (the map/menu shrink). **No tenant**
-is rejected (fail‑closed); **Cross‑tenant** returns nothing (isolation).
+Either way, switch the persona to **EA · basic** and re-run: one more contact is redacted (the
+map/menu shrink). **No tenant** is rejected (fail‑closed); **Cross‑tenant** returns nothing
+(isolation) — the trim is enforced server-side, so both flows honor it.
 
 During development use `npm run dev` (rebuilds on change + restarts `serve.ts`).
 
@@ -114,7 +138,7 @@ These are advertised to the browser via `GET /api/config`.
 
 | File | Role |
 | --- | --- |
-| `src/index.tsx` | Chat UI: messages, persona selector, menu cards, `<TripMapHost>` |
+| `src/index.tsx` | Chat UI: messages, persona selector, menu cards, `<TripMapHost>`, and the interactive area-first planner (`OptionsBubble` — leader/duration/extension option cards → `/build`) |
 | `src/implementation.ts` | Host wiring: MCP client, resource read, sandbox proxy, `AppBridge`, `renderTripMapApp` (delivers the orchestrator's `tripMap` as a tool result) |
 | `src/sandbox.ts` | Sandbox proxy (outer iframe) — double‑iframe isolation + message relay |
 | `serve.ts` | Two‑port server (host + CSP‑header sandbox) + `/api/config` |

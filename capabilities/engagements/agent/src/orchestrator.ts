@@ -13,7 +13,16 @@
  */
 import mcpCore from '@greenhouse-resume-builder/mcp-core';
 import { AGENT_TOOLS, makeToolClient, type CapturedCall, type ToolClient } from './tools.js';
-import { resolveDefaultLeaderId, rosterForPrompt, topicIdsFromText, topicsForPrompt } from './catalog.js';
+import {
+  type AreaInput,
+  defaultWindow,
+  regionChoices,
+  resolveAreaInput,
+  resolveDefaultLeaderId,
+  rosterForPrompt,
+  topicIdsFromText,
+  topicsForPrompt,
+} from './catalog.js';
 
 // mcp-core ships as CJS; default-import + destructure is immune to the `export *` named-export
 // interop issue under NodeNext ESM.
@@ -274,6 +283,441 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
     }
 
     return assemble(base, mode, answer, toolCalls, client.captured);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Phase 4 — interactive, area-first OPTIONED planning.
+//
+// Instead of one-shotting a plan, the orchestrator asks the human to decide along each axis:
+//   1. planAreaOptions  → resolve an area (ask "which area?" if none) + a window, call the
+//      capability's `plan_options` tool, and return the topic survey plus three ranked option
+//      menus rendered as clarifying questions (who should go / how long / what each extra day
+//      unlocks + its approved talking points).
+//   2. buildAreaItinerary → take the human's picks and produce the final route + ui://trip-map.
+//
+// Deterministic and LLM-free: `plan_options` already does the reasoning; the orchestrator only
+// resolves the anchor, forwards the persona trim, and shapes the option menus for the UI.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** One selectable option in a clarifying question. */
+export interface OptionChoice {
+  value: string;
+  label: string;
+  detail?: string;
+  selected?: boolean;
+  recommended?: boolean;
+}
+
+/** A question the UI renders as an option group (radios for `single`, checkboxes for `multi`). */
+export interface OptionQuestion {
+  id: 'area' | 'leader' | 'duration' | 'extensions';
+  kind: 'single' | 'multi';
+  prompt: string;
+  choices: OptionChoice[];
+}
+
+export interface AreaOptionsRequest {
+  /** Free-text ask; the area + topic focus are parsed from it when not given explicitly. */
+  question?: string;
+  persona?: string;
+  /** Explicit area anchor (any of these wins over parsing the question). */
+  regionId?: string;
+  region?: string;
+  city?: string;
+  state?: string;
+  radiusKm?: number;
+  /** Planning window; defaults to the demo clock's `today` + horizon (see catalog.defaultWindow). */
+  window?: { start: string; end: string };
+  leaderId?: string;
+  topicIds?: string[];
+  requireTopicMatch?: boolean;
+  serverUrl?: string;
+}
+
+export interface AreaOptionsResult {
+  ok: boolean;
+  /** `clarify` = the orchestrator needs the area first; `options` = the menus are ready. */
+  stage: 'clarify' | 'options';
+  persona: string;
+  question: string | null;
+  answer: string | null;
+  area: any | null;
+  window: { start: string; end: string } | null;
+  today: string | null;
+  topicIds: string[];
+  areaSurvey: any[];
+  leaderOptions: any[];
+  chosenLeaderId: string | null;
+  durationOptions: any[];
+  extensionOptions: any[];
+  absorbedEventIds: string[];
+  onSiteDays: number | null;
+  redactedCount: number | null;
+  rejected: boolean;
+  /** The option groups the UI renders (who/how long/extensions), or the single "which area?" ask. */
+  questions: OptionQuestion[];
+  error?: string;
+}
+
+export interface AreaBuildRequest {
+  persona?: string;
+  regionId?: string;
+  region?: string;
+  city?: string;
+  state?: string;
+  radiusKm?: number;
+  window?: { start: string; end: string };
+  /** Chosen leader (from the leader option menu). */
+  leaderId: string;
+  /** Chosen duration tier; used to derive the base stop set when `acceptedContactIds` is absent. */
+  durationTier?: 'core' | 'extended';
+  /** Extension stops the human toggled on. */
+  extensionContactIds?: string[];
+  /** Explicit final stop set (preferred — the UI already derived it from the option menus). */
+  acceptedContactIds?: string[];
+  /** Anchor event for the map; defaults to the area's first auto-absorbed in-window event. */
+  anchorEventId?: string;
+  topicIds?: string[];
+  serverUrl?: string;
+}
+
+const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** Merge an explicit area anchor with one parsed from the free-text question. */
+function resolveAreaAnchor(req: { regionId?: string; region?: string; city?: string; state?: string; question?: string }): AreaInput | null {
+  if (req.regionId || req.region || req.city) {
+    const out: AreaInput = {};
+    if (req.regionId) out.regionId = req.regionId;
+    if (req.region) out.region = req.region;
+    if (req.city) out.city = req.city;
+    if (req.state) out.state = req.state;
+    return out;
+  }
+  return req.question ? resolveAreaInput(req.question) : null;
+}
+
+/** Only forward the area keys the caller actually set (avoids sending `undefined` over JSON-RPC). */
+function areaArgs(area: AreaInput, radiusKm?: number): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (area.regionId) out.regionId = area.regionId;
+  if (area.region) out.region = area.region;
+  if (area.city) out.city = area.city;
+  if (area.state) out.state = area.state;
+  if (typeof radiusKm === 'number') out.radiusKm = radiusKm;
+  return out;
+}
+
+/** The "which area?" clarifying question — the known region chips. */
+export function areaClarifyQuestion(): OptionQuestion {
+  return {
+    id: 'area',
+    kind: 'single',
+    prompt: 'Which area do you want to anchor the trip on?',
+    choices: regionChoices().map((c) => ({ value: c.value, label: c.label, detail: c.detail })),
+  };
+}
+
+/**
+ * Shape a `plan_options` result into the who/how-long/extensions option menus. Pure — takes the
+ * tool's structuredContent and returns the questions the UI renders (top pick pre-selected).
+ */
+export function buildOptionQuestions(plan: any): OptionQuestion[] {
+  const questions: OptionQuestion[] = [];
+
+  const leaders: any[] = plan?.leaderOptions ?? [];
+  if (leaders.length) {
+    questions.push({
+      id: 'leader',
+      kind: 'single',
+      prompt: 'Who should go?',
+      choices: leaders.map((o) => ({
+        value: o.leaderId,
+        label: `${o.leaderId} — ${o.name}`,
+        detail:
+          `${o.role} · fit ${o.score}` +
+          (o.availableInWindow === false ? ' · not free in window' : '') +
+          (typeof o.distanceKm === 'number' ? ` · ${o.distanceKm} km` : ''),
+        selected: o.leaderId === plan.chosenLeaderId,
+        recommended: o.leaderId === plan.chosenLeaderId,
+      })),
+    });
+  }
+
+  const durations: any[] = plan?.durationOptions ?? [];
+  if (durations.length) {
+    questions.push({
+      id: 'duration',
+      kind: 'single',
+      prompt: 'How long should the trip be?',
+      choices: durations.map((d, i) => ({
+        value: d.tier,
+        label: `${cap(d.tier)} — ${d.days} day(s)`,
+        detail: `${d.stops?.length ?? 0} stop(s) · ROI ${d.roiScore}` + (d.overBudget ? ' · OVER BUDGET' : ''),
+        selected: i === 0,
+        recommended: i === 0,
+      })),
+    });
+  }
+
+  const extensions: any[] = plan?.extensionOptions ?? [];
+  if (extensions.length) {
+    questions.push({
+      id: 'extensions',
+      kind: 'multi',
+      prompt: 'Extend the trip? Each extra day unlocks another meeting (optional).',
+      choices: extensions.map((e) => ({
+        value: e.contactId,
+        label: `+${e.extraDays}d → ${e.name}` + (e.sector ? ` (${e.sector})` : ''),
+        detail:
+          `${e.topicName ?? e.topicId ?? 'topic —'} · mROI ${e.marginalRoi}` +
+          (e.overBudget ? ' · over budget' : '') +
+          ` · ${e.talkingPointsSource === 'approved-message' ? 'approved talking points' : 'coordinate points'}`,
+        selected: false,
+      })),
+    });
+  }
+
+  return questions;
+}
+
+/**
+ * Resolve the final accepted stop set from the human's picks: the chosen duration tier's stops
+ * plus any toggled-on extension stops (deduped). Pure.
+ */
+export function selectedContactIds(plan: any, sel: { durationTier?: string; extensionContactIds?: string[] }): string[] {
+  const durations: any[] = plan?.durationOptions ?? [];
+  const tier = sel.durationTier ?? durations[0]?.tier;
+  const chosen = durations.find((d) => d.tier === tier) ?? durations[0];
+  const baseIds: string[] = (chosen?.stops ?? []).map((s: any) => s.contactId);
+  return [...new Set([...baseIds, ...(sel.extensionContactIds ?? [])])];
+}
+
+/** The area's default anchor event for the map (first auto-absorbed in-window event). */
+function defaultAnchorEventId(plan: any): string | undefined {
+  return Array.isArray(plan?.absorbedEventIds) ? plan.absorbedEventIds[0] : undefined;
+}
+
+function emptyOptions(persona: string, question: string | null, window: { start: string; end: string } | null): AreaOptionsResult {
+  return {
+    ok: false,
+    stage: 'options',
+    persona,
+    question,
+    answer: null,
+    area: null,
+    window,
+    today: null,
+    topicIds: [],
+    areaSurvey: [],
+    leaderOptions: [],
+    chosenLeaderId: null,
+    durationOptions: [],
+    extensionOptions: [],
+    absorbedEventIds: [],
+    onSiteDays: null,
+    redactedCount: null,
+    rejected: false,
+    questions: [],
+  };
+}
+
+/**
+ * STAGE 1 — survey an area and return the ranked option menus. When no area can be resolved from
+ * the request or the free-text question, returns `stage:'clarify'` with the region chips instead
+ * of guessing.
+ */
+export async function planAreaOptions(req: AreaOptionsRequest): Promise<AreaOptionsResult> {
+  const persona = req.persona || DEFAULT_PERSONA();
+  const url = req.serverUrl || DEFAULT_URL();
+  const window = req.window || defaultWindow();
+
+  const area = resolveAreaAnchor(req);
+  if (!area) {
+    return {
+      ...emptyOptions(persona, req.question ?? null, window),
+      stage: 'clarify',
+      answer: 'Which area should we plan around? Pick a region (or name a city).',
+      questions: [areaClarifyQuestion()],
+    };
+  }
+
+  const topicIds = req.topicIds?.length ? req.topicIds : req.question ? topicIdsFromText(req.question) : [];
+
+  let client: ToolClient;
+  try {
+    client = await makeToolClient(url, persona);
+  } catch (e: any) {
+    return {
+      ...emptyOptions(persona, req.question ?? null, window),
+      error:
+        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
+        'Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.',
+    };
+  }
+
+  try {
+    await client.callTool('plan_options', {
+      ...areaArgs(area, req.radiusKm),
+      window,
+      ...(req.leaderId ? { leaderId: req.leaderId } : {}),
+      ...(topicIds.length ? { topicIds } : {}),
+      requireTopicMatch: req.requireTopicMatch ?? false,
+    });
+
+    const cap0 = lastCapture(client.captured, 'plan_options');
+    const plan = cap0?.result ?? {};
+    const answer = cap0?.text ?? null;
+
+    // Area could not be resolved server-side → ask for it explicitly.
+    if (plan.error) {
+      return {
+        ...emptyOptions(persona, req.question ?? null, window),
+        stage: 'clarify',
+        answer: plan.error,
+        questions: [areaClarifyQuestion()],
+      };
+    }
+
+    const rejected = !!plan.rejected;
+    return {
+      ok: !rejected && (plan.leaderOptions?.length ?? 0) > 0,
+      stage: 'options',
+      persona,
+      question: req.question ?? null,
+      answer,
+      area: plan.area ?? null,
+      window: plan.window ?? window,
+      today: plan.today ?? null,
+      topicIds: plan.topicIds ?? topicIds,
+      areaSurvey: plan.areaSurvey ?? [],
+      leaderOptions: plan.leaderOptions ?? [],
+      chosenLeaderId: plan.chosenLeaderId ?? null,
+      durationOptions: plan.durationOptions ?? [],
+      extensionOptions: plan.extensionOptions ?? [],
+      absorbedEventIds: plan.absorbedEventIds ?? [],
+      onSiteDays: plan.onSiteDays ?? null,
+      redactedCount: plan.redactedCount ?? null,
+      rejected,
+      questions: rejected ? [] : buildOptionQuestions(plan),
+    };
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+function assembleBuild(base: PlanResult, captured: CapturedCall[]): PlanResult {
+  const build = lastCapture(captured, 'build_itinerary')?.result;
+  const rejected = isRejected(build);
+  const itinerary =
+    build && !rejected
+      ? {
+          leader: build.leader,
+          event: build.event,
+          accepted: build.accepted,
+          route: build.route,
+          roi: build.roi,
+          conflicts: build.conflicts,
+          notMatched: build.notMatched,
+        }
+      : null;
+  return {
+    ...base,
+    ok: !rejected && itinerary != null,
+    toolCalls: captured.map((c) => ({ name: c.name, args: c.args })),
+    menu: build?.accepted ?? null,
+    itinerary,
+    tripMap: build?.tripMap ?? null,
+    redactedCount: build?.redactedCount ?? null,
+    rejected,
+  };
+}
+
+/**
+ * STAGE 2 — turn the human's picks (leader + duration tier + toggled extensions) into the final
+ * itinerary + ui://trip-map. Prefers the UI-supplied `acceptedContactIds` (already derived from the
+ * option menus); otherwise re-runs `plan_options` for the chosen leader to derive them. Always calls
+ * `build_itinerary`, which re-authorizes every id server-side, so the persona trim still holds.
+ */
+export async function buildAreaItinerary(req: AreaBuildRequest): Promise<PlanResult> {
+  const persona = req.persona || DEFAULT_PERSONA();
+  const url = req.serverUrl || DEFAULT_URL();
+  const window = req.window || defaultWindow();
+
+  const base: PlanResult = {
+    ok: false,
+    mode: 'deterministic',
+    persona,
+    question: req.leaderId ? `Build itinerary for ${req.leaderId}` : 'Build itinerary',
+    answer: null,
+    toolCalls: [],
+    menu: null,
+    itinerary: null,
+    tripMap: null,
+    redactedCount: null,
+    rejected: false,
+  };
+
+  if (!req.leaderId) return { ...base, error: 'leaderId is required to build an itinerary.' };
+
+  const area = resolveAreaAnchor(req);
+
+  let client: ToolClient;
+  try {
+    client = await makeToolClient(url, persona);
+  } catch (e: any) {
+    return {
+      ...base,
+      error:
+        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
+        'Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.',
+    };
+  }
+
+  try {
+    let acceptedContactIds = req.acceptedContactIds ?? [];
+    let anchorEventId = req.anchorEventId;
+    const topicIds = req.topicIds ?? [];
+
+    // Fallback: derive the stop set (and anchor/topics) from a fresh plan_options for this leader.
+    if (acceptedContactIds.length === 0 || !anchorEventId) {
+      if (!area) return { ...base, error: 'An area (regionId/region/city) is required to build the itinerary.' };
+      await client.callTool('plan_options', {
+        ...areaArgs(area, req.radiusKm),
+        window,
+        leaderId: req.leaderId,
+        ...(topicIds.length ? { topicIds } : {}),
+        requireTopicMatch: false,
+      });
+      const plan = lastCapture(client.captured, 'plan_options')?.result ?? {};
+      if (plan.rejected) return { ...assembleBuild(base, client.captured), rejected: true, answer: 'Access rejected — no verified tenant claim.' };
+      if (plan.error) return { ...base, error: plan.error };
+      if (acceptedContactIds.length === 0) {
+        acceptedContactIds = selectedContactIds(plan, { durationTier: req.durationTier, extensionContactIds: req.extensionContactIds });
+      }
+      anchorEventId = anchorEventId ?? defaultAnchorEventId(plan);
+    }
+
+    if (acceptedContactIds.length === 0) {
+      return { ...base, error: 'No stops resolved for the itinerary — pick a duration tier or accept at least one contact.' };
+    }
+
+    await client.callTool('build_itinerary', {
+      leaderId: req.leaderId,
+      ...(anchorEventId ? { eventId: anchorEventId } : area?.city ? { eventQuery: area.city } : {}),
+      acceptedContactIds,
+      // NOTE: deliberately NO topicIds here. The area-first selection spans multiple topics; passing a
+      // topic focus would make build_itinerary's index-level searchContacts({topicIds}) pre-filter to
+      // that single topic and drop the cross-topic stops the human just picked. requireTopicMatch:false
+      // keeps the anchor event's own topics from culling them either.
+      requireTopicMatch: false,
+    });
+
+    const built = assembleBuild(base, client.captured);
+    built.answer = lastCapture(client.captured, 'build_itinerary')?.text ?? built.answer;
+    return built;
   } finally {
     await client.close().catch(() => {});
   }

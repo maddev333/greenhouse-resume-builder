@@ -3,7 +3,7 @@
  * renders its answer, its option menu (candidate cards), and — when the orchestrator returns a
  * `tripMap` — the sandboxed ui://trip-map MCP App via <TripMapHost> (see ./implementation).
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { connectToServer, getUiResource, renderTripMapApp, log } from "./implementation";
@@ -31,6 +31,16 @@ const PERSONAS: Persona[] = [
 ];
 
 const SAMPLE_QUESTION = "I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?";
+
+// Region quick-picks for the interactive planner (the known seed regions). Clicking one anchors
+// the area and asks the orchestrator for the who/how-long/extensions option menus.
+const REGION_QUICKPICKS: { regionId: string; label: string }[] = [
+  { regionId: "R-NCR", label: "NCR" },
+  { regionId: "R-BOSTON", label: "Boston" },
+  { regionId: "R-BAY-AREA", label: "Bay Area" },
+  { regionId: "R-FRONT-RANGE", label: "Front Range" },
+  { regionId: "R-CENTRAL-TX", label: "Central TX" },
+];
 
 // ---- orchestrator response (loose mirror of PlanResult) -------------------------------------
 interface MenuItem {
@@ -62,12 +72,57 @@ interface PlanResult {
   error?: string;
 }
 
+// ---- interactive planner (/plan-options + /build) -------------------------------------------
+interface OptionChoice {
+  value: string;
+  label: string;
+  detail?: string;
+  selected?: boolean;
+  recommended?: boolean;
+}
+
+interface OptionQuestion {
+  id: "area" | "leader" | "duration" | "extensions";
+  kind: "single" | "multi";
+  prompt: string;
+  choices: OptionChoice[];
+}
+
+interface AreaSurveyTopic {
+  topicId: string;
+  name?: string;
+  activeCount?: number;
+  prospectCount?: number;
+  staleCount?: number;
+  eventCount?: number;
+  hasApprovedMessage?: boolean;
+}
+
+// Loose mirror of the orchestrator's AreaOptionsResult.
+interface OptionsResult {
+  ok?: boolean;
+  stage?: "clarify" | "options";
+  persona?: string;
+  answer?: string | null;
+  area?: { id?: string; name?: string; city?: string; state?: string; radiusKm?: number } | null;
+  window?: { start: string; end: string } | null;
+  today?: string | null;
+  topicIds?: string[];
+  areaSurvey?: AreaSurveyTopic[];
+  absorbedEventIds?: string[];
+  redactedCount?: number | null;
+  rejected?: boolean;
+  questions?: OptionQuestion[];
+  error?: string;
+}
+
 interface ChatMessage {
   id: number;
   role: "user" | "assistant";
   text?: string;
   persona?: string;
   result?: PlanResult;
+  options?: OptionsResult;
   error?: string;
 }
 
@@ -204,6 +259,231 @@ function MenuCard({ item, index }: { item: MenuItem; index: number }) {
 }
 
 // ============================================================================================
+// Interactive planner bubble — ask questions + give options, then build the itinerary.
+// ============================================================================================
+function OptGroup({ q, children }: { q: OptionQuestion; children: ReactNode }) {
+  return (
+    <div className="opt-group">
+      <div className="opt-prompt">{q.prompt}</div>
+      <div className="opt-list">{children}</div>
+    </div>
+  );
+}
+
+function OptionsBubble({
+  config,
+  persona,
+  options,
+  onPickRegion,
+}: {
+  config: HostConfig;
+  persona: string;
+  options: OptionsResult;
+  onPickRegion: (regionId: string, label: string) => void;
+}) {
+  const leaderQ = options.questions?.find((q) => q.id === "leader");
+  const durationQ = options.questions?.find((q) => q.id === "duration");
+  const extQ = options.questions?.find((q) => q.id === "extensions");
+  const areaKey = options.area?.id ?? "area";
+
+  const [leaderId, setLeaderId] = useState<string>(
+    leaderQ?.choices.find((c) => c.selected)?.value ?? leaderQ?.choices[0]?.value ?? "",
+  );
+  const [durationTier, setDurationTier] = useState<string>(
+    durationQ?.choices.find((c) => c.selected)?.value ?? durationQ?.choices[0]?.value ?? "core",
+  );
+  const [exts, setExts] = useState<Set<string>>(new Set());
+  const [built, setBuilt] = useState<PlanResult | null>(null);
+  const [building, setBuilding] = useState(false);
+  const [buildErr, setBuildErr] = useState<string>("");
+
+  function toggleExt(v: string) {
+    setExts((prev) => {
+      const next = new Set(prev);
+      if (next.has(v)) next.delete(v);
+      else next.add(v);
+      return next;
+    });
+  }
+
+  async function build() {
+    if (!leaderId || building) return;
+    setBuilding(true);
+    setBuildErr("");
+    setBuilt(null);
+    try {
+      const res = await fetch(`${config.orchestratorUrl}/build`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          persona,
+          regionId: options.area?.id,
+          window: options.window ?? undefined,
+          leaderId,
+          durationTier,
+          extensionContactIds: [...exts],
+          topicIds: options.topicIds,
+        }),
+      });
+      const result = (await res.json()) as PlanResult;
+      if (result.error) setBuildErr(result.error);
+      setBuilt(result);
+    } catch (e) {
+      setBuildErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBuilding(false);
+    }
+  }
+
+  if (options.error) {
+    return <div className="bubble assistant error">⚠️ {options.error}</div>;
+  }
+
+  // Clarify — the orchestrator needs an area first; render the region chips.
+  if (options.stage === "clarify") {
+    const areaQ = options.questions?.find((q) => q.id === "area");
+    return (
+      <div className="bubble assistant">
+        <div className="meta-row">
+          <span className="chip chip-persona">{persona}</span>
+          <span className="chip">clarify</span>
+        </div>
+        {options.answer && <div className="answer">{options.answer}</div>}
+        <div className="opt-chips">
+          {(areaQ?.choices ?? []).map((c) => (
+            <button key={c.value} className="opt-chip" onClick={() => onPickRegion(c.value, c.label)}>
+              {c.label}
+              {c.detail && <span className="muted"> · {c.detail}</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const rejected = options.rejected;
+  const survey = options.areaSurvey ?? [];
+
+  return (
+    <div className="bubble assistant">
+      <div className="meta-row">
+        <span className="chip chip-persona">{persona}</span>
+        <span className="chip chip-mode">options</span>
+        {rejected && <span className="chip chip-reject">access rejected</span>}
+        {typeof options.redactedCount === "number" && options.redactedCount > 0 && (
+          <span className="chip chip-redact">🔒 {options.redactedCount} redacted</span>
+        )}
+      </div>
+
+      {options.area && (
+        <div className="opt-area">
+          <strong>📍 {options.area.name}</strong>
+          {typeof options.area.radiusKm === "number" && <span className="muted"> · {options.area.radiusKm} km</span>}
+          {options.window && (
+            <span className="muted">
+              {" "}
+              · {options.window.start} → {options.window.end}
+            </span>
+          )}
+        </div>
+      )}
+
+      {survey.length > 0 && (
+        <div className="opt-survey">
+          <span className="muted">topics here:</span>
+          {survey.map((t) => (
+            <span
+              key={t.topicId}
+              className="flag"
+              title={`${t.activeCount ?? 0} active · ${t.prospectCount ?? 0} prospect · ${t.staleCount ?? 0} stale · ${t.eventCount ?? 0} event(s)`}
+            >
+              {t.topicId}
+              {t.name ? ` ${t.name}` : ""}
+              {t.hasApprovedMessage ? " ✓" : ""}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {rejected ? (
+        <div className="answer error">Access rejected — no records are visible for this persona.</div>
+      ) : (
+        <>
+          {leaderQ && (
+            <OptGroup q={leaderQ}>
+              {leaderQ.choices.map((c) => (
+                <label key={c.value} className={`opt-row ${leaderId === c.value ? "opt-sel" : ""}`}>
+                  <input
+                    type="radio"
+                    name={`leader-${areaKey}`}
+                    checked={leaderId === c.value}
+                    onChange={() => setLeaderId(c.value)}
+                  />
+                  <span className="opt-label">
+                    {c.label}
+                    {c.recommended && <span className="opt-badge">top pick</span>}
+                  </span>
+                  {c.detail && <span className="opt-detail muted">{c.detail}</span>}
+                </label>
+              ))}
+            </OptGroup>
+          )}
+
+          {durationQ && (
+            <OptGroup q={durationQ}>
+              {durationQ.choices.map((c) => (
+                <label key={c.value} className={`opt-row ${durationTier === c.value ? "opt-sel" : ""}`}>
+                  <input
+                    type="radio"
+                    name={`dur-${areaKey}`}
+                    checked={durationTier === c.value}
+                    onChange={() => setDurationTier(c.value)}
+                  />
+                  <span className="opt-label">
+                    {c.label}
+                    {c.recommended && <span className="opt-badge">suggested</span>}
+                  </span>
+                  {c.detail && <span className="opt-detail muted">{c.detail}</span>}
+                </label>
+              ))}
+            </OptGroup>
+          )}
+
+          {extQ && (
+            <OptGroup q={extQ}>
+              {extQ.choices.map((c) => (
+                <label key={c.value} className={`opt-row ${exts.has(c.value) ? "opt-sel" : ""}`}>
+                  <input type="checkbox" checked={exts.has(c.value)} onChange={() => toggleExt(c.value)} />
+                  <span className="opt-label">{c.label}</span>
+                  {c.detail && <span className="opt-detail muted">{c.detail}</span>}
+                </label>
+              ))}
+            </OptGroup>
+          )}
+
+          <button className="opt-build" onClick={build} disabled={building || !leaderId}>
+            {building ? "Building…" : "Build itinerary ▸"}
+          </button>
+        </>
+      )}
+
+      {buildErr && <div className="answer error">{buildErr}</div>}
+      {built?.answer && <div className="answer">{built.answer}</div>}
+      {built?.menu && built.menu.length > 0 && (
+        <div className="menu">
+          {built.menu.map((m, i) => (
+            <MenuCard key={m.contactId || i} item={m} index={i} />
+          ))}
+        </div>
+      )}
+      {built?.tripMap != null && (
+        <TripMapHost config={config} persona={persona} tripMap={built.tripMap} answer={built.answer} />
+      )}
+    </div>
+  );
+}
+
+// ============================================================================================
 // Assistant bubble
 // ============================================================================================
 function AssistantBubble({ msg, config }: { msg: ChatMessage; config: HostConfig }) {
@@ -292,6 +572,35 @@ function App() {
     }
   }
 
+  // Interactive planner — ask the orchestrator for the who/how-long/extensions option menus (or the
+  // "which area?" clarify). `regionId` anchors an area directly; otherwise the free-text is parsed.
+  async function planOptions(opts: { question?: string; regionId?: string; label?: string }) {
+    if (busy || !config) return;
+    const usedPersona = persona;
+    const userText = opts.label ? `Plan a trip · ${opts.label}` : opts.question || "Plan a trip";
+    setMessages((m) => [...m, { id: nextId++, role: "user", text: userText, persona: usedPersona }]);
+    if (opts.question !== undefined) setInput("");
+    setBusy(true);
+    try {
+      const res = await fetch(`${config.orchestratorUrl}/plan-options`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: opts.question, regionId: opts.regionId, persona: usedPersona }),
+      });
+      const options = (await res.json()) as OptionsResult;
+      setMessages((m) => [...m, { id: nextId++, role: "assistant", persona: usedPersona, options }]);
+    } catch (e) {
+      setMessages((m) => [
+        ...m,
+        { id: nextId++, role: "assistant", persona: usedPersona, error: e instanceof Error ? e.message : String(e) },
+      ]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const onPickRegion = (regionId: string, label: string) => planOptions({ regionId, label });
+
   const activePersona = PERSONAS.find((p) => p.id === persona);
 
   return (
@@ -326,7 +635,17 @@ function App() {
       <div className="messages" ref={listRef}>
         {messages.length === 0 && (
           <div className="empty">
-            <p>Ask about an upcoming trip. The orchestrator picks the tools, applies the security trim, and returns a menu + a live trip map.</p>
+            <p>
+              Anchor on an area and the orchestrator asks who should go, how long, and what each extra day unlocks —
+              then builds a security-trimmed itinerary + live trip map. Or ask a one-shot question.
+            </p>
+            <div className="empty-picks">
+              {REGION_QUICKPICKS.map((r) => (
+                <button key={r.regionId} className="sample" disabled={busy || !config} onClick={() => onPickRegion(r.regionId, r.label)}>
+                  Plan a trip · {r.label}
+                </button>
+              ))}
+            </div>
             <button className="sample" onClick={() => setInput(SAMPLE_QUESTION)}>
               {SAMPLE_QUESTION}
             </button>
@@ -339,7 +658,17 @@ function App() {
             </div>
           ) : (
             <div key={m.id} className="row assistant-row">
-              {config && <AssistantBubble msg={m} config={config} />}
+              {config &&
+                (m.options ? (
+                  <OptionsBubble
+                    config={config}
+                    persona={m.persona || m.options.persona || persona}
+                    options={m.options}
+                    onPickRegion={onPickRegion}
+                  />
+                ) : (
+                  <AssistantBubble msg={m} config={config} />
+                ))}
             </div>
           ),
         )}
@@ -354,6 +683,15 @@ function App() {
         )}
       </div>
 
+      <div className="quickpicks">
+        <span className="muted">Plan a trip:</span>
+        {REGION_QUICKPICKS.map((r) => (
+          <button key={r.regionId} className="qp" disabled={busy || !config} onClick={() => onPickRegion(r.regionId, r.label)}>
+            {r.label}
+          </button>
+        ))}
+      </div>
+
       <div className="composer">
         <textarea
           value={input}
@@ -361,16 +699,26 @@ function App() {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              ask();
+              planOptions({ question: input.trim() || undefined });
             }
           }}
-          placeholder="Ask about a trip… (Enter to send, Shift+Enter for newline)"
+          placeholder="Name an area or ask about a trip… (Enter = plan options, Shift+Enter = newline)"
           rows={2}
           disabled={busy || !config}
         />
-        <button className="send" onClick={ask} disabled={busy || !config || !input.trim()}>
-          {busy ? "…" : "Send"}
-        </button>
+        <div className="composer-actions">
+          <button
+            className="send"
+            onClick={() => planOptions({ question: input.trim() || undefined })}
+            disabled={busy || !config}
+            title="Ask who should go, how long, and what each extra day unlocks"
+          >
+            {busy ? "…" : "Plan a trip ▸"}
+          </button>
+          <button className="ask" onClick={ask} disabled={busy || !config || !input.trim()} title="One-shot answer + trip map">
+            Ask
+          </button>
+        </div>
       </div>
     </div>
   );

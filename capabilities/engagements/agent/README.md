@@ -31,6 +31,9 @@ question ──▶ orchestrator ──(MCP tools/call, x-demo-persona)──▶ 
 - **Auth boundary:** the caller's **persona** is sent as `x-demo-persona` (stand-in for verified
   Keycloak claims). The capability enforces the trim **server-side**; the orchestrator only ever
   sees authorized rows and reports `redactedCount`.
+- **Area-first planning:** the `/plan-options` + `/build` seam (see *2c*) anchors on a region,
+  surveys the topics active there, and returns leader / duration / extension **options** via the
+  capability's `plan_options` tool — deterministic, so this path runs without Azure OpenAI.
 
 ## Run it
 
@@ -59,6 +62,41 @@ curl -s localhost:3020/ask -H 'content-type: application/json' \
   -d '{"question":"who should I meet at AUSA on UAS/drone?","persona":"EA_G8"}' | jq
 ```
 
+**2c. Interactive area-first planning** (the seam the chat UI's *"Plan a trip"* flow calls):
+
+Instead of one-shot Q→A, anchor on a **geographical area** and let the orchestrator ask
+*who should go, how long, and what each extra day unlocks* — always returning **options** so the
+EA decides. Two stateless stages, both deterministic (no LLM required, works offline):
+
+```bash
+# Stage 1 — area → option menus (leader / duration tiers / extension add-ons)
+curl -s localhost:3020/plan-options -H 'content-type: application/json' \
+  -d '{"regionId":"E-BOSTON","persona":"EA_G8"}' | jq
+# → { stage:"options", area, window, areaSurvey[], questions:[leader|duration|extensions], redactedCount }
+# (omit the area to get stage:"clarify" + region chips to pick from)
+
+# Stage 2 — the EA's picks → security-trimmed itinerary + trip map
+curl -s localhost:3020/build -H 'content-type: application/json' \
+  -d '{"regionId":"E-BOSTON","persona":"EA_G8","leaderId":"L1","durationTier":"extended","extensionContactIds":["C20"]}' | jq
+# → { answer, menu[], itinerary, tripMap, redactedCount, rejected }
+```
+
+Or from the CLI — renders the same menus as text:
+
+```bash
+npm run ask --workspace @greenhouse-resume-builder/cap-engagements-agent -- \
+  --options "plan a trip to Boston" --persona EA_G8
+# also: --region E-BOSTON, --window 2025-10-06..2025-10-31
+```
+
+The area is resolved from a seed **region** (id or alias, e.g. `NCR`, `bay area`) or a city named
+after a locative preposition (*"in/near/to <City>"*); if nothing anchors, `/plan-options` returns
+`stage:"clarify"` with the known regions as chips. Duration tiers (**core** / **extended**) and
+**extension add-ons** (each `+N day(s)` unlocks another meeting, with approved-vs-coordinate
+talking points) come straight from the capability's `plan_options` tool — the security trim is
+still enforced server-side, so `/build` re-authorizes every stop.
+
+
 ## The security-trim beat (why persona matters)
 
 The same question returns different menus per caller — the trim is enforced by the capability, not
@@ -80,6 +118,8 @@ the orchestrator:
 | `ENGAGEMENTS_DEFAULT_LEADER` | first leader (`L1`) | leader used when the ask names none |
 | `ENGAGEMENTS_DEMO_PERSONA` | `EA_BASIC` | default caller persona |
 | `ENGAGEMENTS_TOP_N` | `3` | candidates routed into the itinerary |
+| `ENGAGEMENTS_PLAN_WINDOW` | seed `today` → `today`+horizon | override the `/plan-options` trip window (`START..END`, ISO dates) |
+| `ENGAGEMENTS_PLAN_HORIZON_DAYS` | `25` | default window length when no explicit window is given |
 | `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_DEPLOYMENT` | — | enable the LLM path (else deterministic). Auth via `az login` (DefaultAzureCredential) or `AZURE_OPENAI_API_KEY`. |
 
 ## Test / typecheck
