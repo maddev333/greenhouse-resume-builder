@@ -5,10 +5,10 @@ import { loadDataset, anchorFromEvent } from './seed-loader';
 test('loadDataset: record counts match the staged seed', () => {
   const ds = loadDataset();
   assert.equal(ds.topics.length, 4);
-  assert.equal(ds.messages.length, 2);
+  assert.equal(ds.messages.length, 3);
   assert.equal(ds.leaders.length, 6);
-  assert.equal(ds.contacts.length, 23); // 20 active + 3 prospects
-  assert.equal(ds.events.length, 3);
+  assert.equal(ds.contacts.length, 35); // 30 active + 5 prospects
+  assert.equal(ds.events.length, 6);
   assert.equal(ds.engagements.length, 3);
   assert.equal(ds.afteractions.length, 2);
 });
@@ -26,10 +26,10 @@ test('loadDataset: the loader bakes the tenant/createdAt envelope onto every rec
   }
 });
 
-test('loadDataset: 20 active + 3 prospect contacts', () => {
+test('loadDataset: 30 active + 5 prospect contacts', () => {
   const ds = loadDataset();
-  assert.equal(ds.contacts.filter((c) => c.status === 'active').length, 20);
-  assert.equal(ds.contacts.filter((c) => c.status === 'prospect').length, 3);
+  assert.equal(ds.contacts.filter((c) => c.status === 'active').length, 30);
+  assert.equal(ds.contacts.filter((c) => c.status === 'prospect').length, 5);
 });
 
 test('anchorFromEvent: E-AUSA → DC venue, window, and T1/T3 topics', () => {

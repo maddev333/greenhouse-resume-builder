@@ -24,5 +24,18 @@
       "Prioritize identity and micro-segmentation first",
       "No endorsement of specific vendor products"
     ]
+  },
+  {
+    "id": "M-T4-v1",
+    "topicId": "T4",
+    "version": 1,
+    "status": "approved",
+    "effectiveFrom": "2025-06-01",
+    "approvedBy": "USAREC / Comms",
+    "intendedPoints": [
+      "Expand STEM apprenticeship and ROTC-to-industry pipelines",
+      "Prioritize partnerships in critical-skill fields (AI, cyber, advanced manufacturing)",
+      "No commitments on specific hiring numbers or basing decisions"
+    ]
   }
 ]

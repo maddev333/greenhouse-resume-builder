@@ -13,7 +13,7 @@ test('EA_G8 sees the /army/g8/plans contact C4 but not the sensitive C12', () =>
   const r = idx.searchContacts({ ctx: EA_G8 });
   assert.ok(ids(r.items).includes('C4'));
   assert.ok(!ids(r.items).includes('C12'));
-  assert.equal(r.items.length, 22); // 23 − C12
+  assert.equal(r.items.length, 34); // 35 − C12
   assert.equal(r.redactedCount, 1);
   assert.match(r.filter, /tenantId eq 'army'/);
 });
@@ -23,7 +23,7 @@ test('EA_BASIC is trimmed on BOTH axes (group C4 + sensitive C12)', () => {
   const got = ids(r.items);
   assert.ok(!got.includes('C4'));
   assert.ok(!got.includes('C12'));
-  assert.equal(r.items.length, 21);
+  assert.equal(r.items.length, 33);
   assert.equal(r.redactedCount, 2);
 });
 
@@ -36,7 +36,7 @@ test('ADMIN sees the sensitive C12 but still not the g8-only C4', () => {
 test('cross-tenant caller gets zero rows (tenant isolation), but the call is allowed', () => {
   const r = idx.searchContacts({ ctx: CROSS_TENANT });
   assert.equal(r.items.length, 0);
-  assert.equal(r.redactedCount, 23);
+  assert.equal(r.redactedCount, 35);
   assert.doesNotMatch(r.filter, /rejected/);
 });
 

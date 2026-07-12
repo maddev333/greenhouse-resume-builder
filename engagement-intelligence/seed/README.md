@@ -13,10 +13,10 @@ call at demo time — locations are pre-geocoded).
 |------|--------|------:|
 | `schema.ts` | Canonical target types (drops into `shared/src/` on Day-1) | — |
 | `topics.json` | `Topic` — trip subjects / approved-message anchors | 4 |
-| `messages.json` | `Message` — approved, versioned talking points | 2 |
+| `messages.json` | `Message` — approved, versioned talking points | 3 |
 | `leaders.json` | `Leader` — Pool A (senior leaders whose time we allocate) | 6 |
-| `contacts.json` | `Contact` — Pool B (20 active + 3 prospects) | 23 |
-| `events.json` | `Event` — travel anchors / attendee-magnets | 3 |
+| `contacts.json` | `Contact` — Pool B (30 active + 5 prospects) | 35 |
+| `events.json` | `Event` — travel anchors / attendee-magnets | 6 |
 | `engagements.json` | `Engagement` — past meetings (history) | 3 |
 | `afteractions.json` | `AfterActionNote` — EXSUM readouts (message-drift signal) | 2 |
 | `config.json` | Demo-clock config (`today`, `staleCutoffDays`, `shiftMonths`) | — |
@@ -62,14 +62,14 @@ today and by the Day-1 loader later:
 
 - **`today`** (authored `2025-10-06`) and **`staleCutoffDays`** (`180`) → derived **stale cutoff
   `2025-04-09`**. Active contacts whose `lastInteractionDate` is before the cutoff are "stale"
-  (15 of 20; fresh: C7, C9, C11, C14, C15).
+  (22 of 30; the fresh actives are C7, C9, C11, C14, C15, C25, C28, C30).
 - **`shiftMonths`** relocates the *whole* demo to another year without editing any seed date. It is
   applied **uniformly to `today` AND every date in the seed**, so all staleness / freshness /
   event-window relationships are **invariant**. Default `0` → 2025; set `12` → 2026 (e.g. to align
-  with the next AUSA). Verified: both values yield the same **15 stale / 5 fresh** split.
+  with the next AUSA). Verified: both values yield the same **22 stale / 8 fresh** split.
 - All `GeoPoint`s are **pre-geocoded** (`lat`/`lng` baked in). At real ETL time these are filled
   by the Azure Maps geocoder; the `project_map_pins` MCP tool caps at 25 locations/call, so the
-  ~32 records geocode in ≤2 chunks — done once at seed time, never at demo time.
+  ~47 records geocode in ≤2 chunks — done once at seed time, never at demo time.
 
 ## Choreographed demo story (why these values)
 
@@ -83,6 +83,16 @@ today and by the Day-1 loader later:
   deliberately **not** in the AUSA roster.
 - **Prospecting (supporting flavor):** `exhibitorProspectIds = [P1, P2, P3]` — new companies from
   the exhibitor directory matched to T1/T3 → a one-line "want intros?" add-on, never the star.
+- **Area-first showcase (geo anchor + topic anchors, C21–C30 / P4–P5 / E-BOSTON·E-BAY·E-TX):**
+  beyond the NCR, four regions are seeded as **multi-topic anchors** so `survey_area` / `plan_options`
+  demo across geographies — **Greater Boston** (T1/T2/T3/T4 + `E-BOSTON`), **Bay Area** (T2/T3/T4 +
+  `E-BAY`), **Colorado Front Range** (T1/T2/T4 + `E-SPACE`), and **Central Texas** (T1/T2/T3/T4 +
+  `E-TX`). Each region mixes stale re-engagements with a couple of fresh contacts and pulls in its
+  own event as an on-site sub-anchor. **T4 (STEM/talent) now has a real footprint** (C23/C26/C28/C30)
+  and an approved message (`M-T4-v1`), so leader **L2** (USAREC) — previously idle — becomes a top
+  option and its extensions carry approved talking points; **T3 stays intentionally message-less** to
+  keep demonstrating the "coordinate talking points with the owner" extension fallback. All of these
+  sit >500 km from DC, so the canonical AUSA/NCR trace is unchanged.
 - **Message-consistency thread (C1, value 5, stale @ 2025-02-20):**
   - `EX-002` (L1, 2025-01-18) → `AA-onmsg`: on-message.
   - `EX-003` (L5, 2025-02-20) → `AA-drift`: LTG Cole signaled a **specific program-dollar figure**,

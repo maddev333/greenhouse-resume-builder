@@ -100,7 +100,7 @@ export interface Contact extends BaseEntity {
 }
 ```
 
-- **Backfill** the ~23 seed contacts with a `sector` value (see Open Questions on defaults).
+- **Backfill** every seed contact with a `sector` value (see Open Questions on defaults).
 - Exposed as a **filterable trim/behavior facet** in the AI Search envelope (ARCHITECTURE.md §16.3),
   so a caller can optionally narrow "show me academic partners on zero-trust."
 
@@ -233,9 +233,9 @@ options rather than accepting a single plan.
 | Composes with personal context | `personal-context-and-engagement-intelligence-design.md` re-ranks within these options, never widening access |
 
 ## Implementation Roadmap
-- **Phase 0 — Schema & data:** ✅ **Done.** Added `Contact.sector` (+ backfilled all 23 seed contacts)
-  and the `regions.json` gazetteer. (The event-window `days` → stop-derived duration fix is deferred to
-  Phase 3; T3/T4 approved messages already exist in seed.)
+- **Phase 0 — Schema & data:** ✅ **Done.** Added `Contact.sector` (backfilled on every seed contact)
+  and the `regions.json` gazetteer. (The event-window `days` → stop-derived duration fix was deferred
+  to Phase 3.)
 - **Phase 1 — Geo anchor + survey:** ✅ **Done.** `resolveArea`, `anchorFromArea`, `topicsInArea`, and
   the `survey_area` tool. (Extending `suggest_candidates` to accept an `area` is deferred to Phase 3.)
 - **Phase 2 — Leader selection:** ✅ **Done.** `suggestLeaders` + the `suggest_leaders` tool (returns a
