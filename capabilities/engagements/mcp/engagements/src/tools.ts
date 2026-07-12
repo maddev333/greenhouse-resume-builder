@@ -22,6 +22,8 @@ import {
   resolveArea,
   topicsInArea,
   suggestLeaders,
+  planOptions,
+  estimateDuration,
   haversineKm,
   planRoute,
   tripRoi,
@@ -35,6 +37,8 @@ import {
   type EngagementEvent,
   type TopicInArea,
   type LeaderOption,
+  type DurationOption,
+  type ExtensionOption,
   type Conflict,
   type RouteResult,
   type RouteStop,
@@ -137,6 +141,46 @@ function leaderOptionView(o: LeaderOption) {
       levelFit: fixed(o.factors.levelFit, 2),
     },
     notes: o.notes,
+  };
+}
+
+function conflictView(k: Conflict) {
+  return { type: k.type, severity: k.severity, message: k.message, ...(k.recommendation ? { recommendation: k.recommendation } : {}) };
+}
+
+function durationOptionView(d: DurationOption) {
+  return {
+    tier: d.tier,
+    days: d.days,
+    duration: {
+      onSiteDays: d.duration.onSiteDays,
+      offSiteStops: d.duration.offSiteStops,
+      travelMins: round(d.duration.travelMins),
+      dwellMins: d.duration.dwellMins,
+    },
+    stops: d.stops.map((c) => ({ contactId: c.contactId, name: c.name, city: c.location.city, placement: c.placement, score: fixed(c.score) })),
+    roiScore: fixed(d.roi.roiScore),
+    overBudget: d.overBudget,
+    conflicts: d.conflicts.map(conflictView),
+  };
+}
+
+function extensionOptionView(e: ExtensionOption) {
+  return {
+    contactId: e.contactId,
+    name: e.name,
+    sector: e.sector,
+    topicId: e.topicId,
+    topicName: e.topicName,
+    placement: e.placement,
+    distanceKm: round(e.distanceKm),
+    extraDays: e.extraDays,
+    totalDays: e.totalDays,
+    marginalRoi: fixed(e.marginalRoi),
+    overBudget: e.overBudget,
+    talkingPoints: e.talkingPoints,
+    talkingPointsSource: e.talkingPointsSource,
+    conflicts: e.conflicts.map(conflictView),
   };
 }
 
@@ -479,7 +523,96 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
   );
 
-  // 5) suggest_candidates — the "you're already going there" nudge
+  // 5) plan_options — area-first CAPSTONE: survey → leader → duration → extensions, in one call
+  server.registerTool(
+    'plan_options',
+    {
+      title: 'Plan options for an area (survey → leader → duration → extensions)',
+      description:
+        'Area-first, OPTIONED planning in one call: anchor on a place + a date window and get (1) the ' +
+        'topic survey, (2) ranked leader options (top pick chosen by default, alternatives kept), (3) ' +
+        'tiered duration options (core vs extended, fully costed), and (4) extension options — each ' +
+        "extra day's newly unlocked stop with its sector, topic, marginal ROI, and the APPROVED talking " +
+        'points (or a coordinate-with-owner fallback). Advisory only; every list is ranked and the human ' +
+        "decides. Runs over the caller's authorized records (same server-side trim + $filter reporting).",
+      inputSchema: {
+        regionId: z.string().optional().describe('Known region id (e.g. "R-NCR"). Highest precedence.'),
+        region: z.string().optional().describe('Region name or alias (e.g. "NCR", "Bay Area") — case-insensitive.'),
+        city: z.string().optional().describe('City to anchor on when no region matches.'),
+        state: z.string().optional().describe('State to disambiguate the city.'),
+        radiusKm: z.number().optional().describe('Override the in-area radius (km).'),
+        window: z
+          .object({ start: z.string(), end: z.string() })
+          .describe('Planning window (ISO YYYY-MM-DD) for availability + duration.'),
+        leaderId: z.string().optional().describe('Force a specific leader; defaults to the top-ranked option.'),
+        topicIds: z.array(z.string()).optional().describe("Target topics; defaults to the area's in-scope topics."),
+        requireTopicMatch: z.boolean().optional().describe('Drop candidate stops off the target topics (default false — a broad menu).'),
+      },
+    },
+    async ({ regionId, region, city, state, radiusKm, window, leaderId, topicIds, requireTopicMatch }): Promise<CallToolResult> => {
+      const { ctx, label } = getContext();
+      const rm = getReadModel();
+      const contacts = await rm.searchContacts({ ctx });
+      if (isRejected(contacts.filter)) {
+        const structuredContent = { caller: label, rejected: true, today: rm.today, area: null, areaSurvey: [], leaderOptions: [], durationOptions: [], extensionOptions: [], redactedCount: 0, filter: contacts.filter };
+        return { content: [{ type: 'text', text: 'Access rejected — no verified tenant claim.' }], structuredContent };
+      }
+      const events = await rm.searchEvents({ ctx });
+      const knownPoints = [...contacts.items.map((c) => c.location), ...events.items.map((e) => e.location)];
+      const area = resolveArea({ regionId, region, city, state, radiusKm }, rm.regions, knownPoints);
+      if (!area) {
+        const known = rm.regions.map((r) => `${r.id} (${r.name})`).join(', ');
+        return errorResult(`Could not resolve an area from the given input. Try a known region: ${known}; or a city/state present in your contacts.`);
+      }
+      const plan = planOptions({
+        area,
+        window,
+        contacts: contacts.items,
+        events: events.items,
+        leaders: rm.leaders,
+        topics: rm.topics,
+        messages: rm.messages,
+        topicIds,
+        leaderId,
+        requireTopicMatch,
+      });
+      const structuredContent = {
+        caller: label,
+        rejected: false,
+        today: rm.today,
+        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, radiusKm: area.radiusKm, resolvedVia: area.resolvedVia },
+        window,
+        topicIds: plan.topicIds,
+        areaSurvey: plan.areaSurvey.map(topicInAreaView),
+        chosenLeaderId: plan.chosenLeaderId,
+        leaderOptions: plan.leaderOptions.map(leaderOptionView),
+        onSiteDays: plan.onSiteDays,
+        absorbedEventIds: plan.absorbedEventIds,
+        durationOptions: plan.durationOptions.map(durationOptionView),
+        extensionOptions: plan.extensionOptions.map(extensionOptionView),
+        redactedCount: contacts.redactedCount,
+        filter: contacts.filter,
+      };
+      const chosen = plan.leaderOptions.find((o) => o.leaderId === plan.chosenLeaderId);
+      const header =
+        `${area.name} (${area.radiusKm} km) over ${window.start}→${window.end}: ${plan.areaSurvey.length} topic(s); ` +
+        `recommend ${chosen ? `${chosen.leaderId} ${chosen.name}` : '(no leader)'}; ` +
+        `${plan.durationOptions.length} duration option(s); ${plan.extensionOptions.length} extension(s).`;
+      const durLines = plan.durationOptions.map(
+        (d) => `  • ${d.tier}: ${d.days} day(s), ${d.stops.length} stop(s), ROI ${fixed(d.roi.roiScore)}${d.overBudget ? ' (OVER BUDGET)' : ''}`,
+      );
+      const extLines = plan.extensionOptions.slice(0, 5).map((e) => {
+        const pts = e.talkingPoints.slice(0, 3).map((p) => `“${p}”`).join('; ');
+        return `  • +${e.extraDays}d → ${e.contactId} ${e.name}${e.sector ? ` (${e.sector})` : ''} on ${e.topicId ?? '—'}, mROI ${fixed(e.marginalRoi)} · ${e.talkingPointsSource}: ${pts}`;
+      });
+      return {
+        content: [{ type: 'text', text: [header, 'duration:', ...durLines, 'extensions:', ...extLines, `filter: ${contacts.filter}`].join('\n') }],
+        structuredContent,
+      };
+    },
+  );
+
+  // 6) suggest_candidates — the "you're already going there" nudge
   server.registerTool(
     'suggest_candidates',
     {
@@ -532,7 +665,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
   );
 
-  // 6) build_itinerary — route + ROI + conflicts for the accepted picks, rendered on ui://trip-map (M3)
+  // 7) build_itinerary — route + ROI + conflicts for the accepted picks, rendered on ui://trip-map (M3)
   registerAppTool(
     server,
     'build_itinerary',
@@ -569,7 +702,11 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
 
       const stops: RouteStop[] = accepted.map((c) => ({ id: c.contactId, location: c.location, kind: c.placement }));
       const route = planRoute(r.event.location, stops);
-      const days = daysBetween(r.event.start, r.event.end) + 1;
+      // Stop-derived duration: on-site/conference days + off-site travel + per-stop dwell, bucketed to
+      // whole days (replaces the old, wrong days = event-window span, which ignored the off-site legs).
+      const onSiteDays = daysBetween(r.event.start, r.event.end) + 1;
+      const duration = estimateDuration(route, onSiteDays);
+      const days = duration.days;
       const roi = tripRoi(accepted.map((c) => c.score), route.legs, days, r.leader.daysAwayBudget);
 
       const conflicts: Conflict[] = [
@@ -590,6 +727,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         accepted: accepted.map(candidateView),
         notMatched,
         route: routeView(route),
+        duration: { days, onSiteDays: duration.onSiteDays, offSiteStops: duration.offSiteStops, travelMins: round(duration.travelMins), dwellMins: duration.dwellMins },
         roi,
         conflicts,
         tripMap,

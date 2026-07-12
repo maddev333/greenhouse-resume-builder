@@ -21,6 +21,7 @@ import {
   type Contact,
   type EngagementEvent,
   type Leader,
+  type Message,
   type Region,
   type Topic,
   type Labeled,
@@ -38,6 +39,8 @@ export interface ReadModel {
   leaders: Labeled<Leader>[];
   /** Topic catalog (labeled, but topics are enterprise-visible reference data). */
   topics: Labeled<Topic>[];
+  /** Approved talking points per topic (enterprise reference data) — powers extension options. */
+  messages: Labeled<Message>[];
   /** Geo gazetteer for area-first anchoring (public reference data). */
   regions: Region[];
   searchContacts(q: ContactQuery): Promise<TrimmedResult<Labeled<Contact>>>;
@@ -62,6 +65,7 @@ export function getReadModel(): ReadModel {
       today: labeled.today,
       leaders: labeled.leaders,
       topics: labeled.topics,
+      messages: labeled.messages,
       regions: labeled.regions,
       searchContacts: (q) => searchEngagementContacts(q),
       searchEvents: (q) => searchEngagementEvents(q),
@@ -74,6 +78,7 @@ export function getReadModel(): ReadModel {
     today: idx.today,
     leaders: idx.labeled.leaders,
     topics: idx.labeled.topics,
+    messages: idx.labeled.messages,
     regions: idx.labeled.regions,
     searchContacts: async (q) => idx.searchContacts(q),
     searchEvents: async (q) => idx.searchEvents(q),

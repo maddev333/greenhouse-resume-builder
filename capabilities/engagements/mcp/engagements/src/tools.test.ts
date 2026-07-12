@@ -32,13 +32,14 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
   return res;
 }
 
-test('tools/list exposes the six engagement tools', async () => {
+test('tools/list exposes the seven engagement tools', async () => {
   const { client, close } = await connect('EA_G8');
   try {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
       'build_itinerary',
+      'plan_options',
       'search_contacts',
       'search_events',
       'suggest_candidates',
@@ -193,6 +194,50 @@ test('suggest_leaders: returns a ranked menu of every leader as an option for th
     for (let i = 1; i < leaders.length; i++) {
       assert.ok(leaders[i - 1].score >= leaders[i].score, 'options are ranked by score');
     }
+  } finally {
+    await close();
+  }
+});
+
+test('plan_options: NCR in AUSA week returns survey + leader + duration + extension menus', async () => {
+  const { client, close } = await connect('EA_G8');
+  try {
+    const res = await call(client, 'plan_options', {
+      region: 'NCR',
+      window: { start: '2025-10-13', end: '2025-10-17' },
+    });
+    const sc = res.structuredContent;
+    assert.equal(sc.rejected, false);
+    assert.equal(sc.area.id, 'R-NCR');
+    // survey + leader options
+    assert.ok(sc.areaSurvey.some((t: { topicId: string }) => t.topicId === 'T1'), 'NCR has a T1 footprint');
+    assert.ok(sc.leaderOptions.length >= 2, 'a ranked leader menu');
+    assert.equal(sc.chosenLeaderId, sc.leaderOptions[0].leaderId, 'top option chosen by default');
+    // event auto-absorption + stop-derived duration
+    assert.ok(sc.absorbedEventIds.includes('E-AUSA'), 'AUSA is pulled in as an in-area anchor');
+    assert.equal(sc.durationOptions[0].tier, 'core');
+    assert.ok(sc.durationOptions[0].days >= 4, 'on-site conference days recovered');
+    // extensions always carry talking points
+    assert.ok(Array.isArray(sc.extensionOptions));
+    for (const e of sc.extensionOptions) {
+      assert.ok(Array.isArray(e.talkingPoints) && e.talkingPoints.length >= 1);
+      assert.ok(e.talkingPointsSource === 'approved-message' || e.talkingPointsSource === 'coordinate');
+    }
+  } finally {
+    await close();
+  }
+});
+
+test('plan_options: NO_TENANT is rejected fail-closed (no plan leaks)', async () => {
+  const { client, close } = await connect('NO_TENANT');
+  try {
+    const res = await call(client, 'plan_options', {
+      region: 'NCR',
+      window: { start: '2025-10-13', end: '2025-10-17' },
+    });
+    assert.equal(res.structuredContent.rejected, true);
+    assert.equal(res.structuredContent.durationOptions.length, 0);
+    assert.equal(res.structuredContent.extensionOptions.length, 0);
   } finally {
     await close();
   }

@@ -1,8 +1,8 @@
 # Area-First, Optioned Engagement Planning — Design
 
 ## Status
-Phases 0–2 implemented (schema/data, geo anchor + survey, leader selection). Phases 3–5 proposed.
-See "Implementation Roadmap" for the shipped vs. pending breakdown.
+Phases 0–3 implemented (schema/data, geo anchor + survey, leader selection, duration + extension
+options). Phases 4–5 proposed. See "Implementation Roadmap" for the shipped vs. pending breakdown.
 
 ## Purpose
 Today the planner runs **one** direction: given a **leader** and an **event anchor**, it ranks *who*
@@ -240,9 +240,11 @@ options rather than accepting a single plan.
   the `survey_area` tool. (Extending `suggest_candidates` to accept an `area` is deferred to Phase 3.)
 - **Phase 2 — Leader selection:** ✅ **Done.** `suggestLeaders` + the `suggest_leaders` tool (returns a
   ranked, always-optioned menu). (Making `leaderId` optional on `suggest_candidates` is deferred to Phase 3.)
-- **Phase 3 — Duration & extension options:** `estimateDuration`, tiered `durationOptions`,
-  `extensionOptions`, and the unified `PlanOptions` result (e.g. a `plan_options` tool). Also folds in the
-  deferred `days`-duration fix and the `area`/optional-`leaderId` inputs on `suggest_candidates`.
+- **Phase 3 — Duration & extension options:** ✅ **Done.** `estimateDuration`, tiered `durationOptions`,
+  `extensionOptions` (each with approved talking points or a coordinate-with-owner fallback), and the
+  unified `PlanOptions` result exposed as the `plan_options` tool. Also folded in the deferred
+  `build_itinerary` `days`-duration fix (now stop-derived). (The `area`/optional-`leaderId` inputs on
+  `suggest_candidates` were superseded by the capstone `plan_options` tool.)
 - **Phase 4 — Agent & UI:** teach the orchestrator to surface the new menus (area survey → leader
   options → duration → extensions) and render talking points inline; map still renders the chosen
   option.

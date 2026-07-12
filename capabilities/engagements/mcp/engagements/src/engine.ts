@@ -35,6 +35,12 @@ export const {
   resolveArea,
   topicsInArea,
   suggestLeaders,
+  estimateDuration,
+  durationOptions,
+  extensionOptions,
+  gatherAreaCandidates,
+  talkingPointsFor,
+  planOptions,
   haversineKm,
   demoToday,
   loadConfig,
@@ -81,6 +87,17 @@ export type {
 export type { AreaInput, ResolvedArea } from './planner/area.js';
 export type { TopicInArea, TopicsInAreaInput } from './planner/topics.js';
 export type { LeaderOption, LeaderFactors, SuggestLeadersInput } from './planner/leaders.js';
+export type {
+  DurationEstimate,
+  DurationOption,
+  DurationOptionsInput,
+  ExtensionOption,
+  ExtensionOptionsInput,
+  AreaCandidates,
+  AreaCandidatesInput,
+  PlanOptionsInput,
+  PlanOptionsResult,
+} from './planner/plan.js';
 export type { Dataset } from './planner/seed-loader.js';
 export type { PlannerWeights } from './planner/weights.js';
 
@@ -109,6 +126,7 @@ export type {
   Contact,
   EngagementEvent,
   Topic,
+  Message,
   Region,
   Preferences,
   GeoPoint,
