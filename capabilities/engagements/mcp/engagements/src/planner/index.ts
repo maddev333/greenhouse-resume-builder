@@ -16,5 +16,6 @@ export * from './route';
 export * from './conflicts';
 export * from './roi';
 export * from './plan';
+export * from './radius';
 export * from './seed-loader';
 export { SEED_DIR } from './paths';

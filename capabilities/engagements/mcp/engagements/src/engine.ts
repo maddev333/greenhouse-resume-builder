@@ -41,6 +41,8 @@ export const {
   gatherAreaCandidates,
   talkingPointsFor,
   planOptions,
+  radiusPlan,
+  DEFAULT_MEETINGS_PER_DAY,
   haversineKm,
   demoToday,
   loadConfig,
@@ -98,6 +100,7 @@ export type {
   PlanOptionsInput,
   PlanOptionsResult,
 } from './planner/plan.js';
+export type { RadiusPlanInput, RadiusPlanResult } from './planner/radius.js';
 export type { Dataset } from './planner/seed-loader.js';
 export type { PlannerWeights } from './planner/weights.js';
 

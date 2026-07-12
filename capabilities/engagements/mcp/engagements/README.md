@@ -16,7 +16,8 @@ scope); **M4** adds a real Azure AI Search backend, selectable with `RETRIEVAL_B
 | `suggest_leaders` | Given an area + topics, rank **which senior leader should go** (topic fit, availability in the window, seniority). Always a ranked menu — advisory, not an auto-pick. |
 | `suggest_candidates` | **The nudge** — rank who a leader should meet at an anchor event (on-site + nearby stale re-engagements), authorized-only. Returns a ranked menu. |
 | `plan_options` | **The capstone** — anchor on an area + window and get one optioned plan: topic survey, ranked leader options, tiered **duration options** (core vs. extended, fully costed), and **extension options** ("+N days unlocks meeting THIS entity on THIS topic — here are the approved talking points"). |
-| `build_itinerary` | Order accepted stops, compute trip-ROI, and surface advisory conflicts (fit / budget / opportunity-cost). **App tool** — its result carries a `tripMap` payload rendered on `ui://trip-map`. |
+| `plan_radius` | **Fixed-radius planner** — the "a leader must visit a specific company (or coordinate/city) for a fixed N days, **no anchor event**" entry. Anchors by company name / contact id / raw `lat`+`lng` / city, fills `days × meetingsPerDay` slots with the anchor (met on-site) + the highest-value **authorized contacts inside the radius**, and offers the overflow as fixed-days **extension options** ("+1 day unlocks one more meeting…"). Purely geographic — it does **not** absorb nearby events' rosters. |
+| `build_itinerary` | Order accepted stops, compute trip-ROI, and surface advisory conflicts (fit / budget / opportunity-cost). **Two modes:** event-anchored (`eventId`/`eventQuery`) or **event-less radius** (`company`/`anchorContactId`/`lat`+`lng`/`city` + `days`). **App tool** — its result carries a `tripMap` payload rendered on `ui://trip-map`. |
 
 ## Caller identity (security trim)
 

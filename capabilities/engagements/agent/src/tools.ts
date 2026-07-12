@@ -60,21 +60,74 @@ export const AGENT_TOOLS: AgentTool[] = [
     },
   },
   {
+    name: 'plan_radius',
+    description:
+      'Fixed-duration, event-OPTIONAL planning for "a leader must visit a SPECIFIC company (or place) for N days" ' +
+      'with NO anchor event. Anchor by company (anchorContactId or a company name), a raw lat/lng, or a city/region; ' +
+      'set a radius + the trip length. Fills days × meetingsPerDay slots with the mandatory anchor (met on-site) + ' +
+      'the best authorized contacts within the radius, and returns "+N day unlocks …" extension options. Then call ' +
+      'build_itinerary with the SAME anchor to render the map.',
+    parameters: {
+      type: 'object',
+      properties: {
+        anchorContactId: { type: 'string', description: 'Must-meet company/contact id (e.g. "C3"); becomes stop #1, met on-site.' },
+        company: { type: 'string', description: 'Company/contact name ("Meridian Robotics") resolved to the anchor when no id is given.' },
+        lat: { type: 'number', description: 'Raw anchor latitude (with lng) for a coordinate anchor.' },
+        lng: { type: 'number', description: 'Raw anchor longitude (with lat).' },
+        city: { type: 'string', description: 'City centroid anchor.' },
+        state: { type: 'string', description: 'State for the city anchor.' },
+        region: { type: 'string', description: 'Free-text region/alias ("NCR").' },
+        regionId: { type: 'string', description: 'Known region id (e.g. "R-NCR").' },
+        radiusKm: { type: 'number', description: 'Search radius around the anchor (km).' },
+        days: { type: 'number', description: 'FIXED trip length in days the leader is on the ground.' },
+        meetingsPerDay: { type: 'number', description: 'Meetings/day capacity (default 2).' },
+        window: {
+          type: 'object',
+          properties: { start: { type: 'string' }, end: { type: 'string' } },
+          description: 'Planning window (ISO YYYY-MM-DD) for availability + budget checks.',
+        },
+        leaderId: { type: 'string', description: 'Force a leader; defaults to the top-ranked option for the area.' },
+        topicIds: { type: 'array', items: { type: 'string' }, description: 'Target topics; defaults to the area topics.' },
+        requireTopicMatch: { type: 'boolean', description: 'Drop stops off the target topics (default false).' },
+      },
+      required: ['days'],
+    },
+  },
+  {
     name: 'build_itinerary',
     description:
-      'Given a leader, an anchor event, and the contact ids accepted from suggest_candidates, order the stops, compute trip-ROI, ' +
-      'and surface advisory conflicts. Renders on the ui://trip-map app. Only accepts ids from the caller\'s authorized candidate set.',
+      'Given a leader and EITHER an anchor event (acceptedContactIds from suggest_candidates) OR a fixed-radius anchor ' +
+      '(a company/coordinate/city + a day count, from plan_radius), order the stops, compute trip-ROI, and surface ' +
+      'advisory conflicts. Renders on the ui://trip-map app. For a radius trip, pass the SAME anchor you gave plan_radius ' +
+      "(anchorContactId/company/lat+lng/city) and the days; omit acceptedContactIds to accept the auto-filled plan. " +
+      "Only accepts ids from the caller's authorized set.",
     parameters: {
       type: 'object',
       properties: {
         leaderId: { type: 'string', description: 'Leader whose time is being allocated (e.g. "L1").' },
-        eventId: { type: 'string', description: 'Anchor event id (e.g. "E-AUSA").' },
-        eventQuery: { type: 'string', description: 'Free-text anchor ("AUSA") resolved to one authorized event.' },
-        acceptedContactIds: { type: 'array', items: { type: 'string' }, description: 'Contact ids picked from the suggest_candidates menu.' },
-        topicIds: { type: 'array', items: { type: 'string' }, description: 'Same topic focus used for suggest_candidates.' },
-        requireTopicMatch: { type: 'boolean', description: 'Match suggest_candidates (default true).' },
+        eventId: { type: 'string', description: 'Event mode: anchor event id (e.g. "E-AUSA").' },
+        eventQuery: { type: 'string', description: 'Event mode: free-text anchor ("AUSA") resolved to one authorized event.' },
+        anchorContactId: { type: 'string', description: 'Radius mode: must-meet company/contact id (stop #1, on-site).' },
+        company: { type: 'string', description: 'Radius mode: company/contact name for the anchor.' },
+        lat: { type: 'number', description: 'Radius mode: anchor latitude (with lng).' },
+        lng: { type: 'number', description: 'Radius mode: anchor longitude (with lat).' },
+        city: { type: 'string', description: 'Radius mode: city centroid anchor.' },
+        state: { type: 'string', description: 'Radius mode: state for the city anchor.' },
+        region: { type: 'string', description: 'Radius mode: free-text region/alias.' },
+        regionId: { type: 'string', description: 'Radius mode: known region id.' },
+        radiusKm: { type: 'number', description: 'Radius mode: search radius (km).' },
+        days: { type: 'number', description: 'Radius mode: FIXED trip length in days.' },
+        meetingsPerDay: { type: 'number', description: 'Radius mode: meetings/day capacity.' },
+        window: {
+          type: 'object',
+          properties: { start: { type: 'string' }, end: { type: 'string' } },
+          description: 'Radius mode planning window (ISO).',
+        },
+        acceptedContactIds: { type: 'array', items: { type: 'string' }, description: 'Chosen stop ids (event mode: from suggest_candidates; radius mode: optional — omit to accept the auto-fill).' },
+        topicIds: { type: 'array', items: { type: 'string' }, description: 'Same topic focus used for the plan step.' },
+        requireTopicMatch: { type: 'boolean', description: 'Event mode default true; radius mode default false.' },
       },
-      required: ['leaderId', 'acceptedContactIds'],
+      required: ['leaderId'],
     },
   },
 ];

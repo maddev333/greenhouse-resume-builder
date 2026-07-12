@@ -11,13 +11,19 @@ import type { Anchor } from './types';
 /** Default search radius when neither the request nor a matched region specifies one. */
 export const DEFAULT_AREA_RADIUS_KM = 150;
 
-/** A free-form area request — supply a regionId, a region name/alias, and/or a city (+state). */
+/** A free-form area request — supply a regionId, a region name/alias, a city (+state), or raw coords. */
 export interface AreaInput {
   regionId?: string;
   /** A region name or alias, e.g. "NCR" or "Bay Area" (case-insensitive). */
   region?: string;
   city?: string;
   state?: string;
+  /** Raw anchor latitude — pairs with `lng` for a point-anchored (event-less) trip. */
+  lat?: number;
+  /** Raw anchor longitude — pairs with `lat`. */
+  lng?: number;
+  /** Human label for a raw-coordinate anchor (e.g. a company HQ name); falls back to "lat, lng". */
+  label?: string;
   /** Override the resolved radius (km). */
   radiusKm?: number;
 }
@@ -29,7 +35,7 @@ export interface ResolvedArea {
   centroid: GeoPoint;
   radiusKm: number;
   /** How the area was resolved (for transparent "show-your-math" output). */
-  resolvedVia: 'regionId' | 'regionName' | 'city';
+  resolvedVia: 'regionId' | 'regionName' | 'city' | 'coords';
 }
 
 const norm = (s: string): string => s.trim().toLowerCase();
@@ -62,6 +68,19 @@ export function resolveArea(
   regions: Region[],
   knownPoints: GeoPoint[] = [],
 ): ResolvedArea | undefined {
+  // Highest precedence: an explicit lat/lng anchor (a company HQ, an address the EA geocoded, etc.).
+  // This is the event-less "go meet a specific place" entry point — no gazetteer lookup needed.
+  if (typeof input.lat === 'number' && typeof input.lng === 'number') {
+    const label = input.label?.trim() || `${input.lat.toFixed(4)}, ${input.lng.toFixed(4)}`;
+    return {
+      id: `coords:${input.lat.toFixed(4)},${input.lng.toFixed(4)}`,
+      name: label,
+      centroid: { city: input.city ?? label, state: input.state, lat: input.lat, lng: input.lng },
+      radiusKm: input.radiusKm ?? DEFAULT_AREA_RADIUS_KM,
+      resolvedVia: 'coords',
+    };
+  }
+
   const matched = matchRegion(input, regions);
   if (matched) {
     return {

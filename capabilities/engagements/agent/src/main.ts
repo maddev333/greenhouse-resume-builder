@@ -7,7 +7,7 @@
  * running (default http://localhost:3010/mcp; override with ENGAGEMENTS_MCP_URL).
  */
 import './load-env.js';
-import { buildAreaItinerary, hotTopics, planAreaOptions, planTrip } from './orchestrator.js';
+import { buildAreaItinerary, buildRadiusItinerary, hotTopics, planAreaOptions, planRadiusOptions, planTrip } from './orchestrator.js';
 
 interface CliArgs {
   question?: string;
@@ -16,8 +16,16 @@ interface CliArgs {
   top?: number;
   options?: boolean;
   topics?: boolean;
+  radius?: boolean;
   region?: string;
   window?: string;
+  days?: number;
+  company?: string;
+  anchor?: string;
+  city?: string;
+  radiusKm?: number;
+  lat?: number;
+  lng?: number;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -30,8 +38,16 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === '--top') out.top = Number(argv[++i]);
     else if (a === '--options') out.options = true;
     else if (a === '--topics') out.topics = true;
+    else if (a === '--radius') out.radius = true;
     else if (a === '--region') out.region = argv[++i];
     else if (a === '--window') out.window = argv[++i];
+    else if (a === '--days') out.days = Number(argv[++i]);
+    else if (a === '--company') out.company = argv[++i];
+    else if (a === '--anchor') out.anchor = argv[++i];
+    else if (a === '--city') out.city = argv[++i];
+    else if (a === '--radius-km' || a === '--km') out.radiusKm = Number(argv[++i]);
+    else if (a === '--lat') out.lat = Number(argv[++i]);
+    else if (a === '--lng') out.lng = Number(argv[++i]);
     else rest.push(a);
   }
   out.question = rest.join(' ').trim() || undefined;
@@ -71,6 +87,42 @@ async function options(argv: string[]): Promise<void> {
   if (process.env.ENGAGEMENTS_AGENT_JSON) console.log(`\n${JSON.stringify(result, null, 2)}`);
 }
 
+/** Fixed-radius planner (STAGE 1) from the CLI: fill a fixed-day trip around a company/coordinate/city. */
+async function radius(argv: string[]): Promise<void> {
+  const args = parseArgs(argv);
+  const days = args.days ?? 3;
+  const result = await planRadiusOptions({
+    question: args.question,
+    persona: args.persona,
+    anchorContactId: args.anchor,
+    company: args.company,
+    lat: args.lat,
+    lng: args.lng,
+    city: args.city,
+    region: args.region,
+    radiusKm: args.radiusKm,
+    days,
+    leaderId: args.leader,
+    window: parseWindow(args.window),
+  });
+
+  console.log(`\n[persona ${result.persona}] radius${result.rejected ? '  ACCESS REJECTED' : ''}`);
+  if (result.error) console.error(`\n! ${result.error}`);
+  if (result.answer) console.log(`\n${result.answer}`);
+  for (const q of result.questions) {
+    console.log(`\n${q.prompt}`);
+    for (const c of q.choices) {
+      console.log(`  ${c.selected ? '●' : '○'} ${c.label}${c.detail ? `  — ${c.detail}` : ''}`);
+    }
+  }
+  console.log(
+    `\n— anchor ${result.anchor?.name ?? '(coord/area)'}; area ${result.area?.name ?? '?'} (${result.area?.radiusKm ?? '?'} km); ` +
+      `${result.days ?? '?'} day(s), capacity ${result.capacity ?? '?'}; stops ${result.stops.length}; redacted ${result.redactedCount ?? 0}`,
+  );
+  console.log(`  to build: POST /build-radius { leaderId, days, anchorContactId|company|lat+lng|city, acceptedContactIds?, extensionContactIds? }`);
+  if (process.env.ENGAGEMENTS_AGENT_JSON) console.log(`\n${JSON.stringify(result, null, 2)}`);
+}
+
 /** Hot topics from the CLI: rank the seed taxonomy by the persona's live footprint. */
 async function topics(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
@@ -89,6 +141,8 @@ async function ask(argv: string[]): Promise<void> {
   if (!args.question) {
     console.error('usage: npm run ask -- "<question>" [--persona EA_G8] [--leader L1] [--top 3]');
     console.error('   or: npm run ask -- --options "<ask>" [--region NCR] [--window 2025-10-06..2025-10-31] [--persona EA_G8]');
+    console.error('   or: npm run ask -- --radius --company "Meridian Robotics" --days 3 [--radius-km 60] [--lat --lng | --city] [--persona EA_G8]');
+    console.error('   or: npm run ask -- --topics [--persona EA_G8]');
     process.exit(1);
   }
   const result = await planTrip({ question: args.question, persona: args.persona, leaderId: args.leader, topN: args.top });
@@ -165,6 +219,43 @@ async function serve(): Promise<void> {
     }
   });
 
+  // Fixed-radius planner — STAGE 1: fill a fixed-day trip around a company/coordinate/city and return
+  // the who/extend menus. Event-OPTIONAL: no anchor event is required or invented.
+  app.post('/plan-radius', async (req, res) => {
+    const { question, persona, anchorContactId, company, lat, lng, city, state, region, regionId, radiusKm, days, meetingsPerDay, window, leaderId, topicIds, requireTopicMatch } = req.body ?? {};
+    if (typeof days !== 'number' || !(days > 0)) {
+      res.status(400).json({ ok: false, error: 'body.days (positive number) is required' });
+      return;
+    }
+    try {
+      res.json(
+        await planRadiusOptions({ question, persona, anchorContactId, company, lat, lng, city, state, region, regionId, radiusKm, days, meetingsPerDay, window, leaderId, topicIds, requireTopicMatch }),
+      );
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e?.message || String(e) });
+    }
+  });
+
+  // Fixed-radius planner — STAGE 2: build the event-less itinerary + ui://trip-map from the picks.
+  app.post('/build-radius', async (req, res) => {
+    const { persona, anchorContactId, company, lat, lng, city, state, region, regionId, radiusKm, days, meetingsPerDay, window, leaderId, acceptedContactIds, extensionContactIds, topicIds } = req.body ?? {};
+    if (!leaderId || typeof leaderId !== 'string') {
+      res.status(400).json({ ok: false, error: 'body.leaderId (string) is required' });
+      return;
+    }
+    if (typeof days !== 'number' || !(days > 0)) {
+      res.status(400).json({ ok: false, error: 'body.days (positive number) is required' });
+      return;
+    }
+    try {
+      res.json(
+        await buildRadiusItinerary({ persona, anchorContactId, company, lat, lng, city, state, region, regionId, radiusKm, days, meetingsPerDay, window, leaderId, acceptedContactIds, extensionContactIds, topicIds }),
+      );
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e?.message || String(e) });
+    }
+  });
+
   const port = Number(process.env.ENGAGEMENTS_AGENT_PORT || 3020);
   app.listen(port, () => {
     console.log(`Engagements orchestrator on http://localhost:${port}`);
@@ -172,6 +263,8 @@ async function serve(): Promise<void> {
     console.log(`  GET  /topics        ?persona=EA_G8                                       — hot topics (topic-first entry)`);
     console.log(`  POST /plan-options  { question?|region?|city?, persona?, window? }       — interactive: survey + option menus`);
     console.log(`  POST /build         { leaderId, durationTier?, extensionContactIds?, region? } — build itinerary + trip map`);
+    console.log(`  POST /plan-radius   { days, company?|anchorContactId?|lat+lng?|city?, radiusKm?, persona? } — fixed-radius: fill + menus`);
+    console.log(`  POST /build-radius  { leaderId, days, company?|anchorContactId?|lat+lng?|city?, acceptedContactIds? } — event-less itinerary + map`);
     console.log(`  -> engagements MCP: ${process.env.ENGAGEMENTS_MCP_URL || 'http://localhost:3010/mcp'}`);
     console.log(`  -> model: ${process.env.AZURE_OPENAI_DEPLOYMENT ? `Azure OpenAI (${process.env.AZURE_OPENAI_DEPLOYMENT})` : 'not configured — deterministic fallback'}`);
   });
@@ -182,6 +275,7 @@ function dispatch(): Promise<void> {
   if (argv.includes('--serve')) return serve();
   const rest = argv.filter((a) => a !== '--serve');
   if (rest.includes('--topics')) return topics(rest);
+  if (rest.includes('--radius')) return radius(rest);
   if (rest.includes('--options')) return options(rest);
   return ask(rest);
 }

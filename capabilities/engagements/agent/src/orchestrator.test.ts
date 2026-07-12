@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { loadLeaders, loadRegions, loadTopics, defaultWindow, regionChoices, resolveAreaInput, resolveDefaultLeaderId, rosterForPrompt, topicIdsFromText, topicsForPrompt } from './catalog.js';
 import { AGENT_TOOLS } from './tools.js';
-import { anchorGuess, areaClarifyQuestion, buildOptionQuestions, buildSystemPrompt, hotTopicQuestion, rankHotTopics, selectedContactIds } from './orchestrator.js';
+import { anchorGuess, areaClarifyQuestion, buildOptionQuestions, buildRadiusQuestions, buildSystemPrompt, hotTopicQuestion, parseRadiusAsk, rankHotTopics, selectedContactIds } from './orchestrator.js';
 
 test('topicIdsFromText maps UAS/drone to T3', () => {
   assert.deepEqual(topicIdsFromText('who should I meet on UAS/drone?'), ['T3']);
@@ -37,15 +37,18 @@ test('resolveDefaultLeaderId resolves to a real leader', () => {
   assert.ok(loadLeaders().some((l) => l.id === resolveDefaultLeaderId()));
 });
 
-test('AGENT_TOOLS expose the 4 engagements tools with required fields', () => {
+test('AGENT_TOOLS expose the 5 engagements tools with required fields', () => {
   assert.deepEqual(
     AGENT_TOOLS.map((t) => t.name),
-    ['search_contacts', 'search_events', 'suggest_candidates', 'build_itinerary'],
+    ['search_contacts', 'search_events', 'suggest_candidates', 'plan_radius', 'build_itinerary'],
   );
   const suggest = AGENT_TOOLS.find((t) => t.name === 'suggest_candidates')!;
   assert.deepEqual((suggest.parameters as any).required, ['leaderId']);
+  const radius = AGENT_TOOLS.find((t) => t.name === 'plan_radius')!;
+  assert.deepEqual((radius.parameters as any).required, ['days']);
   const build = AGENT_TOOLS.find((t) => t.name === 'build_itinerary')!;
-  assert.deepEqual((build.parameters as any).required, ['leaderId', 'acceptedContactIds']);
+  // build_itinerary now serves BOTH event and radius modes, so only the leader is universally required.
+  assert.deepEqual((build.parameters as any).required, ['leaderId']);
 });
 
 test('anchorGuess extracts the AUSA acronym from the canonical demo question', () => {
@@ -54,6 +57,66 @@ test('anchorGuess extracts the AUSA acronym from the canonical demo question', (
 
 test('anchorGuess falls back to the phrase after a preposition', () => {
   assert.equal(anchorGuess('planning a visit to Fort Bragg next week'), 'Fort Bragg');
+});
+
+// ── Fixed-radius planning: parse + menu helpers ─────────────────────────────
+
+test('parseRadiusAsk extracts days + company after meet/visit', () => {
+  assert.deepEqual(parseRadiusAsk('plan 3 days meeting Meridian Robotics'), {
+    days: 3,
+    radiusKm: undefined,
+    company: 'Meridian Robotics',
+    city: undefined,
+  });
+});
+
+test('parseRadiusAsk extracts days + place after a proximity preposition', () => {
+  assert.deepEqual(parseRadiusAsk('2 days around Reston'), {
+    days: 2,
+    radiusKm: undefined,
+    company: undefined,
+    city: 'Reston',
+  });
+});
+
+test('parseRadiusAsk parses an explicit within-X-mi radius (converted to km)', () => {
+  const r = parseRadiusAsk('plan 4 days within 50 mi of Reston');
+  assert.equal(r?.days, 4);
+  assert.equal(r?.radiusKm, 80); // 50 mi → 80 km
+  assert.equal(r?.city, 'Reston');
+});
+
+test('parseRadiusAsk returns null for an event-style ask (no company/place/radius)', () => {
+  // Must NOT hijack the canonical event flow ("AUSA for 3 days").
+  assert.equal(parseRadiusAsk('planning to attend AUSA for 3 days'), null);
+});
+
+test('parseRadiusAsk returns null when there is no day count', () => {
+  assert.equal(parseRadiusAsk('meet Meridian Robotics next month'), null);
+});
+
+test('buildRadiusQuestions surfaces the leader menu with the chosen leader pre-selected', () => {
+  const plan = {
+    chosenLeaderId: 'L1',
+    leaderOptions: [
+      { leaderId: 'L1', name: 'Gen. Vance', role: 'CG', score: 9, distanceKm: 12 },
+      { leaderId: 'L2', name: 'Lt. Gen. Ruiz', role: 'DCG', score: 6 },
+    ],
+    extensionOptions: [
+      { contactId: 'C9', name: 'Acme Labs', sector: 'academia', extraDays: 1, marginalRoi: 4, topicName: 'UAS', talkingPointsSource: 'approved-message' },
+    ],
+  };
+  const qs = buildRadiusQuestions(plan);
+  const leader = qs.find((q) => q.id === 'leader')!;
+  assert.equal(leader.kind, 'single');
+  assert.ok(leader.choices.find((c) => c.value === 'L1')?.selected);
+  const ext = qs.find((q) => q.id === 'extensions')!;
+  assert.equal(ext.kind, 'multi');
+  assert.equal(ext.choices[0].value, 'C9');
+});
+
+test('buildRadiusQuestions returns [] when the plan has no leaders or extensions', () => {
+  assert.deepEqual(buildRadiusQuestions({ leaderOptions: [], extensionOptions: [] }), []);
 });
 
 test('system prompt embeds the roster and the chosen default leader + topN', () => {

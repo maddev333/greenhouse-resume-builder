@@ -34,6 +34,9 @@ question ──▶ orchestrator ──(MCP tools/call, x-demo-persona)──▶ 
 - **Area-first planning:** the `/plan-options` + `/build` seam (see *2c*) anchors on a region,
   surveys the topics active there, and returns leader / duration / extension **options** via the
   capability's `plan_options` tool — deterministic, so this path runs without Azure OpenAI.
+- **Fixed-radius planning:** the `/plan-radius` + `/build-radius` seam (see *2d*) anchors on a
+  **company / coordinate / city** for a **fixed number of days** (no event) and fills the trip by
+  radius via the capability's `plan_radius` + event-less `build_itinerary` — also deterministic.
 - **Topic-first / free-form:** `GET /topics` (see *2b*) ranks the **hottest topics** for the caller
   by live footprint (active contacts + upcoming events, persona-trimmed) so the UI can offer
   *"what's hot in cyber?"* chips. Each ranked topic carries a ready-made natural-language
@@ -115,6 +118,45 @@ after a locative preposition (*"in/near/to <City>"*); if nothing anchors, `/plan
 talking points) come straight from the capability's `plan_options` tool — the security trim is
 still enforced server-side, so `/build` re-authorizes every stop.
 
+**2d. Fixed-radius planning** (a leader must visit a specific company for a fixed number of days,
+**no anchor event**):
+
+When the trip is pinned to a **company / coordinate / city** and a **fixed duration** — *"a senior
+leader has to go meet Meridian Robotics and is on the ground for 3 days"* — the itinerary is filled
+by **radius**: capacity is `days × meetingsPerDay` (default 2/day), seeded with the anchor (met
+on-site) and then the highest-value **authorized contacts inside the radius**; whatever overflows
+becomes fixed-days **extension options** (*"+1 day unlocks one more meeting on THIS topic — here are
+the talking points"*). Unlike area-first planning it is purely geographic and **does not absorb a
+nearby conference's roster**. Two stateless stages, deterministic (works offline):
+
+```bash
+# Stage 1 — anchor + fixed days → filled trip + who/extend menus.
+#   Anchor by any of: company | anchorContactId | lat+lng | city (+ optional radiusKm, default 150).
+curl -s localhost:3020/plan-radius -H 'content-type: application/json' \
+  -d '{"company":"Meridian Robotics","days":3,"persona":"EA_G8"}' | jq
+# → { anchor, area, days, capacity, stops[], leaderOptions[], extensionOptions[], questions[], redactedCount }
+curl -s localhost:3020/plan-radius -H 'content-type: application/json' \
+  -d '{"lat":38.9586,"lng":-77.357,"radiusKm":60,"days":2,"persona":"EA_G8"}' | jq
+
+# Stage 2 — the EA's picks → event-less itinerary + trip map (leaderId + days required)
+curl -s localhost:3020/build-radius -H 'content-type: application/json' \
+  -d '{"leaderId":"L1","company":"Meridian Robotics","days":3,"persona":"EA_G8","extensionContactIds":["C18"]}' | jq
+# → { answer, itinerary, tripMap, redactedCount, rejected }
+```
+
+Or from the CLI — renders the same menus as text:
+
+```bash
+npm run ask --workspace @greenhouse-resume-builder/cap-engagements-agent -- \
+  --radius --company "Meridian Robotics" --days 3 --persona EA_G8
+# anchor by coordinate/city instead: --lat 38.9586 --lng -77.357  |  --city Reston --region NCR
+# tune the reach/capacity:           --radius-km 60  (alias --km)
+```
+
+Free-form `/ask` handles the same intent conversationally — *"plan a 2-day trip meeting Meridian
+Robotics within 60 km"* — the LLM (or the deterministic `parseRadiusAsk` fallback) routes it through
+`plan_radius`/`build_itinerary` and honors the radius, so far-away contacts are excluded.
+
 
 ## The security-trim beat (why persona matters)
 
@@ -137,7 +179,7 @@ the orchestrator:
 | `ENGAGEMENTS_DEFAULT_LEADER` | first leader (`L1`) | leader used when the ask names none |
 | `ENGAGEMENTS_DEMO_PERSONA` | `EA_BASIC` | default caller persona |
 | `ENGAGEMENTS_TOP_N` | `3` | candidates routed into the itinerary |
-| `ENGAGEMENTS_PLAN_WINDOW` | seed `today` → `today`+horizon | override the `/plan-options` trip window (`START..END`, ISO dates) |
+| `ENGAGEMENTS_PLAN_WINDOW` | seed `today` → `today`+horizon | override the `/plan-options` + `/plan-radius` trip window (`START..END`, ISO dates) |
 | `ENGAGEMENTS_PLAN_HORIZON_DAYS` | `25` | default window length when no explicit window is given |
 | `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_DEPLOYMENT` | — | enable the LLM path (else deterministic). Auth via `az login` (DefaultAzureCredential) or `AZURE_OPENAI_API_KEY`. |
 

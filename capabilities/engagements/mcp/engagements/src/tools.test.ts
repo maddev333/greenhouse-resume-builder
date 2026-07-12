@@ -32,7 +32,7 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
   return res;
 }
 
-test('tools/list exposes the seven engagement tools', async () => {
+test('tools/list exposes the eight engagement tools', async () => {
   const { client, close } = await connect('EA_G8');
   try {
     const { tools } = await client.listTools();
@@ -40,6 +40,7 @@ test('tools/list exposes the seven engagement tools', async () => {
     assert.deepEqual(names, [
       'build_itinerary',
       'plan_options',
+      'plan_radius',
       'search_contacts',
       'search_events',
       'suggest_candidates',
@@ -237,6 +238,91 @@ test('plan_options: NO_TENANT is rejected fail-closed (no plan leaks)', async ()
     });
     assert.equal(res.structuredContent.rejected, true);
     assert.equal(res.structuredContent.durationOptions.length, 0);
+    assert.equal(res.structuredContent.extensionOptions.length, 0);
+  } finally {
+    await close();
+  }
+});
+
+test('plan_radius: anchor on a company for a fixed 3 days fills the trip (anchor first) + offers extensions', async () => {
+  const { client, close } = await connect('EA_G8');
+  try {
+    const res = await call(client, 'plan_radius', {
+      company: 'Meridian Robotics',
+      radiusKm: 80,
+      days: 3,
+      window: { start: '2025-10-13', end: '2025-10-15' },
+    });
+    const sc = res.structuredContent;
+    assert.equal(sc.rejected, false);
+    assert.equal(sc.anchor.contactId, 'C3', 'the named company is the anchor');
+    assert.equal(sc.area.resolvedVia, 'coords', 'a company anchor resolves to its HQ coordinate');
+    assert.equal(sc.capacity, 6, '3 days × 2 meetings/day');
+    assert.ok(sc.stops.length >= 1 && sc.stops.length <= sc.capacity, 'fills up to (not beyond) capacity');
+    assert.equal(sc.stops[0].contactId, 'C3', 'the must-meet company is stop #1');
+    assert.equal(sc.stops[0].placement, 'on-site', 'the anchor is met on-site at its HQ');
+    assert.ok(sc.leaderOptions.length >= 1, 'a ranked leader menu is offered');
+    assert.equal(sc.chosenLeaderId, sc.leaderOptions[0].leaderId, 'top option chosen by default');
+    assert.ok(Array.isArray(sc.extensionOptions), 'always offers extension options');
+  } finally {
+    await close();
+  }
+});
+
+test('plan_radius: raw coordinate + radius anchors without a must-meet company', async () => {
+  const { client, close } = await connect('EA_G8');
+  try {
+    const res = await call(client, 'plan_radius', {
+      lat: 38.9586,
+      lng: -77.357,
+      radiusKm: 60,
+      days: 2,
+      window: { start: '2025-10-13', end: '2025-10-14' },
+    });
+    const sc = res.structuredContent;
+    assert.equal(sc.rejected, false);
+    assert.equal(sc.anchor, null, 'a raw coordinate has no mandatory company stop');
+    assert.equal(sc.area.resolvedVia, 'coords');
+    assert.equal(sc.area.radiusKm, 60, "the user's radius bounds the trip");
+    for (const s of sc.stops) assert.ok(s.distanceKm <= 60 + 1, 'every stop is within the requested radius');
+  } finally {
+    await close();
+  }
+});
+
+test('build_itinerary: event-less radius build renders a company-anchored map, ROI over the fixed days', async () => {
+  const { client, close } = await connect('EA_G8');
+  try {
+    const res = await call(client, 'build_itinerary', {
+      leaderId: 'L1',
+      anchorContactId: 'C3',
+      radiusKm: 80,
+      days: 3,
+      window: { start: '2025-10-13', end: '2025-10-15' },
+    });
+    const sc = res.structuredContent;
+    assert.equal(sc.anchor.contactId, 'C3');
+    assert.equal(sc.days, 3, 'ROI is costed against the FIXED day count');
+    assert.ok(sc.accepted.length >= 1);
+    assert.equal(sc.accepted[0].contactId, 'C3', 'the anchor leads the route');
+    assert.ok(sc.tripMap, 'a trip map is produced for the event-less build');
+    assert.equal(sc.tripMap.origin.id, 'contact:C3', 'the map origin pin is the company HQ');
+    assert.ok(!('event' in sc), 'no anchor event in an event-less build');
+  } finally {
+    await close();
+  }
+});
+
+test('plan_radius: NO_TENANT is rejected fail-closed (no stops leak)', async () => {
+  const { client, close } = await connect('NO_TENANT');
+  try {
+    const res = await call(client, 'plan_radius', {
+      company: 'Meridian Robotics',
+      days: 3,
+      window: { start: '2025-10-13', end: '2025-10-15' },
+    });
+    assert.equal(res.structuredContent.rejected, true);
+    assert.equal(res.structuredContent.stops.length, 0);
     assert.equal(res.structuredContent.extensionOptions.length, 0);
   } finally {
     await close();

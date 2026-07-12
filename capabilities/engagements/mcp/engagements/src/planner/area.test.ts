@@ -40,6 +40,24 @@ test('resolveArea: unknown area → undefined (tool then asks the caller to pick
   assert.equal(resolveArea({ city: 'Atlantis' }, ds.regions, contactPoints), undefined);
 });
 
+test('resolveArea: raw lat/lng → a coords anchor with the given label + radius', () => {
+  const area = resolveArea({ lat: 30.2672, lng: -97.7431, label: 'Lone Star Dynamics', radiusKm: 75 }, ds.regions);
+  assert.ok(area);
+  assert.equal(area!.resolvedVia, 'coords');
+  assert.equal(area!.name, 'Lone Star Dynamics');
+  assert.equal(area!.centroid.lat, 30.2672);
+  assert.equal(area!.centroid.lng, -97.7431);
+  assert.equal(area!.radiusKm, 75);
+});
+
+test('resolveArea: raw lat/lng with no label → falls back to a coordinate label + default radius', () => {
+  const area = resolveArea({ lat: 38.9586, lng: -77.357 }, ds.regions);
+  assert.ok(area);
+  assert.equal(area!.resolvedVia, 'coords');
+  assert.equal(area!.radiusKm, DEFAULT_AREA_RADIUS_KM);
+  assert.match(area!.name, /38\.9586.*-77\.357/);
+});
+
 test('anchorFromArea: carries centroid + window + topics, no eventId', () => {
   const area = resolveArea({ regionId: 'R-NCR' }, ds.regions)!;
   const window = { start: '2025-11-03', end: '2025-11-07' };

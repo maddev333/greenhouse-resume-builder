@@ -79,6 +79,10 @@ export function buildSystemPrompt(defaultLeaderId: string, topN: number): string
     'batch the highest-value people they should meet — on-site attendees/prospects (~0 extra travel)',
     'and nearby stale relationships worth re-engaging.',
     '',
+    'The fixed-radius entry point: when the leader must visit a SPECIFIC company (or place) for a fixed',
+    'number of days with NO anchor event ("go meet Meridian Robotics for 3 days", "2 days within 60 km of',
+    'Reston"), use plan_radius to fill the trip around that anchor, then build_itinerary with the same anchor.',
+    '',
     'Leaders (use the id):',
     rosterForPrompt(),
     '',
@@ -89,9 +93,12 @@ export function buildSystemPrompt(defaultLeaderId: string, topN: number): string
     `1. Leader: use "${defaultLeaderId}" unless the user names another leader from the roster.`,
     '2. Anchor event: if the user names one (e.g. "AUSA"), pass it as eventQuery to suggest_candidates.',
     '3. Topic: map the ask to topicIds from the catalog and pass them to suggest_candidates.',
-    '4. Call suggest_candidates to get the ranked menu of who to meet.',
-    `5. ALWAYS follow with build_itinerary using the top ${topN} candidate ids from that menu, so the`,
-    '   route and ui://trip-map are produced.',
+    '4. Event-anchored flow: call suggest_candidates to get the ranked menu, then ALWAYS follow with',
+    `   build_itinerary using the top ${topN} candidate ids, so the route and ui://trip-map are produced.`,
+    '5. Fixed-radius flow (a specific company/place + N days, NO event): call plan_radius with the anchor',
+    '   (anchorContactId, or a company name, or lat+lng, or city; plus radiusKm and days), then call',
+    '   build_itinerary with the SAME anchor + days (omit acceptedContactIds to accept the auto-filled plan).',
+    '   Do NOT fabricate an event for these trips.',
     '6. Never invent contacts, events, or attributes — surface only what the tools return. Some records',
     '   are hidden by the security trim; report the redactedCount the tools give you.',
     '7. Finish with a concise, EA-ready answer: a short numbered menu (id — name, org, city, why) and a',
@@ -109,6 +116,58 @@ export function anchorGuess(question: string): string {
   return question.trim();
 }
 
+/**
+ * Deterministic parse of a "fixed-radius" ask: a day count PLUS a company / place / explicit radius,
+ * with no anchor event. Returns null when it doesn't look like a radius trip (so the event flow runs).
+ * Heuristic only — the LLM path is primary; this keeps the offline demo working for the common phrasings.
+ */
+export function parseRadiusAsk(question: string): { days: number; radiusKm?: number; company?: string; city?: string } | null {
+  const daysM = question.match(/\b(\d+)\s*(?:day|days)\b/i);
+  if (!daysM) return null;
+  const days = Number(daysM[1]);
+  if (!Number.isFinite(days) || days <= 0) return null;
+
+  let radiusKm: number | undefined;
+  const radM = question.match(/\bwithin\s+(\d+)\s*(km|kilometers?|mi|miles?)\b/i);
+  if (radM) {
+    const n = Number(radM[1]);
+    radiusKm = /^mi/i.test(radM[2]) ? Math.round(n * 1.60934) : n;
+  }
+
+  // Company: proper-noun phrase after meet/visit/see/with.
+  const compM = question.match(/\b(?:meet|meeting|visit|visiting|see|with)\s+([A-Z][\w&.]*(?:\s+[A-Z][\w&.]*)*)/);
+  const company = compM?.[1]?.trim();
+  // Otherwise a place after a radius/proximity preposition.
+  const placeM = question.match(/\b(?:of|near|around|in)\s+([A-Z][\w.]*(?:\s+[A-Z][\w.]*)*)/);
+  const city = !company ? placeM?.[1]?.trim() : undefined;
+
+  if (!company && !city && radiusKm === undefined) return null;
+  return { days, radiusKm, company, city };
+}
+
+/** Rebuild event-less build_itinerary args from a plan_radius result (anchor + fixed days + stops). */
+function radiusBuildArgsFromPlan(plan: any, fallbackLeaderId: string): Record<string, unknown> | null {
+  if (!plan?.area || typeof plan.days !== 'number') return null;
+  const args: Record<string, unknown> = {
+    leaderId: plan.chosenLeaderId ?? fallbackLeaderId,
+    days: plan.days,
+    ...(plan.window ? { window: plan.window } : {}),
+    ...(typeof plan.meetingsPerDay === 'number' ? { meetingsPerDay: plan.meetingsPerDay } : {}),
+    ...(typeof plan.area.radiusKm === 'number' ? { radiusKm: plan.area.radiusKm } : {}),
+  };
+  if (plan.anchor?.contactId) args.anchorContactId = plan.anchor.contactId;
+  else if (typeof plan.area.lat === 'number' && typeof plan.area.lng === 'number') {
+    args.lat = plan.area.lat;
+    args.lng = plan.area.lng;
+  } else if (plan.area.city) {
+    args.city = plan.area.city;
+    if (plan.area.state) args.state = plan.area.state;
+  }
+  const ids = (plan.stops ?? []).map((s: any) => s.contactId).filter(Boolean);
+  if (ids.length) args.acceptedContactIds = ids;
+  return args;
+}
+
 function lastCapture(captured: CapturedCall[], name: string): CapturedCall | undefined {
   for (let i = captured.length - 1; i >= 0; i--) if (captured[i].name === name) return captured[i];
   return undefined;
@@ -124,6 +183,26 @@ function isRejected(result: any): boolean {
  */
 async function deterministicPlan(client: ToolClient, opts: { question: string; leaderId: string; topN: number }): Promise<void> {
   const { question, leaderId, topN } = opts;
+
+  // Fixed-radius ask ("meet <Company> for N days", "N days within X km of <place>") → plan_radius → build.
+  const radiusAsk = parseRadiusAsk(question);
+  if (radiusAsk) {
+    const planArgs: Record<string, unknown> = { leaderId, days: radiusAsk.days, window: defaultWindow() };
+    if (typeof radiusAsk.radiusKm === 'number') planArgs.radiusKm = radiusAsk.radiusKm;
+    if (radiusAsk.company) planArgs.company = radiusAsk.company;
+    else if (radiusAsk.city) planArgs.city = radiusAsk.city;
+    const plan: any = await client.callTool('plan_radius', planArgs);
+    if (isRejected(plan)) return;
+    if (!plan?.error && (plan?.stops?.length ?? 0) > 0) {
+      const buildArgs = radiusBuildArgsFromPlan(plan, leaderId);
+      if (buildArgs) {
+        await client.callTool('build_itinerary', buildArgs);
+        return;
+      }
+    }
+    // else: not a resolvable radius trip → fall through to the event-anchored flow.
+  }
+
   const topicIds = topicIdsFromText(question);
   const anchor = anchorGuess(question);
 
@@ -153,11 +232,27 @@ async function deterministicPlan(client: ToolClient, opts: { question: string; l
 
 /**
  * LLM safety net: if the model produced a menu but never called build_itinerary, auto-build
- * from the top N so the demo always gets a route + map.
+ * from the top N (event flow) or from the plan_radius anchor (radius flow) so the demo always
+ * gets a route + map.
  */
 async function ensureItinerary(client: ToolClient, opts: { leaderId: string; topN: number }): Promise<void> {
   const built = client.captured.some((c) => c.name === 'build_itinerary' && !isRejected(c.result));
   if (built) return;
+
+  // Radius flow: a plan_radius result with stops but no build → auto-build the event-less itinerary.
+  const radius = lastCapture(client.captured, 'plan_radius')?.result;
+  if (radius && !isRejected(radius) && (radius.stops?.length ?? 0) > 0) {
+    const args = radiusBuildArgsFromPlan(radius, opts.leaderId);
+    if (args) {
+      try {
+        await client.callTool('build_itinerary', args);
+      } catch {
+        /* advisory only */
+      }
+      return;
+    }
+  }
+
   const suggest = lastCapture(client.captured, 'suggest_candidates')?.result;
   const candidates: any[] = suggest?.candidates ?? [];
   if (isRejected(suggest) || candidates.length === 0) return;
@@ -199,10 +294,15 @@ function assemble(
     ? {
         leader: build.leader,
         event: build.event,
+        anchor: build.anchor,
+        area: build.area,
+        days: build.days,
+        capacity: build.capacity,
         accepted: build.accepted,
         route: build.route,
         roi: build.roi,
         conflicts: build.conflicts,
+        extensionOptions: build.extensionOptions,
         notMatched: build.notMatched,
       }
     : null;
@@ -619,10 +719,15 @@ function assembleBuild(base: PlanResult, captured: CapturedCall[]): PlanResult {
       ? {
           leader: build.leader,
           event: build.event,
+          anchor: build.anchor,
+          area: build.area,
+          days: build.days,
+          capacity: build.capacity,
           accepted: build.accepted,
           route: build.route,
           roi: build.roi,
           conflicts: build.conflicts,
+          extensionOptions: build.extensionOptions,
           notMatched: build.notMatched,
         }
       : null;
@@ -715,6 +820,307 @@ export async function buildAreaItinerary(req: AreaBuildRequest): Promise<PlanRes
       // topic focus would make build_itinerary's index-level searchContacts({topicIds}) pre-filter to
       // that single topic and drop the cross-topic stops the human just picked. requireTopicMatch:false
       // keeps the anchor event's own topics from culling them either.
+      requireTopicMatch: false,
+    });
+
+    const built = assembleBuild(base, client.captured);
+    built.answer = lastCapture(client.captured, 'build_itinerary')?.text ?? built.answer;
+    return built;
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Fixed-radius, event-OPTIONAL planning — "a leader must visit a SPECIFIC company (or place) for N
+// days". Mirrors the area-first two-stage seam (options → build) but the DURATION is fixed up front,
+// so instead of duration tiers the plan fills the days and offers extension options. Same trim beat.
+// ════════════════════════════════════════════════════════════════════════════
+
+export interface RadiusOptionsRequest {
+  question?: string;
+  persona?: string;
+  /** Anchor: a must-meet company (id or name), a raw coordinate, or a city/region. */
+  anchorContactId?: string;
+  company?: string;
+  lat?: number;
+  lng?: number;
+  city?: string;
+  state?: string;
+  region?: string;
+  regionId?: string;
+  radiusKm?: number;
+  /** FIXED trip length (days on the ground). */
+  days: number;
+  meetingsPerDay?: number;
+  window?: { start: string; end: string };
+  leaderId?: string;
+  topicIds?: string[];
+  requireTopicMatch?: boolean;
+  serverUrl?: string;
+}
+
+export interface RadiusOptionsResult {
+  ok: boolean;
+  persona: string;
+  question: string | null;
+  answer: string | null;
+  anchor: any | null;
+  area: any | null;
+  window: { start: string; end: string } | null;
+  today: string | null;
+  days: number | null;
+  meetingsPerDay: number | null;
+  capacity: number | null;
+  topicIds: string[];
+  areaSurvey: any[];
+  leaderOptions: any[];
+  chosenLeaderId: string | null;
+  stops: any[];
+  route: any | null;
+  roi: any | null;
+  conflicts: any[];
+  extensionOptions: any[];
+  redactedCount: number | null;
+  rejected: boolean;
+  questions: OptionQuestion[];
+  error?: string;
+}
+
+export interface RadiusBuildRequest {
+  persona?: string;
+  anchorContactId?: string;
+  company?: string;
+  lat?: number;
+  lng?: number;
+  city?: string;
+  state?: string;
+  region?: string;
+  regionId?: string;
+  radiusKm?: number;
+  days: number;
+  meetingsPerDay?: number;
+  window?: { start: string; end: string };
+  /** Chosen leader (from the leader option menu). */
+  leaderId: string;
+  /** Explicit final stop set; when omitted, the fixed-days auto-fill is accepted. */
+  acceptedContactIds?: string[];
+  /** Extension stops the human toggled on (merged into the accepted set). */
+  extensionContactIds?: string[];
+  topicIds?: string[];
+  serverUrl?: string;
+}
+
+/** Only forward the anchor keys the caller actually set (avoids sending `undefined` over JSON-RPC). */
+function radiusAnchorArgs(req: {
+  anchorContactId?: string;
+  company?: string;
+  lat?: number;
+  lng?: number;
+  city?: string;
+  state?: string;
+  region?: string;
+  regionId?: string;
+  radiusKm?: number;
+}): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (req.anchorContactId) out.anchorContactId = req.anchorContactId;
+  if (req.company) out.company = req.company;
+  if (typeof req.lat === 'number') out.lat = req.lat;
+  if (typeof req.lng === 'number') out.lng = req.lng;
+  if (req.city) out.city = req.city;
+  if (req.state) out.state = req.state;
+  if (req.region) out.region = req.region;
+  if (req.regionId) out.regionId = req.regionId;
+  if (typeof req.radiusKm === 'number') out.radiusKm = req.radiusKm;
+  return out;
+}
+
+/** Shape a `plan_radius` result into who-should-go + optional trip-extension menus. Pure. */
+export function buildRadiusQuestions(plan: any): OptionQuestion[] {
+  const questions: OptionQuestion[] = [];
+
+  const leaders: any[] = plan?.leaderOptions ?? [];
+  if (leaders.length) {
+    questions.push({
+      id: 'leader',
+      kind: 'single',
+      prompt: 'Who should go?',
+      choices: leaders.map((o) => ({
+        value: o.leaderId,
+        label: `${o.leaderId} — ${o.name}`,
+        detail:
+          `${o.role} · fit ${o.score}` +
+          (o.availableInWindow === false ? ' · not free in window' : '') +
+          (typeof o.distanceKm === 'number' ? ` · ${o.distanceKm} km` : ''),
+        selected: o.leaderId === plan.chosenLeaderId,
+        recommended: o.leaderId === plan.chosenLeaderId,
+      })),
+    });
+  }
+
+  const extensions: any[] = plan?.extensionOptions ?? [];
+  if (extensions.length) {
+    questions.push({
+      id: 'extensions',
+      kind: 'multi',
+      prompt: 'Extend the trip? Each extra day unlocks another meeting (optional).',
+      choices: extensions.map((e) => ({
+        value: e.contactId,
+        label: `+${e.extraDays}d → ${e.name}` + (e.sector ? ` (${e.sector})` : ''),
+        detail:
+          `${e.topicName ?? e.topicId ?? 'topic —'} · mROI ${e.marginalRoi}` +
+          (e.overBudget ? ' · over budget' : '') +
+          ` · ${e.talkingPointsSource === 'approved-message' ? 'approved talking points' : 'coordinate points'}`,
+        selected: false,
+      })),
+    });
+  }
+
+  return questions;
+}
+
+/**
+ * STAGE 1 (radius) — anchor on a company/coordinate/city + a fixed day count and return the filled
+ * trip plus the who/extend menus. Fail-closed on NO_TENANT (empty menus).
+ */
+export async function planRadiusOptions(req: RadiusOptionsRequest): Promise<RadiusOptionsResult> {
+  const persona = req.persona || DEFAULT_PERSONA();
+  const url = req.serverUrl || DEFAULT_URL();
+  const window = req.window || defaultWindow();
+
+  const empty: RadiusOptionsResult = {
+    ok: false,
+    persona,
+    question: req.question ?? null,
+    answer: null,
+    anchor: null,
+    area: null,
+    window,
+    today: null,
+    days: req.days ?? null,
+    meetingsPerDay: null,
+    capacity: null,
+    topicIds: [],
+    areaSurvey: [],
+    leaderOptions: [],
+    chosenLeaderId: null,
+    stops: [],
+    route: null,
+    roi: null,
+    conflicts: [],
+    extensionOptions: [],
+    redactedCount: null,
+    rejected: false,
+    questions: [],
+  };
+
+  let client: ToolClient;
+  try {
+    client = await makeToolClient(url, persona);
+  } catch (e: any) {
+    return {
+      ...empty,
+      error:
+        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
+        'Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.',
+    };
+  }
+
+  try {
+    await client.callTool('plan_radius', {
+      ...radiusAnchorArgs(req),
+      days: req.days,
+      ...(typeof req.meetingsPerDay === 'number' ? { meetingsPerDay: req.meetingsPerDay } : {}),
+      window,
+      ...(req.leaderId ? { leaderId: req.leaderId } : {}),
+      ...(req.topicIds?.length ? { topicIds: req.topicIds } : {}),
+      requireTopicMatch: req.requireTopicMatch ?? false,
+    });
+
+    const cap0 = lastCapture(client.captured, 'plan_radius');
+    const plan = cap0?.result ?? {};
+    if (plan.error) return { ...empty, error: plan.error };
+
+    const rejected = !!plan.rejected;
+    return {
+      ok: !rejected && (plan.stops?.length ?? 0) > 0,
+      persona,
+      question: req.question ?? null,
+      answer: cap0?.text ?? null,
+      anchor: plan.anchor ?? null,
+      area: plan.area ?? null,
+      window: plan.window ?? window,
+      today: plan.today ?? null,
+      days: plan.days ?? req.days,
+      meetingsPerDay: plan.meetingsPerDay ?? null,
+      capacity: plan.capacity ?? null,
+      topicIds: plan.topicIds ?? [],
+      areaSurvey: plan.areaSurvey ?? [],
+      leaderOptions: plan.leaderOptions ?? [],
+      chosenLeaderId: plan.chosenLeaderId ?? null,
+      stops: plan.stops ?? [],
+      route: plan.route ?? null,
+      roi: plan.roi ?? null,
+      conflicts: plan.conflicts ?? [],
+      extensionOptions: plan.extensionOptions ?? [],
+      redactedCount: plan.redactedCount ?? null,
+      rejected,
+      questions: rejected ? [] : buildRadiusQuestions(plan),
+    };
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+/**
+ * STAGE 2 (radius) — turn the human's picks (leader + toggled extensions) into the final event-less
+ * itinerary + ui://trip-map. `build_itinerary` re-authorizes every id server-side, so the trim holds.
+ */
+export async function buildRadiusItinerary(req: RadiusBuildRequest): Promise<PlanResult> {
+  const persona = req.persona || DEFAULT_PERSONA();
+  const url = req.serverUrl || DEFAULT_URL();
+  const window = req.window || defaultWindow();
+
+  const base: PlanResult = {
+    ok: false,
+    mode: 'deterministic',
+    persona,
+    question: req.leaderId ? `Build radius itinerary for ${req.leaderId}` : 'Build radius itinerary',
+    answer: null,
+    toolCalls: [],
+    menu: null,
+    itinerary: null,
+    tripMap: null,
+    redactedCount: null,
+    rejected: false,
+  };
+
+  if (!req.leaderId) return { ...base, error: 'leaderId is required to build an itinerary.' };
+  if (!req.days) return { ...base, error: 'days is required to build a fixed-radius itinerary.' };
+
+  let client: ToolClient;
+  try {
+    client = await makeToolClient(url, persona);
+  } catch (e: any) {
+    return {
+      ...base,
+      error:
+        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
+        'Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.',
+    };
+  }
+
+  try {
+    const accepted = [...new Set([...(req.acceptedContactIds ?? []), ...(req.extensionContactIds ?? [])])];
+    await client.callTool('build_itinerary', {
+      leaderId: req.leaderId,
+      ...radiusAnchorArgs(req),
+      days: req.days,
+      ...(typeof req.meetingsPerDay === 'number' ? { meetingsPerDay: req.meetingsPerDay } : {}),
+      window,
+      ...(accepted.length ? { acceptedContactIds: accepted } : {}),
+      ...(req.topicIds?.length ? { topicIds: req.topicIds } : {}),
       requireTopicMatch: false,
     });
 

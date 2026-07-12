@@ -23,6 +23,8 @@ import {
   topicsInArea,
   suggestLeaders,
   planOptions,
+  radiusPlan,
+  DEFAULT_MEETINGS_PER_DAY,
   estimateDuration,
   haversineKm,
   planRoute,
@@ -35,6 +37,9 @@ import {
   type Contact,
   type Leader,
   type EngagementEvent,
+  type GeoPoint,
+  type ResolvedArea,
+  type RadiusPlanResult,
   type TopicInArea,
   type LeaderOption,
   type DurationOption,
@@ -62,6 +67,13 @@ type Index = ReadModel;
 
 const round = (n: number): number => Math.round(n);
 const fixed = (n: number, d = 3): number => Number(n.toFixed(d));
+
+/** Add whole days to an ISO date (YYYY-MM-DD), UTC — used to synthesize a radius window from a day count. */
+function isoAddDays(iso: string, n: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
 
 function errorResult(message: string): CallToolResult {
   return { content: [{ type: 'text', text: message }], structuredContent: { error: message }, isError: true };
@@ -212,40 +224,76 @@ function buildTripMapPayload(
   roi: RoiResult,
   caller: string,
 ): TripMapPayload {
+  return buildTripMapFromOrigin(
+    `${leader.name} @ ${event.name}`,
+    {
+      id: `event:${event.id}`,
+      label: event.name,
+      location: event.location,
+      detail: `${event.location.city}${event.location.state ? `, ${event.location.state}` : ''} · ${event.start}→${event.end}`,
+    },
+    accepted,
+    route,
+    roi,
+    caller,
+  );
+}
+
+/** A generic trip origin — an event venue, a company HQ, or a raw coordinate the leader anchors on. */
+interface MapOrigin {
+  id: string;
+  label: string;
+  location: GeoPoint;
+  detail: string;
+}
+
+/**
+ * The event-agnostic core of the trip-map projection: place the origin pin, co-locate on-site stops
+ * with it (they carry no travel leg), and wire the route legs. `buildTripMapPayload` (event trips) and
+ * the radius/company-anchored trips both funnel through here, so the App wire format never diverges.
+ */
+function buildTripMapFromOrigin(
+  title: string,
+  origin: MapOrigin,
+  accepted: Candidate[],
+  route: RouteResult,
+  roi: RoiResult,
+  caller: string,
+): TripMapPayload {
   const byContactId = new Map(accepted.map((c) => [c.contactId, c]));
-  const origin: TripMapPoint = {
-    id: `event:${event.id}`,
-    label: event.name,
-    lat: event.location.lat,
-    lng: event.location.lng,
+  const originPoint: TripMapPoint = {
+    id: origin.id,
+    label: origin.label,
+    lat: origin.location.lat,
+    lng: origin.location.lng,
     kind: 'origin',
-    detail: `${event.location.city}${event.location.state ? `, ${event.location.state}` : ''} · ${event.start}→${event.end}`,
+    detail: origin.detail,
   };
   const stops: TripMapPoint[] = route.order.map((s) => {
     const c = byContactId.get(s.id);
-    // On-site contacts are met AT the anchor venue (they carry no travel leg), so co-locate their pin
-    // with the origin rather than their home city — otherwise a home-based coordinate scatters the map.
+    // On-site contacts are met AT the anchor (they carry no travel leg), so co-locate their pin with
+    // the origin rather than their home city — otherwise a home-based coordinate scatters the map.
     const atVenue = s.kind === 'on-site';
     return {
       id: s.id,
       label: c?.name ?? s.id,
-      lat: atVenue ? event.location.lat : s.location.lat,
-      lng: atVenue ? event.location.lng : s.location.lng,
+      lat: atVenue ? origin.location.lat : s.location.lat,
+      lng: atVenue ? origin.location.lng : s.location.lng,
       kind: s.kind, // SuggestionPlacement: 'on-site' | 'off-site'
       detail: c
         ? `${c.placement} · ${c.kind}${c.isStale ? ' · STALE' : ''} · val ${c.strategicValue} · score ${fixed(c.score)}`
         : `${s.location.city}${s.location.state ? `, ${s.location.state}` : ''}`,
     };
   });
-  const byPointId = new Map<string, TripMapPoint>([[origin.id, origin], ...stops.map((p) => [p.id, p] as const)]);
+  const byPointId = new Map<string, TripMapPoint>([[originPoint.id, originPoint], ...stops.map((p) => [p.id, p] as const)]);
   const legs: TripMapLeg[] = route.legs.map((l) => {
-    const from = byPointId.get(l.fromStopId) ?? origin; // fromStopId === ORIGIN_ID → the anchor venue
-    const to = byPointId.get(l.toStopId) ?? origin;
+    const from = byPointId.get(l.fromStopId) ?? originPoint; // fromStopId === ORIGIN_ID → the anchor
+    const to = byPointId.get(l.toStopId) ?? originPoint;
     return { fromLat: from.lat, fromLng: from.lng, toLat: to.lat, toLng: to.lng, mode: l.mode, distanceKm: round(l.distanceKm) };
   });
   return {
-    title: `${leader.name} @ ${event.name}`,
-    origin,
+    title,
+    origin: originPoint,
     stops,
     legs,
     roiScore: fixed(roi.roiScore),
@@ -296,6 +344,71 @@ async function runSuggest(
 
   const contactsById = new Map(contacts.items.map((c) => [c.id, c]));
   return { ok: true, leader, event, candidates, contactsById, filter: contacts.filter, redactedCount: contacts.redactedCount };
+}
+
+/**
+ * Resolve a fixed-radius trip anchor from tool args → a centroid area (+ the must-meet contact when
+ * one is named). Precedence: explicit contact id → company/contact NAME (matched against the already
+ * authorized set, mirroring `search_contacts`) → raw coordinate → city/region centroid. Shared by
+ * `plan_radius` and the event-less `build_itinerary` branch so both anchor identically.
+ */
+function resolveRadiusAnchor(
+  contacts: Labeled<Contact>[],
+  events: Labeled<EngagementEvent>[],
+  regions: ReadModel['regions'],
+  args: {
+    anchorContactId?: string;
+    company?: string;
+    lat?: number;
+    lng?: number;
+    city?: string;
+    state?: string;
+    region?: string;
+    regionId?: string;
+    radiusKm?: number;
+  },
+): { area: ResolvedArea; anchorContact?: Labeled<Contact> } | { error: string } {
+  // (a) explicit contact id — the strongest anchor signal.
+  let anchorContact: Labeled<Contact> | undefined;
+  if (args.anchorContactId) {
+    anchorContact = contacts.find((c) => c.id === args.anchorContactId);
+    if (!anchorContact) return { error: `Anchor contact '${args.anchorContactId}' is not in your authorized set.` };
+  } else if (args.company && args.company.trim()) {
+    // (b) resolve a company/contact by name/org against the trimmed set (substring, like search_contacts);
+    //     prefer an org/company entity so "meet Meridian Robotics" anchors on the HQ, not an employee.
+    const q = args.company.trim().toLowerCase();
+    const hits = contacts.filter((c) => c.name.toLowerCase().includes(q) || (c.org?.toLowerCase().includes(q) ?? false));
+    anchorContact = hits.find((c) => c.type === 'company' || c.type === 'org') ?? hits[0];
+    if (!anchorContact) return { error: `No authorized company/contact matched '${args.company}'.` };
+  }
+
+  if (anchorContact) {
+    const area = resolveArea(
+      {
+        lat: anchorContact.location.lat,
+        lng: anchorContact.location.lng,
+        city: anchorContact.location.city,
+        state: anchorContact.location.state,
+        label: anchorContact.org ?? anchorContact.name,
+        radiusKm: args.radiusKm,
+      },
+      regions,
+      [],
+    );
+    return area ? { area, anchorContact } : { error: 'Could not resolve an area around the anchor contact.' };
+  }
+
+  // (c) no named company → a raw coordinate or a city/region centroid.
+  const knownPoints = [...contacts.map((c) => c.location), ...events.map((e) => e.location)];
+  const area = resolveArea(
+    { lat: args.lat, lng: args.lng, city: args.city, state: args.state, region: args.region, regionId: args.regionId, radiusKm: args.radiusKm },
+    regions,
+    knownPoints,
+  );
+  if (!area) {
+    return { error: 'Provide an anchor: a company (anchorContactId or company name), a lat/lng coordinate, or a known city/region.' };
+  }
+  return { area };
 }
 
 // ── registration ────────────────────────────────────────────────────────
@@ -612,6 +725,157 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
   );
 
+  // 5b) plan_radius — company/coords-first FIXED-DURATION planning (event-OPTIONAL): "go meet <company>
+  //     (or be within X km of <place>) for N days" → fill the trip with the best authorized contacts.
+  server.registerTool(
+    'plan_radius',
+    {
+      title: 'Plan a fixed-duration trip around a company or location',
+      description:
+        'Radius-first planning for when a leader must visit a SPECIFIC company (or place) for a FIXED ' +
+        'number of days, with NO anchor event. Anchor by company (anchorContactId or a company name), a ' +
+        'raw lat/lng, or a city/region; set a radius and the trip length. Fills days × meetingsPerDay slots ' +
+        'with the mandatory anchor (met on-site) + the highest-value authorized contacts within the radius, ' +
+        'and returns the leftover as "+N day unlocks …" extension options. Feed the accepted stops to ' +
+        'build_itinerary (with the same anchor) to render the map. Fail-closed: no verified tenant ⇒ rejected.',
+      inputSchema: {
+        anchorContactId: z.string().optional().describe('Must-meet company/contact id (e.g. "C3"); becomes stop #1, met on-site.'),
+        company: z.string().optional().describe('Free-text company/contact name ("Meridian Robotics") resolved to the anchor when no id is given.'),
+        lat: z.number().optional().describe('Raw anchor latitude (with lng) when the leader is going to a coordinate, not a named company.'),
+        lng: z.number().optional().describe('Raw anchor longitude (with lat).'),
+        city: z.string().optional().describe('City centroid anchor (alternative to a company/coordinate).'),
+        state: z.string().optional().describe('State for the city anchor.'),
+        region: z.string().optional().describe('Free-text region/alias ("NCR", "DC metro").'),
+        regionId: z.string().optional().describe('Known region id (e.g. "R-NCR").'),
+        radiusKm: z.number().positive().optional().describe('Search radius around the anchor (km). Defaults to the region/area default.'),
+        days: z.number().int().positive().describe('FIXED trip length in days the leader is on the ground.'),
+        meetingsPerDay: z.number().int().positive().optional().describe(`Meetings/day capacity (default ${DEFAULT_MEETINGS_PER_DAY}).`),
+        window: z.object({ start: z.string(), end: z.string() }).describe('Planning window (ISO YYYY-MM-DD) for availability + budget checks.'),
+        leaderId: z.string().optional().describe('Force a specific leader; defaults to the top-ranked option for the area.'),
+        topicIds: z.array(z.string()).optional().describe("Target topics; defaults to the area's in-scope topics."),
+        requireTopicMatch: z.boolean().optional().describe('Drop stops off the target topics (default false — a broad menu).'),
+      },
+    },
+    async ({
+      anchorContactId,
+      company,
+      lat,
+      lng,
+      city,
+      state,
+      region,
+      regionId,
+      radiusKm,
+      days,
+      meetingsPerDay,
+      window,
+      leaderId,
+      topicIds,
+      requireTopicMatch,
+    }): Promise<CallToolResult> => {
+      const { ctx, label } = getContext();
+      const rm = getReadModel();
+      const contacts = await rm.searchContacts({ ctx });
+      if (isRejected(contacts.filter)) {
+        const structuredContent = { caller: label, rejected: true, today: rm.today, anchor: null, area: null, areaSurvey: [], leaderOptions: [], stops: [], extensionOptions: [], redactedCount: 0, filter: contacts.filter };
+        return { content: [{ type: 'text', text: 'Access rejected — no verified tenant claim.' }], structuredContent };
+      }
+      const events = await rm.searchEvents({ ctx });
+      const resolved = resolveRadiusAnchor(contacts.items, events.items, rm.regions, { anchorContactId, company, lat, lng, city, state, region, regionId, radiusKm });
+      if ('error' in resolved) return errorResult(resolved.error);
+      const { area, anchorContact } = resolved;
+
+      const areaSurvey = topicsInArea({ centroid: area.centroid, radiusKm: area.radiusKm, contacts: contacts.items, events: events.items, topics: rm.topics });
+      const effectiveTopicIds = topicIds?.length ? topicIds : areaSurvey.map((t) => t.topicId);
+      const inArea = contacts.items.filter((c) => haversineKm(area.centroid, c.location) <= area.radiusKm);
+      const leaderOptions = suggestLeaders({ centroid: area.centroid, window, topicIds: effectiveTopicIds, leaders: rm.leaders, topics: rm.topics, contacts: inArea });
+      const chosen = leaderId
+        ? rm.leaders.find((l) => l.id === leaderId)
+        : leaderOptions[0]
+          ? rm.leaders.find((l) => l.id === leaderOptions[0].leaderId)
+          : undefined;
+
+      const areaView = { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, lat: area.centroid.lat, lng: area.centroid.lng, radiusKm: area.radiusKm, resolvedVia: area.resolvedVia };
+      if (!chosen) {
+        const structuredContent = {
+          caller: label,
+          rejected: false,
+          today: rm.today,
+          anchor: anchorContact ? { contactId: anchorContact.id, name: anchorContact.name } : null,
+          area: areaView,
+          window,
+          days,
+          meetingsPerDay: meetingsPerDay ?? DEFAULT_MEETINGS_PER_DAY,
+          topicIds: effectiveTopicIds,
+          areaSurvey: areaSurvey.map(topicInAreaView),
+          chosenLeaderId: null,
+          leaderOptions: leaderOptions.map(leaderOptionView),
+          stops: [],
+          extensionOptions: [],
+          redactedCount: contacts.redactedCount,
+          filter: contacts.filter,
+        };
+        return { content: [{ type: 'text', text: `No eligible leader for ${area.name}.` }], structuredContent };
+      }
+
+      const plan = radiusPlan({
+        leader: chosen,
+        area,
+        window,
+        days,
+        meetingsPerDay,
+        anchorContactId: anchorContact?.id,
+        contacts: contacts.items,
+        events: events.items,
+        topics: rm.topics,
+        messages: rm.messages,
+        topicIds: effectiveTopicIds,
+        requireTopicMatch,
+      });
+
+      const structuredContent = {
+        caller: label,
+        rejected: false,
+        today: rm.today,
+        anchor: plan.anchor,
+        area: areaView,
+        window,
+        days: plan.days,
+        meetingsPerDay: plan.meetingsPerDay,
+        capacity: plan.capacity,
+        topicIds: plan.topicIds,
+        areaSurvey: areaSurvey.map(topicInAreaView),
+        chosenLeaderId: chosen.id,
+        leaderOptions: leaderOptions.map(leaderOptionView),
+        stops: plan.stops.map(candidateView),
+        route: routeView(plan.route),
+        duration: { days: plan.duration.days, onSiteDays: plan.duration.onSiteDays, offSiteStops: plan.duration.offSiteStops, travelMins: round(plan.duration.travelMins), dwellMins: plan.duration.dwellMins },
+        roi: plan.roi,
+        conflicts: plan.conflicts.map(conflictView),
+        overflowCount: plan.overflowCount,
+        extensionOptions: plan.extensionOptions.map(extensionOptionView),
+        redactedCount: contacts.redactedCount,
+        filter: contacts.filter,
+      };
+
+      const header =
+        `${chosen.name} → ${area.name} (${area.radiusKm} km), ${plan.days} day(s) @ ${plan.meetingsPerDay}/day = ${plan.capacity} slot(s): ` +
+        `${plan.stops.length} stop(s)${plan.anchor ? ` (anchor ${plan.anchor.contactId} ${plan.anchor.name})` : ''}, ` +
+        `ROI ${fixed(plan.roi.roiScore)}${plan.roi.overBudget ? ' (OVER BUDGET)' : ''}; ${plan.extensionOptions.length} extension(s).`;
+      const stopLines = plan.stops.map(
+        (s, i) => `  ${i + 1}. ${s.contactId} ${s.name} — ${s.placement}, ${s.location.city}, val ${s.strategicValue}, score ${fixed(s.score)}`,
+      );
+      const extLines = plan.extensionOptions.slice(0, 5).map((e) => {
+        const pts = e.talkingPoints.slice(0, 2).map((p) => `“${p}”`).join('; ');
+        return `  • +${e.extraDays}d → ${e.contactId} ${e.name}${e.sector ? ` (${e.sector})` : ''} on ${e.topicId ?? '—'}, mROI ${fixed(e.marginalRoi)} · ${e.talkingPointsSource}: ${pts}`;
+      });
+      return {
+        content: [{ type: 'text', text: [header, 'stops:', ...stopLines, 'extensions:', ...extLines, `filter: ${contacts.filter}`].join('\n') }],
+        structuredContent,
+      };
+    },
+  );
+
   // 6) suggest_candidates — the "you're already going there" nudge
   server.registerTool(
     'suggest_candidates',
@@ -665,83 +929,207 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
   );
 
-  // 7) build_itinerary — route + ROI + conflicts for the accepted picks, rendered on ui://trip-map (M3)
+  // 7) build_itinerary — route + ROI + conflicts for the accepted picks, rendered on ui://trip-map (M3).
+  //    Two modes: EVENT-anchored (acceptedContactIds from suggest_candidates) or RADIUS-anchored /
+  //    event-less (a company/coordinate/city + a fixed day count, from plan_radius).
   registerAppTool(
     server,
     'build_itinerary',
     {
       title: 'Build a trip itinerary',
       description:
-        'Given a leader, an anchor event, and the contact ids accepted from suggest_candidates, order the ' +
-        'stops (on-site first, then nearest-neighbor off-site), compute trip-ROI (value minus airfare / ' +
-        'per-diem / time penalty), and surface advisory conflicts (fit, availability-budget, opportunity-cost). ' +
-        'Only accepts ids from the caller\'s authorized candidate set.',
+        'Given a leader and EITHER an anchor event OR a fixed-radius anchor (a company / coordinate / city ' +
+        '+ a day count), order the stops (on-site first, then nearest-neighbor off-site), compute trip-ROI ' +
+        '(value minus airfare / per-diem / time penalty), and surface advisory conflicts (fit, availability-' +
+        'budget, opportunity-cost). Event mode takes acceptedContactIds from suggest_candidates; radius mode ' +
+        '(no event) takes the company/coords + days from plan_radius — omit acceptedContactIds to accept the ' +
+        "auto-filled plan. Renders ui://trip-map. Only accepts ids from the caller's authorized set.",
       inputSchema: {
         leaderId: z.string().describe('Leader whose time is being allocated (e.g. "L1").'),
-        eventId: z.string().optional().describe('Anchor event id (e.g. "E-AUSA").'),
-        eventQuery: z.string().optional().describe('Free-text anchor ("AUSA") resolved to one authorized event.'),
-        acceptedContactIds: z.array(z.string()).min(1).describe('Contact ids picked from the suggest_candidates menu.'),
-        topicIds: z.array(z.string()).optional().describe('Same topic focus used for suggest_candidates (keeps the candidate set consistent).'),
-        requireTopicMatch: z.boolean().optional().describe('Match suggest_candidates (default true).'),
+        eventId: z.string().optional().describe('Event mode: anchor event id (e.g. "E-AUSA").'),
+        eventQuery: z.string().optional().describe('Event mode: free-text anchor ("AUSA") resolved to one authorized event.'),
+        anchorContactId: z.string().optional().describe('Radius mode: must-meet company/contact id, met on-site as stop #1.'),
+        company: z.string().optional().describe('Radius mode: company/contact name resolved to the anchor when no id is given.'),
+        lat: z.number().optional().describe('Radius mode: raw anchor latitude (with lng).'),
+        lng: z.number().optional().describe('Radius mode: raw anchor longitude (with lat).'),
+        city: z.string().optional().describe('Radius mode: city centroid anchor.'),
+        state: z.string().optional().describe('Radius mode: state for the city anchor.'),
+        region: z.string().optional().describe('Radius mode: free-text region/alias ("NCR").'),
+        regionId: z.string().optional().describe('Radius mode: known region id (e.g. "R-NCR").'),
+        radiusKm: z.number().positive().optional().describe('Radius mode: search radius around the anchor (km).'),
+        days: z.number().int().positive().optional().describe('Radius mode: FIXED trip length in days (required when there is no event).'),
+        meetingsPerDay: z.number().int().positive().optional().describe('Radius mode: meetings/day capacity.'),
+        window: z.object({ start: z.string(), end: z.string() }).optional().describe('Radius mode planning window (ISO); defaults to today → today+days-1.'),
+        acceptedContactIds: z
+          .array(z.string())
+          .optional()
+          .describe('Chosen stop ids. Event mode: from suggest_candidates (required). Radius mode: from plan_radius (omit to accept the auto-filled plan).'),
+        topicIds: z.array(z.string()).optional().describe('Topic focus (keeps the candidate set consistent with the plan step).'),
+        requireTopicMatch: z.boolean().optional().describe('Event mode default true; radius mode default false.'),
       },
       _meta: { ui: { resourceUri: TRIP_MAP_RESOURCE_URI } },
     },
-    async ({ leaderId, eventId, eventQuery, acceptedContactIds, topicIds, requireTopicMatch }): Promise<CallToolResult> => {
+    async ({
+      leaderId,
+      eventId,
+      eventQuery,
+      anchorContactId,
+      company,
+      lat,
+      lng,
+      city,
+      state,
+      region,
+      regionId,
+      radiusKm,
+      days,
+      meetingsPerDay,
+      window,
+      acceptedContactIds,
+      topicIds,
+      requireTopicMatch,
+    }): Promise<CallToolResult> => {
       const { ctx, label } = getContext();
       const rm = getReadModel();
-      const r = await runSuggest(rm, ctx, { leaderId, eventId, eventQuery, topicIds, requireTopicMatch });
-      if (!r.ok) return errorResult(r.error);
+      const eventMode = !!(eventId || eventQuery);
 
-      const accepted = r.candidates.filter((c) => acceptedContactIds.includes(c.contactId));
-      const notMatched = acceptedContactIds.filter((id) => !accepted.some((c) => c.contactId === id));
-      if (accepted.length === 0) {
-        return errorResult(
-          `None of [${acceptedContactIds.join(', ')}] are in ${r.leader.name}'s authorized candidate set for ${r.event.name}.`,
-        );
+      if (eventMode) {
+        // ── EVENT-anchored build ──────────────────────────────────────────
+        const r = await runSuggest(rm, ctx, { leaderId, eventId, eventQuery, topicIds, requireTopicMatch });
+        if (!r.ok) return errorResult(r.error);
+
+        const ids = acceptedContactIds ?? [];
+        const accepted = r.candidates.filter((c) => ids.includes(c.contactId));
+        const notMatched = ids.filter((id) => !accepted.some((c) => c.contactId === id));
+        if (accepted.length === 0) {
+          return errorResult(
+            `None of [${ids.join(', ')}] are in ${r.leader.name}'s authorized candidate set for ${r.event.name}.`,
+          );
+        }
+
+        const stops: RouteStop[] = accepted.map((c) => ({ id: c.contactId, location: c.location, kind: c.placement }));
+        const route = planRoute(r.event.location, stops);
+        // Stop-derived duration: on-site/conference days + off-site travel + per-stop dwell, bucketed to
+        // whole days (replaces the old, wrong days = event-window span, which ignored the off-site legs).
+        const onSiteDays = daysBetween(r.event.start, r.event.end) + 1;
+        const duration = estimateDuration(route, onSiteDays);
+        const days2 = duration.days;
+        const roi = tripRoi(accepted.map((c) => c.score), route.legs, days2, r.leader.daysAwayBudget);
+
+        const conflicts: Conflict[] = [
+          ...accepted.flatMap((c) => {
+            const contact = r.contactsById.get(c.contactId);
+            return contact ? detectFit(r.leader, contact) : [];
+          }),
+          ...detectAvailabilityBudget(r.leader, { start: r.event.start, end: r.event.end }, days2),
+          ...detectOpportunityCost(roi),
+        ];
+
+        const tripMap = buildTripMapPayload(r.leader, r.event, accepted, route, roi, label);
+        const structuredContent = {
+          caller: label,
+          today: rm.today,
+          leader: { id: r.leader.id, name: r.leader.name, role: r.leader.role, daysAwayBudget: r.leader.daysAwayBudget },
+          event: { id: r.event.id, name: r.event.name, city: r.event.location.city, start: r.event.start, end: r.event.end },
+          accepted: accepted.map(candidateView),
+          notMatched,
+          route: routeView(route),
+          duration: { days: days2, onSiteDays: duration.onSiteDays, offSiteStops: duration.offSiteStops, travelMins: round(duration.travelMins), dwellMins: duration.dwellMins },
+          roi,
+          conflicts,
+          tripMap,
+          filter: r.filter,
+          redactedCount: r.redactedCount,
+        };
+        const header =
+          `Itinerary for ${r.leader.name} @ ${r.event.name}: ${accepted.length} stop(s), ` +
+          `${days2} day(s), ROI ${fixed(roi.roiScore)}${roi.overBudget ? ' (OVER BUDGET)' : ''}.`;
+        const orderLine = `  route: ${route.order.map((s) => s.location.city).join(' → ')}`;
+        const conflictLines = conflicts.length
+          ? conflicts.map((c) => `  ⚠ ${c.severity}/${c.type}: ${c.message}`)
+          : ['  no conflicts flagged'];
+        const notMatchedLine = notMatched.length ? [`  (ignored, not authorized/suggested: ${notMatched.join(', ')})`] : [];
+        return {
+          content: [{ type: 'text', text: [header, orderLine, ...conflictLines, ...notMatchedLine].join('\n') }],
+          structuredContent,
+        };
       }
 
-      const stops: RouteStop[] = accepted.map((c) => ({ id: c.contactId, location: c.location, kind: c.placement }));
-      const route = planRoute(r.event.location, stops);
-      // Stop-derived duration: on-site/conference days + off-site travel + per-stop dwell, bucketed to
-      // whole days (replaces the old, wrong days = event-window span, which ignored the off-site legs).
-      const onSiteDays = daysBetween(r.event.start, r.event.end) + 1;
-      const duration = estimateDuration(route, onSiteDays);
-      const days = duration.days;
-      const roi = tripRoi(accepted.map((c) => c.score), route.legs, days, r.leader.daysAwayBudget);
+      // ── RADIUS-anchored build (event-less) ────────────────────────────────
+      const leader = findLeader(rm, leaderId);
+      if (!leader) return errorResult(`Unknown leader '${leaderId}'.`);
+      if (!days) return errorResult("Radius build needs a day count ('days') — the leader's fixed trip length.");
+      const contacts = await rm.searchContacts({ ctx });
+      if (isRejected(contacts.filter)) return errorResult('Access rejected — no verified tenant claim.');
+      const events = await rm.searchEvents({ ctx });
+      const resolved = resolveRadiusAnchor(contacts.items, events.items, rm.regions, { anchorContactId, company, lat, lng, city, state, region, regionId, radiusKm });
+      if ('error' in resolved) return errorResult(resolved.error);
+      const { area, anchorContact } = resolved;
+      const win = window ?? { start: rm.today, end: isoAddDays(rm.today, Math.max(0, days - 1)) };
 
-      const conflicts: Conflict[] = [
-        ...accepted.flatMap((c) => {
-          const contact = r.contactsById.get(c.contactId);
-          return contact ? detectFit(r.leader, contact) : [];
-        }),
-        ...detectAvailabilityBudget(r.leader, { start: r.event.start, end: r.event.end }, days),
-        ...detectOpportunityCost(roi),
-      ];
+      const plan = radiusPlan({
+        leader,
+        area,
+        window: win,
+        days,
+        meetingsPerDay,
+        anchorContactId: anchorContact?.id,
+        acceptedContactIds,
+        contacts: contacts.items,
+        events: events.items,
+        topics: rm.topics,
+        messages: rm.messages,
+        topicIds,
+        requireTopicMatch,
+      });
+      if (plan.stops.length === 0) return errorResult(`No authorized stops within ${area.radiusKm} km of ${area.name}.`);
 
-      const tripMap = buildTripMapPayload(r.leader, r.event, accepted, route, roi, label);
+      const chosenIds = new Set(plan.stops.map((s) => s.contactId));
+      const notMatched = (acceptedContactIds ?? []).filter((id) => !chosenIds.has(id));
+      const origin: MapOrigin = anchorContact
+        ? {
+            id: `contact:${anchorContact.id}`,
+            label: anchorContact.org ?? anchorContact.name,
+            location: anchorContact.location,
+            detail: `${anchorContact.location.city}${anchorContact.location.state ? `, ${anchorContact.location.state}` : ''} · anchor`,
+          }
+        : {
+            id: `area:${area.id}`,
+            label: area.name,
+            location: area.centroid,
+            detail: `${area.centroid.city}${area.centroid.state ? `, ${area.centroid.state}` : ''} · ${area.radiusKm} km`,
+          };
+      const tripMap = buildTripMapFromOrigin(`${leader.name} @ ${origin.label}`, origin, plan.stops, plan.route, plan.roi, label);
       const structuredContent = {
         caller: label,
         today: rm.today,
-        leader: { id: r.leader.id, name: r.leader.name, role: r.leader.role, daysAwayBudget: r.leader.daysAwayBudget },
-        event: { id: r.event.id, name: r.event.name, city: r.event.location.city, start: r.event.start, end: r.event.end },
-        accepted: accepted.map(candidateView),
+        leader: { id: leader.id, name: leader.name, role: leader.role, daysAwayBudget: leader.daysAwayBudget },
+        anchor: plan.anchor,
+        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, lat: area.centroid.lat, lng: area.centroid.lng, radiusKm: area.radiusKm, resolvedVia: area.resolvedVia },
+        window: win,
+        days: plan.days,
+        meetingsPerDay: plan.meetingsPerDay,
+        capacity: plan.capacity,
+        accepted: plan.stops.map(candidateView),
         notMatched,
-        route: routeView(route),
-        duration: { days, onSiteDays: duration.onSiteDays, offSiteStops: duration.offSiteStops, travelMins: round(duration.travelMins), dwellMins: duration.dwellMins },
-        roi,
-        conflicts,
+        route: routeView(plan.route),
+        duration: { days: plan.duration.days, onSiteDays: plan.duration.onSiteDays, offSiteStops: plan.duration.offSiteStops, travelMins: round(plan.duration.travelMins), dwellMins: plan.duration.dwellMins },
+        roi: plan.roi,
+        conflicts: plan.conflicts.map(conflictView),
+        overflowCount: plan.overflowCount,
+        extensionOptions: plan.extensionOptions.map(extensionOptionView),
         tripMap,
-        filter: r.filter,
-        redactedCount: r.redactedCount,
+        filter: contacts.filter,
+        redactedCount: contacts.redactedCount,
       };
       const header =
-        `Itinerary for ${r.leader.name} @ ${r.event.name}: ${accepted.length} stop(s), ` +
-        `${days} day(s), ROI ${fixed(roi.roiScore)}${roi.overBudget ? ' (OVER BUDGET)' : ''}.`;
-      const orderLine = `  route: ${route.order.map((s) => s.location.city).join(' → ')}`;
-      const conflictLines = conflicts.length
-        ? conflicts.map((c) => `  ⚠ ${c.severity}/${c.type}: ${c.message}`)
+        `Itinerary for ${leader.name} @ ${origin.label} (${area.radiusKm} km): ${plan.stops.length} stop(s), ` +
+        `${plan.days} day(s), ROI ${fixed(plan.roi.roiScore)}${plan.roi.overBudget ? ' (OVER BUDGET)' : ''}.`;
+      const orderLine = `  route: ${plan.route.order.map((s) => s.location.city).join(' → ')}`;
+      const conflictLines = plan.conflicts.length
+        ? plan.conflicts.map((c) => `  ⚠ ${c.severity}/${c.type}: ${c.message}`)
         : ['  no conflicts flagged'];
-      const notMatchedLine = notMatched.length ? [`  (ignored, not authorized/suggested: ${notMatched.join(', ')})`] : [];
+      const notMatchedLine = notMatched.length ? [`  (ignored, not authorized/in-radius: ${notMatched.join(', ')})`] : [];
       return {
         content: [{ type: 'text', text: [header, orderLine, ...conflictLines, ...notMatchedLine].join('\n') }],
         structuredContent,
