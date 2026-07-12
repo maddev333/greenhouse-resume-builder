@@ -75,19 +75,30 @@ Copy `.env.example` to `.env` at the repo root to enable the optional integratio
 
 ## How it fits together
 
+Three services (plus a distinct sandbox origin). The **one** MCP server has **two clients**: the
+agent calls its **tools**, and the browser reads its **`ui://trip-map` App resource** directly.
+
 ```
-Browser chat host (:8080)
-  └─ POST /ask ─────────────►  Orchestrator agent (:3020)   "the brain"
-                                 └─ MCP tool calls ────────►  Engagements MCP (:3010)
-                                                                • seed contacts/events/topics
-                                                                • persona security trim
-                                                                • suggest_candidates / build_itinerary
-                                                                • ui://trip-map App resource
-  ◄──────────────────────────  { answer, menu[], tripMap }
-  └─ renders the ui://trip-map MCP App in a sandboxed iframe (:8081, distinct origin)
+Browser chat host (:8080)                                  chat client + MCP-Apps host
+  │
+  ├─ POST /ask ─────────────────────►  Orchestrator agent (:3020)   "the brain"
+  │  ◄─ { answer, menu[], tripMap }        └─ MCP tools/call ──────┐
+  │                                                                ▼
+  └─ resources/read ui://trip-map ──────────────────►  Engagements MCP (:3010)
+     (rendered in a sandboxed iframe, :8081)             • seed contacts/events/topics
+                                                         • persona security trim
+                                                         • suggest_candidates / build_itinerary
+                                                         • ui://trip-map App resource
+
+  (future · optional)  Personal Context MCP  ◄── the agent calls it with per-user Entra/OBO
+                                                 to personalize the itinerary at request time
 ```
 
 See [`engagement-intelligence/ARCHITECTURE.md`](engagement-intelligence/ARCHITECTURE.md) for the
 full design (data model, blob → AI Search indexing, claims-based trim, and the modular
 capability architecture) and [`engagement-intelligence/MVP-PLAN.md`](engagement-intelligence/MVP-PLAN.md)
-for the milestone roadmap.
+for the milestone roadmap. The future per-user personalization server is designed in
+[`docs/personal-context-and-engagement-intelligence-design.md`](docs/personal-context-and-engagement-intelligence-design.md),
+and the future area-first / optioned planning flow (geo anchor, topics-in-area, leader selection,
+duration + extension options) in
+[`docs/area-first-optioned-planning-design.md`](docs/area-first-optioned-planning-design.md).

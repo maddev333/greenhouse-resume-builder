@@ -29,6 +29,11 @@ The Personal Context server is the **source of a richer, user-scoped equivalent 
 runtime signals that tune *that user's* menu and pre-briefs, consumed at request time, never written
 back to shared intelligence.
 
+It **composes with** the area-first / optioned planning flow
+([`area-first-optioned-planning-design.md`](area-first-optioned-planning-design.md)): personal
+context re-ranks *within* the leader / duration / extension options that flow produces — it never
+widens access or adds an option the shared trim withheld.
+
 ## Problem Statement
 The shared engagement-intelligence path deliberately returns organization-safe, tenant-trimmed
 recall (who-to-meet, staleness, ROI). It has **no view of the individual user's own working
