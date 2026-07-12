@@ -24,6 +24,9 @@ export interface Topic {
   id: string;
   name: string;
   smeAreas: string[];
+  domain?: string;
+  ownerOrg?: string;
+  approvedMessageId?: string | null;
 }
 
 export interface Region {
@@ -169,4 +172,10 @@ export function defaultWindow(): { start: string; end: string } {
   const start = addMonthsISO(cfg.today, cfg.shiftMonths ?? 0);
   const horizon = Number(process.env.ENGAGEMENTS_PLAN_HORIZON_DAYS) || 25;
   return { start, end: addDaysISO(start, horizon) };
+}
+
+/** The demo clock's effective "today" (shift-aware) — used to rank upcoming events for hot topics. */
+export function demoToday(): string {
+  const cfg = loadClockConfig();
+  return addMonthsISO(cfg.today, cfg.shiftMonths ?? 0);
 }

@@ -8,17 +8,22 @@ _"a chat UI that supports MCP UI apps."_
 Browser (chat host page :8080)
   │  chat + persona selector
   │
-  ├─► "Plan a trip" (area-first, interactive) — pick a region chip or type an area
-  │     ├─ POST :3020/plan-options { regionId | question, persona }   ← M5 orchestrator
+  ├─► free-form is the PRIMARY path — type anything (Enter / "Ask ▸") — POST :3020/ask { question, persona }
+  │      ⇒ { answer, menu[], itinerary, tripMap, redactedCount, rejected, mode }
+  │   render: assistant text + candidate cards (chat‑native)
+  │
+  ├─► quick-start chips just *seed* a free-form /ask (they never lock you into a flow):
+  │     ├─ 🔥 hot topics — GET :3020/topics?persona
+  │     │      ⇒ ranked [{ topicId, name, reason, question, hasApprovedMessage }]
+  │     │      click → ask(topic.question)   ("what's hot in cyber?" → the agent)
+  │     └─ 📍 areas — click a region chip → ask("Plan a trip to <area> …")
+  │
+  ├─► opt-in "Plan a trip" (deterministic area-first wizard) — POST :3020/plan-options { regionId | question, persona }
   │     │     ⇒ stage:"clarify" (region chips)  OR
   │     │       stage:"options" { area, window, areaSurvey[], questions:[leader|duration|extensions] }
   │     │   render: option cards — who should go (radios) · how long (core/extended) · extensions (checkboxes)
   │     └─ POST :3020/build { leaderId, durationTier, extensionContactIds[], regionId, persona }
   │           ⇒ { answer, menu[], itinerary, tripMap, redactedCount, rejected }
-  │
-  ├─► "Ask" (one-shot) — POST :3020/ask { question, persona }
-  │      ⇒ { answer, menu[], itinerary, tripMap, redactedCount, rejected, mode }
-  │   render: assistant text + candidate cards (chat‑native)
   │
   └─ when a tripMap comes back, embed the REAL sandboxed app:
        ├─ MCP Client → http://localhost:3010/mcp  (header x-demo-persona)
@@ -91,9 +96,24 @@ npm run start --workspace @greenhouse-resume-builder/cap-engagements-ui
 
 Open **http://localhost:8080** and keep the persona on **EA · G8**.
 
-**Interactive — "Plan a trip" (area-first):** click a **region quick-pick** (e.g. _Greater Boston_,
-_National Capital Region_) — or type an area and press **Plan a trip ▸**. The orchestrator surveys
-the topics active in that area and asks three things as selectable **option cards**:
+**Free-form is the primary path** — type anything and press **Ask ▸** (or just **Enter**). The
+agent picks the leader, resolves the topic/anchor, and returns assistant text + candidate cards
+(and a live trip map when one applies):
+
+> _I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?_
+>
+> _What's hot in cyber right now, and is there an approved message?_
+
+**Quick-start chips just *seed* that free-form ask — they never lock you into a flow:**
+
+- **🔥 Hot topics** — the ranked-hottest topics for this persona (from `GET /topics`, scored by
+  live footprint: active contacts + upcoming events). Click one to fire *"what's hot in <topic>?"*
+  into the agent. Switch persona and both the ranking and what's visible change.
+- **📍 Areas** — click a region chip to fire *"Plan a trip to <area> …"* — still free-form, so you
+  can keep steering the conversation afterwards.
+
+**Opt-in — "Plan a trip" (deterministic area-first wizard):** prefer a guided flow? Press
+**Plan a trip** to anchor on an area and answer three selectable **option cards**:
 
 - **who should go** — ranked senior leaders (radio; the top pick is pre-selected)
 - **how long** — **core** vs **extended** duration tiers (stops + trip-ROI per tier)
@@ -104,13 +124,9 @@ Pick a leader/duration, optionally tick an extension, then **Build itinerary ▸
 security-trimmed menu + live trip map. If you type something with no recognizable area, the planner
 first asks *"which area?"* and shows region chips.
 
-**One-shot — "Ask":** type a question and press **Ask** for the classic Q→A path:
-
-> _I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?_
-
-Either way, switch the persona to **EA · basic** and re-run: one more contact is redacted (the
-map/menu shrink). **No tenant** is rejected (fail‑closed); **Cross‑tenant** returns nothing
-(isolation) — the trim is enforced server-side, so both flows honor it.
+Whichever path you use, switch the persona to **EA · basic** and re-run: one more contact is
+redacted (the map/menu shrink). **No tenant** is rejected (fail‑closed); **Cross‑tenant** returns
+nothing (isolation) — the trim is enforced server-side, so every flow honors it.
 
 During development use `npm run dev` (rebuilds on change + restarts `serve.ts`).
 
@@ -138,7 +154,7 @@ These are advertised to the browser via `GET /api/config`.
 
 | File | Role |
 | --- | --- |
-| `src/index.tsx` | Chat UI: messages, persona selector, menu cards, `<TripMapHost>`, and the interactive area-first planner (`OptionsBubble` — leader/duration/extension option cards → `/build`) |
+| `src/index.tsx` | Chat UI: messages, persona selector, free-form composer (**Ask ▸** primary), 🔥 hot-topic + 📍 area quick-start chips (free-form kickoffs, hot topics from `GET /topics`), menu cards, `<TripMapHost>`, and the opt-in area-first planner (`OptionsBubble` — leader/duration/extension option cards → `/build`) |
 | `src/implementation.ts` | Host wiring: MCP client, resource read, sandbox proxy, `AppBridge`, `renderTripMapApp` (delivers the orchestrator's `tripMap` as a tool result) |
 | `src/sandbox.ts` | Sandbox proxy (outer iframe) — double‑iframe isolation + message relay |
 | `serve.ts` | Two‑port server (host + CSP‑header sandbox) + `/api/config` |

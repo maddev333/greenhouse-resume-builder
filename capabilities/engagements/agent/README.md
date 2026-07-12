@@ -34,6 +34,11 @@ question ──▶ orchestrator ──(MCP tools/call, x-demo-persona)──▶ 
 - **Area-first planning:** the `/plan-options` + `/build` seam (see *2c*) anchors on a region,
   surveys the topics active there, and returns leader / duration / extension **options** via the
   capability's `plan_options` tool — deterministic, so this path runs without Azure OpenAI.
+- **Topic-first / free-form:** `GET /topics` (see *2b*) ranks the **hottest topics** for the caller
+  by live footprint (active contacts + upcoming events, persona-trimmed) so the UI can offer
+  *"what's hot in cyber?"* chips. Each ranked topic carries a ready-made natural-language
+  `question`; picking one just seeds a free-form `/ask`, so **every entry point stays free-form** —
+  the EA can type anything and is never locked into a wizard.
 
 ## Run it
 
@@ -60,6 +65,20 @@ npm run serve --workspace @greenhouse-resume-builder/cap-engagements-agent
 # POST /ask { question, persona?, leaderId?, topN? }  on http://localhost:3020
 curl -s localhost:3020/ask -H 'content-type: application/json' \
   -d '{"question":"who should I meet at AUSA on UAS/drone?","persona":"EA_G8"}' | jq
+
+# Hot topics — a topic-first entry point (persona-trimmed). Each item carries a ready-made
+# free-form `question`; the UI fires it straight back into /ask, so it never locks the EA in.
+curl -s 'localhost:3020/topics?persona=EA_G8' | jq
+# → { persona, rejected, redactedCount,
+#     topics:[{ topicId, name, score, reason, question, hasApprovedMessage }] }
+```
+
+Or list hot topics from the CLI (same ranking, rendered as text):
+
+```bash
+npm run ask --workspace @greenhouse-resume-builder/cap-engagements-agent -- \
+  --topics --persona EA_G8
+# 🔥 T2 Cyber / zero-trust modernization — 8 active · 3 upcoming events · approved message (score …)
 ```
 
 **2c. Interactive area-first planning** (the seam the chat UI's *"Plan a trip"* flow calls):

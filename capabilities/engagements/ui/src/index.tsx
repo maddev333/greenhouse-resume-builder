@@ -126,6 +126,15 @@ interface ChatMessage {
   error?: string;
 }
 
+// Loose mirror of the orchestrator's HotTopic (GET /topics) — a topic-first way to start a search.
+interface HotTopic {
+  topicId: string;
+  name: string;
+  reason: string;
+  question: string;
+  hasApprovedMessage?: boolean;
+}
+
 let nextId = 1;
 
 // ============================================================================================
@@ -536,6 +545,7 @@ function App() {
   const [input, setInput] = useState<string>(SAMPLE_QUESTION);
   const [busy, setBusy] = useState(false);
   const [theme, setThemeState] = useState<Theme>(getTheme());
+  const [hotTopics, setHotTopics] = useState<HotTopic[]>([]);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -547,12 +557,32 @@ function App() {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, busy]);
 
-  async function ask() {
-    const question = input.trim();
+  // Hot topics are persona-trimmed, so refetch whenever the caller (persona) changes. A rejected
+  // persona (e.g. NO_TENANT) yields none — the same security-trim beat as the rest of the demo.
+  useEffect(() => {
+    if (!config) return;
+    let cancelled = false;
+    fetch(`${config.orchestratorUrl}/topics?persona=${encodeURIComponent(persona)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled) setHotTopics(d?.rejected ? [] : (d?.topics ?? []));
+      })
+      .catch(() => {
+        if (!cancelled) setHotTopics([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [config, persona]);
+
+  // Free-form ask — the primary interaction. `qOverride` lets a chip fire a starter question
+  // without clearing whatever the user has typed.
+  async function ask(qOverride?: string) {
+    const question = (qOverride ?? input).trim();
     if (!question || busy || !config) return;
     const usedPersona = persona;
     setMessages((m) => [...m, { id: nextId++, role: "user", text: question, persona: usedPersona }]);
-    setInput("");
+    if (qOverride === undefined) setInput("");
     setBusy(true);
     try {
       const res = await fetch(`${config.orchestratorUrl}/ask`, {
@@ -601,6 +631,11 @@ function App() {
 
   const onPickRegion = (regionId: string, label: string) => planOptions({ regionId, label });
 
+  // Quick-start chips just KICK OFF a free-form search (never lock into the guided wizard):
+  // a region/topic chip fires a natural-language question the agent then plans from.
+  const onPickRegionFreeform = (label: string) =>
+    ask(`Plan a trip to ${label} — who should go, how long, and what's worth doing there?`);
+
   const activePersona = PERSONAS.find((p) => p.id === persona);
 
   return (
@@ -636,17 +671,39 @@ function App() {
         {messages.length === 0 && (
           <div className="empty">
             <p>
-              Anchor on an area and the orchestrator asks who should go, how long, and what each extra day unlocks —
-              then builds a security-trimmed itinerary + live trip map. Or ask a one-shot question.
+              Type anything and the agent plans it — who to meet, where, and for how long. Or start from a hot topic
+              or an area below; you can always steer from there, or use <strong>Plan a trip</strong> for the guided
+              area planner.
             </p>
-            <div className="empty-picks">
-              {REGION_QUICKPICKS.map((r) => (
-                <button key={r.regionId} className="sample" disabled={busy || !config} onClick={() => onPickRegion(r.regionId, r.label)}>
-                  Plan a trip · {r.label}
-                </button>
-              ))}
+            {hotTopics.length > 0 && (
+              <div className="empty-group">
+                <span className="empty-label">🔥 Hot topics</span>
+                <div className="empty-picks">
+                  {hotTopics.map((t) => (
+                    <button
+                      key={t.topicId}
+                      className="sample"
+                      disabled={busy || !config}
+                      title={t.reason}
+                      onClick={() => ask(t.question)}
+                    >
+                      {t.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="empty-group">
+              <span className="empty-label">📍 Areas</span>
+              <div className="empty-picks">
+                {REGION_QUICKPICKS.map((r) => (
+                  <button key={r.regionId} className="sample" disabled={busy || !config} onClick={() => onPickRegionFreeform(r.label)}>
+                    {r.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <button className="sample" onClick={() => setInput(SAMPLE_QUESTION)}>
+            <button className="sample sample-example" onClick={() => setInput(SAMPLE_QUESTION)}>
               {SAMPLE_QUESTION}
             </button>
           </div>
@@ -684,9 +741,19 @@ function App() {
       </div>
 
       <div className="quickpicks">
-        <span className="muted">Plan a trip:</span>
+        {hotTopics.length > 0 && (
+          <>
+            <span className="muted">🔥 Hot topics:</span>
+            {hotTopics.map((t) => (
+              <button key={t.topicId} className="qp qp-topic" disabled={busy || !config} title={t.reason} onClick={() => ask(t.question)}>
+                {t.name}
+              </button>
+            ))}
+          </>
+        )}
+        <span className="muted">📍 Areas:</span>
         {REGION_QUICKPICKS.map((r) => (
-          <button key={r.regionId} className="qp" disabled={busy || !config} onClick={() => onPickRegion(r.regionId, r.label)}>
+          <button key={r.regionId} className="qp" disabled={busy || !config} onClick={() => onPickRegionFreeform(r.label)}>
             {r.label}
           </button>
         ))}
@@ -699,24 +766,29 @@ function App() {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              planOptions({ question: input.trim() || undefined });
+              ask();
             }
           }}
-          placeholder="Name an area or ask about a trip… (Enter = plan options, Shift+Enter = newline)"
+          placeholder="Ask anything — or start from a chip above… (Enter to ask, Shift+Enter for newline)"
           rows={2}
           disabled={busy || !config}
         />
         <div className="composer-actions">
           <button
             className="send"
+            onClick={() => ask()}
+            disabled={busy || !config || !input.trim()}
+            title="Ask the agent anything — it plans from your words (who to meet, where, how long)"
+          >
+            {busy ? "…" : "Ask ▸"}
+          </button>
+          <button
+            className="ask"
             onClick={() => planOptions({ question: input.trim() || undefined })}
             disabled={busy || !config}
-            title="Ask who should go, how long, and what each extra day unlocks"
+            title="Guided area planner: who should go, how long, and what each extra day unlocks"
           >
-            {busy ? "…" : "Plan a trip ▸"}
-          </button>
-          <button className="ask" onClick={ask} disabled={busy || !config || !input.trim()} title="One-shot answer + trip map">
-            Ask
+            Plan a trip
           </button>
         </div>
       </div>

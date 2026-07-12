@@ -15,7 +15,10 @@ import mcpCore from '@greenhouse-resume-builder/mcp-core';
 import { AGENT_TOOLS, makeToolClient, type CapturedCall, type ToolClient } from './tools.js';
 import {
   type AreaInput,
+  type Topic,
   defaultWindow,
+  demoToday,
+  loadTopics,
   regionChoices,
   resolveAreaInput,
   resolveDefaultLeaderId,
@@ -718,6 +721,137 @@ export async function buildAreaItinerary(req: AreaBuildRequest): Promise<PlanRes
     const built = assembleBuild(base, client.captured);
     built.answer = lastCapture(client.captured, 'build_itinerary')?.text ?? built.answer;
     return built;
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Hot topics — a topic-first way to INITIATE a search (not a locked flow).
+//
+// Ranks the seed taxonomy by the caller's live footprint (persona-trimmed): active vs prospect
+// contacts, on-site events, upcoming events, and whether an approved message exists. The UI shows
+// these as chips; clicking one just sends the topic's `question` to the free-form /ask agent, so
+// the human can then steer wherever they like. NO_TENANT/cross-tenant => empty (same trim beat).
+// ════════════════════════════════════════════════════════════════════════════
+
+export interface HotTopic {
+  topicId: string;
+  name: string;
+  activeCount: number;
+  prospectCount: number;
+  eventCount: number;
+  upcomingEventCount: number;
+  hasApprovedMessage: boolean;
+  /** Footprint score (fixed(2) string) the chips are ranked by, hottest first. */
+  score: string;
+  /** One-line "why it's hot" for the chip tooltip. */
+  reason: string;
+  /** The natural-language ask a chip fires into /ask — free-form, never a locked wizard. */
+  question: string;
+}
+
+export interface HotTopicsRequest {
+  persona?: string;
+  serverUrl?: string;
+}
+
+export interface HotTopicsResult {
+  ok: boolean;
+  persona: string;
+  rejected: boolean;
+  topics: HotTopic[];
+  redactedCount: number | null;
+  error?: string;
+}
+
+/** The free-form question a hot-topic chip sends to the agent. */
+export function hotTopicQuestion(name: string): string {
+  return `What's the engagement picture on ${name} right now — who should we meet, where is it most active, and is there an approved message?`;
+}
+
+/**
+ * Pure ranker: fold the caller's authorized contacts + events into a per-topic footprint and
+ * sort hottest-first. Kept side-effect-free so it is unit-testable without a live server.
+ * Only topics with a non-zero footprint are returned (a topic no one can see is not "hot").
+ */
+export function rankHotTopics(
+  contacts: { topicIds?: string[]; status?: string }[],
+  events: { topicIds?: string[]; start?: string }[],
+  topics: Topic[],
+  today: string,
+): HotTopic[] {
+  const ranked = topics.map((t) => {
+    const tc = contacts.filter((c) => c.topicIds?.includes(t.id));
+    const activeCount = tc.filter((c) => c.status === 'active').length;
+    const prospectCount = tc.filter((c) => c.status === 'prospect').length;
+    const te = events.filter((e) => e.topicIds?.includes(t.id));
+    const eventCount = te.length;
+    const upcomingEventCount = te.filter((e) => (e.start ?? '') >= today).length;
+    const hasApprovedMessage = !!t.approvedMessageId;
+
+    const score = activeCount * 1 + upcomingEventCount * 1.5 + eventCount * 0.5 + prospectCount * 0.3 + (hasApprovedMessage ? 0.5 : 0);
+    const reason = [
+      activeCount ? `${activeCount} active` : null,
+      prospectCount ? `${prospectCount} prospect` : null,
+      upcomingEventCount ? `${upcomingEventCount} upcoming event${upcomingEventCount > 1 ? 's' : ''}` : eventCount ? `${eventCount} event${eventCount > 1 ? 's' : ''}` : null,
+      hasApprovedMessage ? 'approved message' : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+
+    return {
+      topicId: t.id,
+      name: t.name,
+      activeCount,
+      prospectCount,
+      eventCount,
+      upcomingEventCount,
+      hasApprovedMessage,
+      score: score.toFixed(2),
+      reason: reason || 'no live footprint',
+      question: hotTopicQuestion(t.name),
+    };
+  });
+
+  // "Hot" requires a real footprint (contacts/events). An approved message alone is readiness,
+  // not activity, so it only boosts ordering among topics that already have a footprint.
+  return ranked
+    .filter((t) => t.activeCount + t.prospectCount + t.eventCount > 0)
+    .sort((a, b) => Number(b.score) - Number(a.score) || a.name.localeCompare(b.name));
+}
+
+/**
+ * Rank the seed topics by the caller's authorized footprint. Two cheap, already-trimmed tool
+ * calls (search_contacts + search_events with no filter) feed the pure ranker above.
+ */
+export async function hotTopics(req: HotTopicsRequest): Promise<HotTopicsResult> {
+  const persona = req.persona || DEFAULT_PERSONA();
+  const url = req.serverUrl || DEFAULT_URL();
+  const base: HotTopicsResult = { ok: false, persona, rejected: false, topics: [], redactedCount: null };
+
+  let client: ToolClient;
+  try {
+    client = await makeToolClient(url, persona);
+  } catch (e: any) {
+    return {
+      ...base,
+      error:
+        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
+        'Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.',
+    };
+  }
+
+  try {
+    const contactsRes: any = await client.callTool('search_contacts', {});
+    if (contactsRes?.rejected) {
+      return { ...base, ok: true, rejected: true, redactedCount: contactsRes.redactedCount ?? null };
+    }
+    const eventsRes: any = await client.callTool('search_events', {});
+    const topics = rankHotTopics(contactsRes?.contacts ?? [], eventsRes?.events ?? [], loadTopics(), demoToday());
+    return { ...base, ok: true, topics, redactedCount: contactsRes?.redactedCount ?? null };
+  } catch (e: any) {
+    return { ...base, error: e?.message || String(e) };
   } finally {
     await client.close().catch(() => {});
   }

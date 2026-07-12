@@ -7,7 +7,7 @@
  * running (default http://localhost:3010/mcp; override with ENGAGEMENTS_MCP_URL).
  */
 import './load-env.js';
-import { buildAreaItinerary, planAreaOptions, planTrip } from './orchestrator.js';
+import { buildAreaItinerary, hotTopics, planAreaOptions, planTrip } from './orchestrator.js';
 
 interface CliArgs {
   question?: string;
@@ -15,6 +15,7 @@ interface CliArgs {
   leader?: string;
   top?: number;
   options?: boolean;
+  topics?: boolean;
   region?: string;
   window?: string;
 }
@@ -28,6 +29,7 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === '--leader') out.leader = argv[++i];
     else if (a === '--top') out.top = Number(argv[++i]);
     else if (a === '--options') out.options = true;
+    else if (a === '--topics') out.topics = true;
     else if (a === '--region') out.region = argv[++i];
     else if (a === '--window') out.window = argv[++i];
     else rest.push(a);
@@ -69,6 +71,19 @@ async function options(argv: string[]): Promise<void> {
   if (process.env.ENGAGEMENTS_AGENT_JSON) console.log(`\n${JSON.stringify(result, null, 2)}`);
 }
 
+/** Hot topics from the CLI: rank the seed taxonomy by the persona's live footprint. */
+async function topics(argv: string[]): Promise<void> {
+  const args = parseArgs(argv);
+  const result = await hotTopics({ persona: args.persona });
+  console.log(`\n[persona ${result.persona}]${result.rejected ? '  ACCESS REJECTED' : ''}`);
+  if (result.error) console.error(`\n! ${result.error}`);
+  if (result.topics.length === 0 && !result.error) console.log('\n(no hot topics visible to this persona)');
+  for (const t of result.topics) {
+    console.log(`  🔥 ${t.topicId} ${t.name}  — ${t.reason} (score ${t.score})`);
+  }
+  if (process.env.ENGAGEMENTS_AGENT_JSON) console.log(`\n${JSON.stringify(result, null, 2)}`);
+}
+
 async function ask(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   if (!args.question) {
@@ -97,6 +112,17 @@ async function serve(): Promise<void> {
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true, service: 'engagements-orchestrator', mcp: process.env.ENGAGEMENTS_MCP_URL || 'http://localhost:3010/mcp' });
+  });
+
+  // Hot topics — a topic-first entry point for the UI. Persona-trimmed; picking one just seeds a
+  // free-form /ask, so it kicks off a search without locking the user into a flow.
+  app.get('/topics', async (req, res) => {
+    const persona = typeof req.query.persona === 'string' ? req.query.persona : undefined;
+    try {
+      res.json(await hotTopics({ persona }));
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e?.message || String(e) });
+    }
   });
 
   app.post('/ask', async (req, res) => {
@@ -142,7 +168,8 @@ async function serve(): Promise<void> {
   const port = Number(process.env.ENGAGEMENTS_AGENT_PORT || 3020);
   app.listen(port, () => {
     console.log(`Engagements orchestrator on http://localhost:${port}`);
-    console.log(`  POST /ask           { question, persona?, leaderId?, topN? }            — one-shot plan`);
+    console.log(`  POST /ask           { question, persona?, leaderId?, topN? }            — one-shot / free-form plan`);
+    console.log(`  GET  /topics        ?persona=EA_G8                                       — hot topics (topic-first entry)`);
     console.log(`  POST /plan-options  { question?|region?|city?, persona?, window? }       — interactive: survey + option menus`);
     console.log(`  POST /build         { leaderId, durationTier?, extensionContactIds?, region? } — build itinerary + trip map`);
     console.log(`  -> engagements MCP: ${process.env.ENGAGEMENTS_MCP_URL || 'http://localhost:3010/mcp'}`);
@@ -154,6 +181,7 @@ const argv = process.argv.slice(2);
 function dispatch(): Promise<void> {
   if (argv.includes('--serve')) return serve();
   const rest = argv.filter((a) => a !== '--serve');
+  if (rest.includes('--topics')) return topics(rest);
   if (rest.includes('--options')) return options(rest);
   return ask(rest);
 }

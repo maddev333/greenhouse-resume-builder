@@ -522,12 +522,46 @@ body {
   cursor: default;
 }
 
+/* Hot-topic chips get an accent tint to distinguish them from area chips. */
+.quickpicks .qp-topic {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel-2));
+}
+
 .empty-picks {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   justify-content: center;
   margin-top: 14px;
+}
+
+/* Grouped quick-starts in the empty state (Hot topics / Areas). */
+.empty-group {
+  margin-top: 16px;
+}
+
+.empty-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+}
+
+.empty-group .empty-picks {
+  margin-top: 8px;
+}
+
+/* Reset the standalone-sample top margin when samples sit inside a picks row. */
+.empty-picks .sample {
+  margin-top: 0;
+}
+
+.empty .sample-example {
+  font-style: italic;
+  opacity: 0.85;
 }
 
 /* ---- interactive planner (option groups) ---- */

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { loadLeaders, loadRegions, loadTopics, defaultWindow, regionChoices, resolveAreaInput, resolveDefaultLeaderId, rosterForPrompt, topicIdsFromText, topicsForPrompt } from './catalog.js';
 import { AGENT_TOOLS } from './tools.js';
-import { anchorGuess, areaClarifyQuestion, buildOptionQuestions, buildSystemPrompt, selectedContactIds } from './orchestrator.js';
+import { anchorGuess, areaClarifyQuestion, buildOptionQuestions, buildSystemPrompt, hotTopicQuestion, rankHotTopics, selectedContactIds } from './orchestrator.js';
 
 test('topicIdsFromText maps UAS/drone to T3', () => {
   assert.deepEqual(topicIdsFromText('who should I meet on UAS/drone?'), ['T3']);
@@ -152,4 +152,47 @@ test('selectedContactIds combines the chosen duration tier stops with toggled ex
     selectedContactIds(PLAN_FIXTURE, { durationTier: 'core', extensionContactIds: ['C24', 'C22'] }),
     ['C21', 'C22', 'C24'],
   );
+});
+
+// ── Hot topics — topic-first entry point (persona-trimmed footprint ranking) ─
+
+const HT_TOPICS = [
+  { id: 'T1', name: 'Industrial Base', smeAreas: [], approvedMessageId: 'M-T1' },
+  { id: 'T2', name: 'Cyber', smeAreas: [], approvedMessageId: 'M-T2' },
+  { id: 'T3', name: 'Innovation', smeAreas: [], approvedMessageId: null },
+  { id: 'T4', name: 'Talent', smeAreas: [], approvedMessageId: 'M-T4' },
+];
+
+test('rankHotTopics ranks by live footprint (active + upcoming events) hottest-first', () => {
+  const contacts = [
+    { topicIds: ['T2'], status: 'active' },
+    { topicIds: ['T2'], status: 'active' },
+    { topicIds: ['T2'], status: 'prospect' },
+    { topicIds: ['T1'], status: 'active' },
+  ];
+  const events = [
+    { topicIds: ['T2'], start: '2025-10-20' }, // upcoming
+    { topicIds: ['T1'], start: '2025-01-01' }, // past
+  ];
+  const ranked = rankHotTopics(contacts, events, HT_TOPICS as any, '2025-10-06');
+
+  // T2: 2 active + 1 prospect + 1 upcoming event + approved msg => hottest.
+  assert.equal(ranked[0].topicId, 'T2');
+  assert.equal(ranked[0].activeCount, 2);
+  assert.equal(ranked[0].upcomingEventCount, 1);
+  assert.ok(ranked[0].hasApprovedMessage);
+  // Ranked descending by score.
+  for (let i = 1; i < ranked.length; i++) assert.ok(Number(ranked[i - 1].score) >= Number(ranked[i].score));
+  // Zero-footprint topics (T3, T4) are not "hot" and are dropped.
+  assert.ok(!ranked.some((t) => t.topicId === 'T3' || t.topicId === 'T4'));
+});
+
+test('rankHotTopics returns [] when the caller sees nothing', () => {
+  assert.deepEqual(rankHotTopics([], [], HT_TOPICS as any, '2025-10-06'), []);
+});
+
+test('hotTopicQuestion is a free-form ask naming the topic', () => {
+  const q = hotTopicQuestion('Cyber / zero-trust modernization');
+  assert.ok(q.includes('Cyber / zero-trust modernization'));
+  assert.ok(/who should we meet/i.test(q));
 });
