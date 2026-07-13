@@ -36,7 +36,9 @@ const REJECTED = (reason: string): TrimmedResult<never> => ({
 });
 
 const contactHaystack = (c: Contact): string =>
-  [c.name, c.org ?? '', ...(c.smeAreas ?? [])].join(' ').toLowerCase();
+  [c.name, c.org ?? '', ...(c.smeAreas ?? []), c.location.city, c.location.state ?? '']
+    .join(' ')
+    .toLowerCase();
 
 const eventHaystack = (e: EngagementEvent): string =>
   [e.name, e.location.city, e.location.state ?? ''].join(' ').toLowerCase();

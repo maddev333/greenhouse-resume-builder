@@ -46,6 +46,16 @@ test('missing tenant claim is rejected (fail-closed), not silently empty', () =>
   assert.match(r.filter, /rejected/);
 });
 
+test('free-text query matches a contact by city/state, not just name/org (geo lookup)', () => {
+  // A location-first ask ("who's in Austin TX?") must find contacts physically there even when the
+  // city name never appears in their name/org — the haystack includes location.city + state.
+  const austin = idx.searchContacts({ ctx: EA_G8, query: 'Austin TX' });
+  assert.deepEqual(ids(austin.items), ['C29', 'C30', 'C6', 'P3']);
+
+  const sanAntonio = idx.searchContacts({ ctx: EA_G8, query: 'San Antonio' });
+  assert.deepEqual(ids(sanAntonio.items), ['C9']);
+});
+
 /**
  * The security trim runs BEFORE the planner scores anything: feed the persona's authorized contacts
  * into `suggest()` for the AUSA/UAS trace and confirm C4 is scored for the cleared EA and simply

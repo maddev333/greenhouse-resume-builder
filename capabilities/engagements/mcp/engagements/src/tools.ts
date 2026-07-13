@@ -424,7 +424,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         '(tenant isolation + group ACL + sensitivity) runs server-side FIRST, so unauthorized records ' +
         'never leave the index. Reports the exact OData $filter and how many in-scope rows were redacted.',
       inputSchema: {
-        query: z.string().optional().describe('Free-text over name / org / SME area.'),
+        query: z.string().optional().describe('Free-text over name / org / SME area / city / state (e.g. "Austin" or "Austin TX").'),
         topicIds: z.array(z.string()).optional().describe('Restrict to contacts tagged with any of these topic ids (e.g. ["T3"]).'),
         status: z.enum(['active', 'prospect']).optional().describe('active = existing relationship; prospect = never engaged.'),
       },
