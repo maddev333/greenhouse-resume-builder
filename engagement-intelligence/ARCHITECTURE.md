@@ -315,7 +315,7 @@ Pure, deterministic, unit-tested modules:
 
 | Module         | Responsibility                                                                 |
 | -------------- | ------------------------------------------------------------------------------ |
-| `distance.ts`  | `haversineKm(a,b)`; `etaMinutes(a,b)` heuristic (ground vs. air)               |
+| `distance.ts`  | `haversineMi(a,b)`; `etaMinutes(a,b)` heuristic (ground vs. air)               |
 | `score.ts`     | `stalenessNorm`, `valueNorm`, `topicRelevance`; `suggestionScore = product/weighted` |
 | `suggest.ts`   | Given `(leader, anchor, window)` → candidate stops from **3 sources** — event **attendees** (travel≈0), **nearby** contacts, topic-matched **prospects** — ranked + tagged `re-engage\|initiate` / `on-site\|off-site` |
 | `route.ts`     | `greedyOrder(anchor, stops)` nearest-neighbor (+ optional 2-opt); emits legs   |
@@ -323,8 +323,8 @@ Pure, deterministic, unit-tested modules:
 | `roi.ts`       | `tripRoi = Σ(suggestionScore) − (airfare + perDiem·days + timePenalty)`; budget check |
 
 **ETA heuristic (tunable; the honest stand-in for real routing):**
-- **Ground** when haversine ≤ ~500 km: `distanceKm / 90 kmh + 0.5 h` buffer.
-- **Air** otherwise: `1.5 h` (airport/security) `+ distanceKm / 800 kmh + 1.0 h` arrival buffer.
+- **Ground** when haversine ≤ ~300 mi: `distanceMi / 55 mph + 0.5 h` buffer.
+- **Air** otherwise: `1.5 h` (airport/security) `+ distanceMi / 500 mph + 1.0 h` arrival buffer.
 - **Optional upgrade:** Azure Maps **Route Matrix** (same account/key) swaps in real drive times behind
   the same `etaMinutes()` interface — a one-file change, off by default.
 

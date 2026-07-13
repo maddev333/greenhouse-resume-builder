@@ -64,7 +64,7 @@ test('anchorGuess falls back to the phrase after a preposition', () => {
 test('parseRadiusAsk extracts days + company after meet/visit', () => {
   assert.deepEqual(parseRadiusAsk('plan 3 days meeting Meridian Robotics'), {
     days: 3,
-    radiusKm: undefined,
+    radiusMi: undefined,
     company: 'Meridian Robotics',
     city: undefined,
   });
@@ -73,16 +73,16 @@ test('parseRadiusAsk extracts days + company after meet/visit', () => {
 test('parseRadiusAsk extracts days + place after a proximity preposition', () => {
   assert.deepEqual(parseRadiusAsk('2 days around Reston'), {
     days: 2,
-    radiusKm: undefined,
+    radiusMi: undefined,
     company: undefined,
     city: 'Reston',
   });
 });
 
-test('parseRadiusAsk parses an explicit within-X-mi radius (converted to km)', () => {
+test('parseRadiusAsk parses an explicit within-X-mi radius (kept in miles)', () => {
   const r = parseRadiusAsk('plan 4 days within 50 mi of Reston');
   assert.equal(r?.days, 4);
-  assert.equal(r?.radiusKm, 80); // 50 mi → 80 km
+  assert.equal(r?.radiusMi, 50); // 50 mi kept as-is
   assert.equal(r?.city, 'Reston');
 });
 
@@ -99,7 +99,7 @@ test('buildRadiusQuestions surfaces the leader menu with the chosen leader pre-s
   const plan = {
     chosenLeaderId: 'L1',
     leaderOptions: [
-      { leaderId: 'L1', name: 'Gen. Vance', role: 'CG', score: 9, distanceKm: 12 },
+      { leaderId: 'L1', name: 'Gen. Vance', role: 'CG', score: 9, distanceMi: 12 },
       { leaderId: 'L2', name: 'Lt. Gen. Ruiz', role: 'DCG', score: 6 },
     ],
     extensionOptions: [
@@ -175,8 +175,8 @@ test('areaClarifyQuestion offers the known regions as chips', () => {
 const PLAN_FIXTURE = {
   chosenLeaderId: 'L2',
   leaderOptions: [
-    { leaderId: 'L2', name: 'MG Two', role: 'DCG', score: '0.81', distanceKm: 12, availableInWindow: true },
-    { leaderId: 'L1', name: 'GEN One', role: 'CG', score: '0.64', distanceKm: 40, availableInWindow: false },
+    { leaderId: 'L2', name: 'MG Two', role: 'DCG', score: '0.81', distanceMi: 12, availableInWindow: true },
+    { leaderId: 'L1', name: 'GEN One', role: 'CG', score: '0.64', distanceMi: 40, availableInWindow: false },
   ],
   durationOptions: [
     { tier: 'core', days: 3, stops: [{ contactId: 'C21' }, { contactId: 'C22' }], roiScore: '0.55', overBudget: false },

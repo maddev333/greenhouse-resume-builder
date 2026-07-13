@@ -31,7 +31,7 @@ function route(offSite: number, totalTravelMins: number): RouteResult {
       ...Array.from({ length: offSite }, (_, i) => ({ id: `o${i}`, location: RESTON, kind: 'off-site' as const })),
     ],
     legs: [],
-    totalKm: 0,
+    totalMi: 0,
     totalTravelMins,
   };
 }
@@ -85,7 +85,7 @@ const cand = (c: Contact, score: number): Candidate => ({
   contactId: c.id,
   name: c.name,
   location: c.location,
-  distanceKm: 34,
+  distanceMi: 34,
   placement: 'off-site',
   kind: c.status === 'prospect' ? 'initiate' : 're-engage',
   status: c.status,
@@ -140,9 +140,9 @@ test('extensionOptions: every option carries talking points and is ranked by mar
 test('durationOptions: always offers a core tier; extended appears only when it adds stops', () => {
   const onsite = cand(meridian, 0.9); // reuse shape but mark on-site
   const candidates: Candidate[] = [
-    { ...onsite, contactId: 'ON', placement: 'on-site', distanceKm: 0 },
+    { ...onsite, contactId: 'ON', placement: 'on-site', distanceMi: 0 },
     cand(meridian, 0.8),
-    { ...cand(startup, 0.5), contactId: 'FAR', distanceKm: 900 },
+    { ...cand(startup, 0.5), contactId: 'FAR', distanceMi: 900 },
   ];
   const opts = durationOptions({
     candidates,
@@ -150,7 +150,7 @@ test('durationOptions: always offers a core tier; extended appears only when it 
     leader: leaderL1,
     window: { start: '2025-10-13', end: '2025-10-17' },
     onSiteDays: 4,
-    coreRadiusKm: 150,
+    coreRadiusMi: 150,
     contactsById: new Map<string, Contact>([['C3', meridian], ['P9', startup]]),
   });
   assert.equal(opts[0].tier, 'core');

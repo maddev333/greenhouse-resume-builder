@@ -78,7 +78,7 @@ export const AGENT_TOOLS: AgentTool[] = [
         state: { type: 'string', description: 'State for the city anchor.' },
         region: { type: 'string', description: 'Free-text region/alias ("NCR").' },
         regionId: { type: 'string', description: 'Known region id (e.g. "R-NCR").' },
-        radiusKm: { type: 'number', description: 'Search radius around the anchor (km).' },
+        radiusMi: { type: 'number', description: 'Search radius around the anchor (mi).' },
         days: { type: 'number', description: 'FIXED trip length in days the leader is on the ground.' },
         meetingsPerDay: { type: 'number', description: 'Meetings/day capacity (default 2).' },
         window: {
@@ -115,7 +115,7 @@ export const AGENT_TOOLS: AgentTool[] = [
         state: { type: 'string', description: 'Radius mode: state for the city anchor.' },
         region: { type: 'string', description: 'Radius mode: free-text region/alias.' },
         regionId: { type: 'string', description: 'Radius mode: known region id.' },
-        radiusKm: { type: 'number', description: 'Radius mode: search radius (km).' },
+        radiusMi: { type: 'number', description: 'Radius mode: search radius (mi).' },
         days: { type: 'number', description: 'Radius mode: FIXED trip length in days.' },
         meetingsPerDay: { type: 'number', description: 'Radius mode: meetings/day capacity.' },
         window: {

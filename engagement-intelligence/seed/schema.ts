@@ -67,7 +67,7 @@ export interface Region extends BaseEntity {
   name: string;
   aliases?: string[]; // e.g. ["NCR", "DC metro"]
   centroid: GeoPoint;
-  defaultRadiusKm: number;
+  defaultRadiusMi: number;
 }
 
 // ── CRM spine ───────────────────────────────────────────────────────────
@@ -266,7 +266,7 @@ export interface Leg {
   fromStopId: string;
   toStopId: string;
   mode: 'air' | 'ground';
-  distanceKm: number;
+  distanceMi: number;
   estTravelMins: number;
   cost?: number;
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadDataset } from './seed-loader';
-import { resolveArea, anchorFromArea, DEFAULT_AREA_RADIUS_KM } from './area';
+import { resolveArea, anchorFromArea, DEFAULT_AREA_RADIUS_MI } from './area';
 
 const ds = loadDataset();
 const contactPoints = ds.contacts.map((c) => c.location);
@@ -12,7 +12,7 @@ test('resolveArea: by regionId → centroid + default radius', () => {
   assert.equal(area!.id, 'R-NCR');
   assert.equal(area!.resolvedVia, 'regionId');
   assert.equal(area!.centroid.city, 'Washington');
-  assert.equal(area!.radiusKm, 120);
+  assert.equal(area!.radiusMi, 75);
 });
 
 test('resolveArea: by alias is case-insensitive', () => {
@@ -22,9 +22,9 @@ test('resolveArea: by alias is case-insensitive', () => {
   assert.equal(area!.resolvedVia, 'regionName');
 });
 
-test('resolveArea: radiusKm override wins over the region default', () => {
-  const area = resolveArea({ regionId: 'R-NCR', radiusKm: 50 }, ds.regions, contactPoints);
-  assert.equal(area!.radiusKm, 50);
+test('resolveArea: radiusMi override wins over the region default', () => {
+  const area = resolveArea({ regionId: 'R-NCR', radiusMi: 50 }, ds.regions, contactPoints);
+  assert.equal(area!.radiusMi, 50);
 });
 
 test('resolveArea: bare city falls back to an authorized record point (offline geocode)', () => {
@@ -33,7 +33,7 @@ test('resolveArea: bare city falls back to an authorized record point (offline g
   assert.ok(area, 'Huntsville should resolve from a known contact point');
   assert.equal(area!.resolvedVia, 'city');
   assert.equal(area!.centroid.city, 'Huntsville');
-  assert.equal(area!.radiusKm, DEFAULT_AREA_RADIUS_KM);
+  assert.equal(area!.radiusMi, DEFAULT_AREA_RADIUS_MI);
 });
 
 test('resolveArea: unknown area → undefined (tool then asks the caller to pick)', () => {
@@ -41,20 +41,20 @@ test('resolveArea: unknown area → undefined (tool then asks the caller to pick
 });
 
 test('resolveArea: raw lat/lng → a coords anchor with the given label + radius', () => {
-  const area = resolveArea({ lat: 30.2672, lng: -97.7431, label: 'Lone Star Dynamics', radiusKm: 75 }, ds.regions);
+  const area = resolveArea({ lat: 30.2672, lng: -97.7431, label: 'Lone Star Dynamics', radiusMi: 75 }, ds.regions);
   assert.ok(area);
   assert.equal(area!.resolvedVia, 'coords');
   assert.equal(area!.name, 'Lone Star Dynamics');
   assert.equal(area!.centroid.lat, 30.2672);
   assert.equal(area!.centroid.lng, -97.7431);
-  assert.equal(area!.radiusKm, 75);
+  assert.equal(area!.radiusMi, 75);
 });
 
 test('resolveArea: raw lat/lng with no label → falls back to a coordinate label + default radius', () => {
   const area = resolveArea({ lat: 38.9586, lng: -77.357 }, ds.regions);
   assert.ok(area);
   assert.equal(area!.resolvedVia, 'coords');
-  assert.equal(area!.radiusKm, DEFAULT_AREA_RADIUS_KM);
+  assert.equal(area!.radiusMi, DEFAULT_AREA_RADIUS_MI);
   assert.match(area!.name, /38\.9586.*-77\.357/);
 });
 

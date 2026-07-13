@@ -9,21 +9,21 @@
 export interface PlannerWeights {
   // ── ETA heuristic (distance → travel minutes) ──
   /** At/under this haversine distance a leg is driven, otherwise flown. */
-  groundThresholdKm: number;
-  groundSpeedKmh: number;
+  groundThresholdMi: number;
+  groundSpeedMph: number;
   /** Fixed ground buffer (parking/last-mile), minutes. */
   groundBufferMins: number;
   /** Fixed air overhead before cruise (airport + security), minutes. */
   airFixedMins: number;
-  airSpeedKmh: number;
+  airSpeedMph: number;
   /** Fixed air overhead after cruise (arrival/ground transfer), minutes. */
   airArrivalBufferMins: number;
 
   // ── Suggestion scoring ──
   /** Days-since-last-interaction that maps to a full staleness of 1.0 (linear, clamped). */
   stalenessSpanDays: number;
-  /** Default radius (km) for "nearby" off-site candidates around a trip anchor. */
-  nearbyRadiusKm: number;
+  /** Default radius (mi) for "nearby" off-site candidates around a trip anchor. */
+  nearbyRadiusMi: number;
   /** |level gap| at/above which the soft "fit" level flag fires. */
   levelGapFlag: number;
 
@@ -36,15 +36,15 @@ export interface PlannerWeights {
 }
 
 export const DEFAULT_WEIGHTS: PlannerWeights = {
-  groundThresholdKm: 500,
-  groundSpeedKmh: 90,
+  groundThresholdMi: 300,
+  groundSpeedMph: 55,
   groundBufferMins: 30,
   airFixedMins: 90,
-  airSpeedKmh: 800,
+  airSpeedMph: 500,
   airArrivalBufferMins: 60,
 
   stalenessSpanDays: 360,
-  nearbyRadiusKm: 500,
+  nearbyRadiusMi: 300,
   levelGapFlag: 2,
 
   airfarePerAirLeg: 0.35,

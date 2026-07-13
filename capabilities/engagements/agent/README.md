@@ -131,12 +131,12 @@ nearby conference's roster**. Two stateless stages, deterministic (works offline
 
 ```bash
 # Stage 1 — anchor + fixed days → filled trip + who/extend menus.
-#   Anchor by any of: company | anchorContactId | lat+lng | city (+ optional radiusKm, default 150).
+#   Anchor by any of: company | anchorContactId | lat+lng | city (+ optional radiusMi, default 100).
 curl -s localhost:3020/plan-radius -H 'content-type: application/json' \
   -d '{"company":"Meridian Robotics","days":3,"persona":"EA_G8"}' | jq
 # → { anchor, area, days, capacity, stops[], leaderOptions[], extensionOptions[], questions[], redactedCount }
 curl -s localhost:3020/plan-radius -H 'content-type: application/json' \
-  -d '{"lat":38.9586,"lng":-77.357,"radiusKm":60,"days":2,"persona":"EA_G8"}' | jq
+  -d '{"lat":38.9586,"lng":-77.357,"radiusMi":40,"days":2,"persona":"EA_G8"}' | jq
 
 # Stage 2 — the EA's picks → event-less itinerary + trip map (leaderId + days required)
 curl -s localhost:3020/build-radius -H 'content-type: application/json' \
@@ -150,11 +150,11 @@ Or from the CLI — renders the same menus as text:
 npm run ask --workspace @greenhouse-resume-builder/cap-engagements-agent -- \
   --radius --company "Meridian Robotics" --days 3 --persona EA_G8
 # anchor by coordinate/city instead: --lat 38.9586 --lng -77.357  |  --city Reston --region NCR
-# tune the reach/capacity:           --radius-km 60  (alias --km)
+# tune the reach/capacity:           --radius-mi 40  (alias --mi)
 ```
 
 Free-form `/ask` handles the same intent conversationally — *"plan a 2-day trip meeting Meridian
-Robotics within 60 km"* — the LLM (or the deterministic `parseRadiusAsk` fallback) routes it through
+Robotics within 40 mi"* — the LLM (or the deterministic `parseRadiusAsk` fallback) routes it through
 `plan_radius`/`build_itinerary` and honors the radius, so far-away contacts are excluded.
 
 

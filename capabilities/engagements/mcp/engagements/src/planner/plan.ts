@@ -22,7 +22,7 @@ import type {
 } from '@greenhouse-resume-builder/shared';
 import { DEFAULT_WEIGHTS, PlannerWeights } from './weights';
 import { daysBetween, loadConfig, DemoConfig } from './clock';
-import { haversineKm } from './distance';
+import { haversineMi } from './distance';
 import { suggest } from './suggest';
 import { planRoute } from './route';
 import { tripRoi } from './roi';
@@ -114,10 +114,10 @@ const rangesOverlap = (aStart: string, aEnd: string, bStart: string, bEnd: strin
 export interface AreaCandidatesInput {
   leader: Leader;
   centroid: GeoPoint;
-  /** In-area radius (km) — bounds the events that get auto-absorbed as on-site sub-anchors. */
-  radiusKm: number;
-  /** Wider reachable radius (km) for off-site sourcing, so farther "+1 day" stops surface. */
-  reachRadiusKm?: number;
+  /** In-area radius (mi) — bounds the events that get auto-absorbed as on-site sub-anchors. */
+  radiusMi: number;
+  /** Wider reachable radius (mi) for off-site sourcing, so farther "+1 day" stops surface. */
+  reachRadiusMi?: number;
   window: DateRange;
   contacts: Contact[];
   events: EngagementEvent[];
@@ -141,10 +141,10 @@ export interface AreaCandidates {
  */
 export function gatherAreaCandidates(input: AreaCandidatesInput): AreaCandidates {
   const w = input.weights ?? DEFAULT_WEIGHTS;
-  const reach = Math.max(input.radiusKm, input.reachRadiusKm ?? input.radiusKm);
+  const reach = Math.max(input.radiusMi, input.reachRadiusMi ?? input.radiusMi);
   const absorbed = input.events.filter(
     (e) =>
-      haversineKm(input.centroid, e.location) <= input.radiusKm &&
+      haversineMi(input.centroid, e.location) <= input.radiusMi &&
       rangesOverlap(e.start, e.end, input.window.start, input.window.end),
   );
 
@@ -161,14 +161,14 @@ export function gatherAreaCandidates(input: AreaCandidatesInput): AreaCandidates
 
   // (1) off-site relationships within reach of the area centroid (event-less anchor).
   const areaAnchor: Anchor = { id: `area:${input.centroid.city}`, location: input.centroid, window: input.window, topicIds: input.topicIds };
-  for (const c of suggest({ leader: input.leader, anchor: areaAnchor, contacts: input.contacts, radiusKm: reach, requireTopicMatch: input.requireTopicMatch, weights: w, cfg: input.cfg })) {
+  for (const c of suggest({ leader: input.leader, anchor: areaAnchor, contacts: input.contacts, radiusMi: reach, requireTopicMatch: input.requireTopicMatch, weights: w, cfg: input.cfg })) {
     put(c);
   }
 
   // (2) on-site attendees + exhibitor prospects from each absorbed in-area event.
   for (const ev of absorbed) {
     const anchor: Anchor = { id: ev.id, eventId: ev.id, location: ev.location, window: { start: ev.start, end: ev.end }, topicIds: ev.topicIds };
-    for (const c of suggest({ leader: input.leader, anchor, contacts: input.contacts, event: ev, radiusKm: reach, requireTopicMatch: input.requireTopicMatch, weights: w, cfg: input.cfg })) {
+    for (const c of suggest({ leader: input.leader, anchor, contacts: input.contacts, event: ev, radiusMi: reach, requireTopicMatch: input.requireTopicMatch, weights: w, cfg: input.cfg })) {
       if (c.placement === 'on-site') put(c);
     }
   }
@@ -196,8 +196,8 @@ export interface DurationOptionsInput {
   leader: Leader;
   window: DateRange;
   onSiteDays: number;
-  /** In-area radius (km) — bounds which off-site stops belong to the tight "core" trip. */
-  coreRadiusKm: number;
+  /** In-area radius (mi) — bounds which off-site stops belong to the tight "core" trip. */
+  coreRadiusMi: number;
   contactsById: Map<string, Contact>;
   weights?: PlannerWeights;
 }
@@ -215,7 +215,7 @@ export function durationOptions(input: DurationOptionsInput): DurationOption[] {
   const w = input.weights ?? DEFAULT_WEIGHTS;
   const onSite = input.candidates.filter((c) => c.placement === 'on-site');
   const offSite = input.candidates.filter((c) => c.placement === 'off-site'); // already score-sorted
-  const coreOff = offSite.filter((c) => c.distanceKm <= input.coreRadiusKm).slice(0, CORE_OFFSITE_N);
+  const coreOff = offSite.filter((c) => c.distanceMi <= input.coreRadiusMi).slice(0, CORE_OFFSITE_N);
   const coreStops = [...onSite, ...coreOff];
   const extendedStops = [...onSite, ...offSite.slice(0, EXTENDED_OFFSITE_N)];
 
@@ -237,7 +237,7 @@ export interface ExtensionOption {
   topicId?: string;
   topicName?: string;
   placement: SuggestionPlacement;
-  distanceKm: number;
+  distanceMi: number;
   /** Days this stop adds on top of the base plan. */
   extraDays: number;
   totalDays: number;
@@ -309,7 +309,7 @@ export function extensionOptions(input: ExtensionOptionsInput): ExtensionOption[
       topicId: topic?.id,
       topicName: topic?.name,
       placement: c.placement,
-      distanceKm: c.distanceKm,
+      distanceMi: c.distanceMi,
       extraDays: Math.max(0, cost.duration.days - baseCost.duration.days),
       totalDays: cost.duration.days,
       marginalRoi: cost.roi.roiScore - baseCost.roi.roiScore,
@@ -343,7 +343,7 @@ export interface PlanOptionsInput {
   /** Explicit leader; defaults to the top-ranked `suggestLeaders` option. */
   leaderId?: string;
   requireTopicMatch?: boolean;
-  reachRadiusKm?: number;
+  reachRadiusMi?: number;
   weights?: PlannerWeights;
   leaderWeights?: LeaderWeights;
   cfg?: DemoConfig;
@@ -370,10 +370,10 @@ export interface PlanOptionsResult {
  */
 export function planOptions(input: PlanOptionsInput): PlanOptionsResult {
   const w = input.weights ?? DEFAULT_WEIGHTS;
-  const { centroid, radiusKm } = input.area;
-  const inArea = input.contacts.filter((c) => haversineKm(centroid, c.location) <= radiusKm);
+  const { centroid, radiusMi } = input.area;
+  const inArea = input.contacts.filter((c) => haversineMi(centroid, c.location) <= radiusMi);
 
-  const areaSurvey = topicsInArea({ centroid, radiusKm, contacts: input.contacts, events: input.events, topics: input.topics, cfg: input.cfg });
+  const areaSurvey = topicsInArea({ centroid, radiusMi, contacts: input.contacts, events: input.events, topics: input.topics, cfg: input.cfg });
   const topicIds = input.topicIds?.length ? input.topicIds : areaSurvey.map((t) => t.topicId);
 
   const leaderOptions = suggestLeaders({ centroid, window: input.window, topicIds, leaders: input.leaders, topics: input.topics, contacts: inArea, weights: input.leaderWeights });
@@ -387,12 +387,12 @@ export function planOptions(input: PlanOptionsInput): PlanOptionsResult {
     return { area: input.area, window: input.window, topicIds, areaSurvey, leaderOptions, chosenLeaderId: null, onSiteDays: 0, absorbedEventIds: [], durationOptions: [], extensionOptions: [] };
   }
 
-  const reachRadiusKm = Math.max(radiusKm, input.reachRadiusKm ?? Math.max(radiusKm, w.nearbyRadiusKm));
+  const reachRadiusMi = Math.max(radiusMi, input.reachRadiusMi ?? Math.max(radiusMi, w.nearbyRadiusMi));
   const gathered = gatherAreaCandidates({
     leader: chosen,
     centroid,
-    radiusKm,
-    reachRadiusKm,
+    radiusMi,
+    reachRadiusMi,
     window: input.window,
     contacts: input.contacts,
     events: input.events,
@@ -403,7 +403,7 @@ export function planOptions(input: PlanOptionsInput): PlanOptionsResult {
   });
   const contactsById = new Map(input.contacts.map((c) => [c.id, c]));
 
-  const dOptions = durationOptions({ candidates: gathered.candidates, centroid, leader: chosen, window: input.window, onSiteDays: gathered.onSiteDays, coreRadiusKm: radiusKm, contactsById, weights: w });
+  const dOptions = durationOptions({ candidates: gathered.candidates, centroid, leader: chosen, window: input.window, onSiteDays: gathered.onSiteDays, coreRadiusMi: radiusMi, contactsById, weights: w });
 
   const coreStops = dOptions[0]?.stops ?? [];
   const coreIds = new Set(coreStops.map((c) => c.contactId));

@@ -8,7 +8,7 @@ import { suggest } from './suggest';
  * EA asks "who should MG Whitfield (L1) meet on UAS/drone (T3) at AUSA (E-AUSA)?"
  * Expect exactly: P2 Sentinel Drone (on-site exhibitor prospect → initiate),
  * C3 Meridian Robotics + C4 Capital Defense Angels (nearby, stale → re-engage).
- * C11 Hub Robotics is on-topic (T3) but in Boston (>500 km) → correctly excluded.
+ * C11 Hub Robotics is on-topic (T3) but in Boston (>300 mi) → correctly excluded.
  */
 function ausaSuggest(requireTopicMatch: boolean) {
   const ds = loadDataset();

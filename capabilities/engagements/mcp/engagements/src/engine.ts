@@ -43,7 +43,7 @@ export const {
   planOptions,
   radiusPlan,
   DEFAULT_MEETINGS_PER_DAY,
-  haversineKm,
+  haversineMi,
   demoToday,
   loadConfig,
   isStale,

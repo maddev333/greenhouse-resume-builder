@@ -54,7 +54,7 @@ interface MenuItem {
   isStale?: boolean;
   strategicValue?: number;
   score?: number;
-  distanceKm?: number;
+  distanceMi?: number;
   fitFlags?: string[];
 }
 
@@ -104,7 +104,7 @@ interface OptionsResult {
   stage?: "clarify" | "options";
   persona?: string;
   answer?: string | null;
-  area?: { id?: string; name?: string; city?: string; state?: string; radiusKm?: number } | null;
+  area?: { id?: string; name?: string; city?: string; state?: string; radiusMi?: number } | null;
   window?: { start: string; end: string } | null;
   today?: string | null;
   topicIds?: string[];
@@ -251,7 +251,7 @@ function MenuCard({ item, index }: { item: MenuItem; index: number }) {
       <div className="card-metrics">
         {typeof item.strategicValue === "number" && <span>value {item.strategicValue}</span>}
         {typeof item.score === "number" && <span>score {item.score}</span>}
-        {typeof item.distanceKm === "number" && <span>{item.distanceKm} km</span>}
+        {typeof item.distanceMi === "number" && <span>{item.distanceMi} mi</span>}
         {item.contactId && <span className="muted">{item.contactId}</span>}
       </div>
       {item.fitFlags && item.fitFlags.length > 0 && (
@@ -387,7 +387,7 @@ function OptionsBubble({
       {options.area && (
         <div className="opt-area">
           <strong>📍 {options.area.name}</strong>
-          {typeof options.area.radiusKm === "number" && <span className="muted"> · {options.area.radiusKm} km</span>}
+          {typeof options.area.radiusMi === "number" && <span className="muted"> · {options.area.radiusMi} mi</span>}
           {options.window && (
             <span className="muted">
               {" "}

@@ -1,6 +1,6 @@
 /**
  * Area-first anchoring — resolve a free-form area request (region id, region name/alias, or a
- * city/state) to a concrete `{ centroid, radiusKm }` and turn it into a planner {@link Anchor}
+ * city/state) to a concrete `{ centroid, radiusMi }` and turn it into a planner {@link Anchor}
  * WITHOUT any live geocode. Region centroids are pre-resolved in the seed gazetteer; a bare
  * city/state falls back to a matching point among already-authorized records (contacts/events), so
  * the demo path stays fully offline (ARCHITECTURE §1). Pure + deterministic.
@@ -9,7 +9,7 @@ import type { DateRange, GeoPoint, Region } from '@greenhouse-resume-builder/sha
 import type { Anchor } from './types';
 
 /** Default search radius when neither the request nor a matched region specifies one. */
-export const DEFAULT_AREA_RADIUS_KM = 150;
+export const DEFAULT_AREA_RADIUS_MI = 100;
 
 /** A free-form area request — supply a regionId, a region name/alias, a city (+state), or raw coords. */
 export interface AreaInput {
@@ -24,8 +24,8 @@ export interface AreaInput {
   lng?: number;
   /** Human label for a raw-coordinate anchor (e.g. a company HQ name); falls back to "lat, lng". */
   label?: string;
-  /** Override the resolved radius (km). */
-  radiusKm?: number;
+  /** Override the resolved radius (mi). */
+  radiusMi?: number;
 }
 
 /** A concrete, resolved area ready to anchor on. */
@@ -33,7 +33,7 @@ export interface ResolvedArea {
   id: string;
   name: string;
   centroid: GeoPoint;
-  radiusKm: number;
+  radiusMi: number;
   /** How the area was resolved (for transparent "show-your-math" output). */
   resolvedVia: 'regionId' | 'regionName' | 'city' | 'coords';
 }
@@ -76,7 +76,7 @@ export function resolveArea(
       id: `coords:${input.lat.toFixed(4)},${input.lng.toFixed(4)}`,
       name: label,
       centroid: { city: input.city ?? label, state: input.state, lat: input.lat, lng: input.lng },
-      radiusKm: input.radiusKm ?? DEFAULT_AREA_RADIUS_KM,
+      radiusMi: input.radiusMi ?? DEFAULT_AREA_RADIUS_MI,
       resolvedVia: 'coords',
     };
   }
@@ -87,7 +87,7 @@ export function resolveArea(
       id: matched.region.id,
       name: matched.region.name,
       centroid: matched.region.centroid,
-      radiusKm: input.radiusKm ?? matched.region.defaultRadiusKm,
+      radiusMi: input.radiusMi ?? matched.region.defaultRadiusMi,
       resolvedVia: matched.via,
     };
   }
@@ -101,7 +101,7 @@ export function resolveArea(
         id: byRegionCity.id,
         name: byRegionCity.name,
         centroid: byRegionCity.centroid,
-        radiusKm: input.radiusKm ?? byRegionCity.defaultRadiusKm,
+        radiusMi: input.radiusMi ?? byRegionCity.defaultRadiusMi,
         resolvedVia: 'city',
       };
     }
@@ -115,7 +115,7 @@ export function resolveArea(
         id: `city:${label}`,
         name: label,
         centroid: pt,
-        radiusKm: input.radiusKm ?? DEFAULT_AREA_RADIUS_KM,
+        radiusMi: input.radiusMi ?? DEFAULT_AREA_RADIUS_MI,
         resolvedVia: 'city',
       };
     }

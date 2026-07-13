@@ -31,11 +31,11 @@ export function planRoute(
 
   while (remaining.length > 0) {
     let bestIdx = 0;
-    let bestKm = Infinity;
+    let bestMi = Infinity;
     for (let i = 0; i < remaining.length; i++) {
-      const km = etaMinutes(cur, remaining[i].location, w).distanceKm;
-      if (km < bestKm) {
-        bestKm = km;
+      const mi = etaMinutes(cur, remaining[i].location, w).distanceMi;
+      if (mi < bestMi) {
+        bestMi = mi;
         bestIdx = i;
       }
     }
@@ -45,7 +45,7 @@ export function planRoute(
       fromStopId: ordered.length > 0 ? ordered[ordered.length - 1].id : ORIGIN_ID,
       toStopId: next.id,
       mode: eta.mode,
-      distanceKm: eta.distanceKm,
+      distanceMi: eta.distanceMi,
       estTravelMins: eta.minutes,
     });
     ordered.push(next);
@@ -53,7 +53,7 @@ export function planRoute(
   }
 
   const order = [...onsite, ...ordered]; // on-site first (at the conference), then the off-site sweep
-  const totalKm = legs.reduce((s, l) => s + l.distanceKm, 0);
+  const totalMi = legs.reduce((s, l) => s + l.distanceMi, 0);
   const totalTravelMins = legs.reduce((s, l) => s + l.estTravelMins, 0);
-  return { order, legs, totalKm, totalTravelMins };
+  return { order, legs, totalMi, totalTravelMins };
 }

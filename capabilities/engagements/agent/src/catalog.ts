@@ -34,7 +34,7 @@ export interface Region {
   name: string;
   aliases: string[];
   centroid: { city: string; state: string; lat: number; lng: number };
-  defaultRadiusKm: number;
+  defaultRadiusMi: number;
 }
 
 interface DemoClockConfig {
@@ -122,7 +122,7 @@ export function regionChoices(): { value: string; label: string; detail: string 
   return loadRegions().map((r) => ({
     value: r.id,
     label: r.name,
-    detail: `${r.centroid.city}, ${r.centroid.state} · ${r.defaultRadiusKm} km`,
+    detail: `${r.centroid.city}, ${r.centroid.state} · ${r.defaultRadiusMi} mi`,
   }));
 }
 

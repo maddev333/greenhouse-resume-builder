@@ -26,7 +26,7 @@ import {
   radiusPlan,
   DEFAULT_MEETINGS_PER_DAY,
   estimateDuration,
-  haversineKm,
+  haversineMi,
   planRoute,
   tripRoi,
   detectFit,
@@ -109,7 +109,7 @@ function candidateView(c: Candidate) {
     status: c.status,
     isStale: c.isStale,
     strategicValue: c.strategicValue,
-    distanceKm: round(c.distanceKm),
+    distanceMi: round(c.distanceMi),
     score: fixed(c.score),
     fitFlags: c.fitFlags.map((f) => f.type),
     factors: {
@@ -143,7 +143,7 @@ function leaderOptionView(o: LeaderOption) {
     name: o.name,
     role: o.role,
     score: fixed(o.score),
-    distanceKm: round(o.distanceKm),
+    distanceMi: round(o.distanceMi),
     availableInWindow: o.availableInWindow,
     factors: {
       topicMatch: fixed(o.factors.topicMatch, 2),
@@ -185,7 +185,7 @@ function extensionOptionView(e: ExtensionOption) {
     topicId: e.topicId,
     topicName: e.topicName,
     placement: e.placement,
-    distanceKm: round(e.distanceKm),
+    distanceMi: round(e.distanceMi),
     extraDays: e.extraDays,
     totalDays: e.totalDays,
     marginalRoi: fixed(e.marginalRoi),
@@ -203,10 +203,10 @@ function routeView(route: RouteResult) {
       from: l.fromStopId,
       to: l.toStopId,
       mode: l.mode,
-      distanceKm: round(l.distanceKm),
+      distanceMi: round(l.distanceMi),
       estTravelMins: round(l.estTravelMins),
     })),
-    totalKm: round(route.totalKm),
+    totalMi: round(route.totalMi),
     totalTravelMins: round(route.totalTravelMins),
   };
 }
@@ -289,7 +289,7 @@ function buildTripMapFromOrigin(
   const legs: TripMapLeg[] = route.legs.map((l) => {
     const from = byPointId.get(l.fromStopId) ?? originPoint; // fromStopId === ORIGIN_ID → the anchor
     const to = byPointId.get(l.toStopId) ?? originPoint;
-    return { fromLat: from.lat, fromLng: from.lng, toLat: to.lat, toLng: to.lng, mode: l.mode, distanceKm: round(l.distanceKm) };
+    return { fromLat: from.lat, fromLng: from.lng, toLat: to.lat, toLng: to.lng, mode: l.mode, distanceMi: round(l.distanceMi) };
   });
   return {
     title,
@@ -298,7 +298,7 @@ function buildTripMapFromOrigin(
     legs,
     roiScore: fixed(roi.roiScore),
     overBudget: roi.overBudget,
-    totalKm: round(route.totalKm),
+    totalMi: round(route.totalMi),
     caller,
   };
 }
@@ -365,7 +365,7 @@ function resolveRadiusAnchor(
     state?: string;
     region?: string;
     regionId?: string;
-    radiusKm?: number;
+    radiusMi?: number;
   },
 ): { area: ResolvedArea; anchorContact?: Labeled<Contact> } | { error: string } {
   // (a) explicit contact id — the strongest anchor signal.
@@ -390,7 +390,7 @@ function resolveRadiusAnchor(
         city: anchorContact.location.city,
         state: anchorContact.location.state,
         label: anchorContact.org ?? anchorContact.name,
-        radiusKm: args.radiusKm,
+        radiusMi: args.radiusMi,
       },
       regions,
       [],
@@ -401,7 +401,7 @@ function resolveRadiusAnchor(
   // (c) no named company → a raw coordinate or a city/region centroid.
   const knownPoints = [...contacts.map((c) => c.location), ...events.map((e) => e.location)];
   const area = resolveArea(
-    { lat: args.lat, lng: args.lng, city: args.city, state: args.state, region: args.region, regionId: args.regionId, radiusKm: args.radiusKm },
+    { lat: args.lat, lng: args.lng, city: args.city, state: args.state, region: args.region, regionId: args.regionId, radiusMi: args.radiusMi },
     regions,
     knownPoints,
   );
@@ -520,10 +520,10 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         region: z.string().optional().describe('Region name or alias (e.g. "NCR", "Bay Area") — case-insensitive.'),
         city: z.string().optional().describe('City to anchor on when no region matches (e.g. "Huntsville").'),
         state: z.string().optional().describe('State to disambiguate the city (e.g. "AL").'),
-        radiusKm: z.number().optional().describe('Override the search radius in km (defaults to the region default or 150).'),
+        radiusMi: z.number().optional().describe('Override the search radius in mi (defaults to the region default or 100).'),
       },
     },
-    async ({ regionId, region, city, state, radiusKm }): Promise<CallToolResult> => {
+    async ({ regionId, region, city, state, radiusMi }): Promise<CallToolResult> => {
       const { ctx, label } = getContext();
       const rm = getReadModel();
       const contacts = await rm.searchContacts({ ctx });
@@ -533,14 +533,14 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       }
       const events = await rm.searchEvents({ ctx });
       const knownPoints = [...contacts.items.map((c) => c.location), ...events.items.map((e) => e.location)];
-      const area = resolveArea({ regionId, region, city, state, radiusKm }, rm.regions, knownPoints);
+      const area = resolveArea({ regionId, region, city, state, radiusMi }, rm.regions, knownPoints);
       if (!area) {
         const known = rm.regions.map((r) => `${r.id} (${r.name})`).join(', ');
         return errorResult(`Could not resolve an area from the given input. Try a known region: ${known}; or a city/state present in your contacts.`);
       }
       const topics = topicsInArea({
         centroid: area.centroid,
-        radiusKm: area.radiusKm,
+        radiusMi: area.radiusMi,
         contacts: contacts.items,
         events: events.items,
         topics: rm.topics,
@@ -549,14 +549,14 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         caller: label,
         rejected: false,
         today: rm.today,
-        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, radiusKm: area.radiusKm, resolvedVia: area.resolvedVia },
+        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, radiusMi: area.radiusMi, resolvedVia: area.resolvedVia },
         topicCount: topics.length,
         topics: topics.map(topicInAreaView),
         contactsInScope: contacts.items.length,
         redactedCount: contacts.redactedCount,
         filter: contacts.filter,
       };
-      const header = `${area.name} (${area.radiusKm} km): ${topics.length} topic(s) with a live footprint; ${contacts.redactedCount} contact(s) redacted by trim.`;
+      const header = `${area.name} (${area.radiusMi} mi): ${topics.length} topic(s) with a live footprint; ${contacts.redactedCount} contact(s) redacted by trim.`;
       const lines = topics.map(
         (t) =>
           `  • ${t.topicId} ${t.name} — ${t.activeCount} active/${t.staleCount} stale/${t.prospectCount} prospect, ${t.eventCount} event(s), msg ${t.hasApprovedMessage ? '✓' : '—'}, opp ${t.opportunityScore}`,
@@ -581,14 +581,14 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         region: z.string().optional().describe('Region name or alias (e.g. "NCR", "Bay Area").'),
         city: z.string().optional().describe('City to anchor on when no region matches.'),
         state: z.string().optional().describe('State to disambiguate the city.'),
-        radiusKm: z.number().optional().describe('Override the search radius in km.'),
+        radiusMi: z.number().optional().describe('Override the search radius in mi.'),
         window: z
           .object({ start: z.string(), end: z.string() })
           .describe('Planning window (ISO YYYY-MM-DD) the leader must be available in.'),
         topicIds: z.array(z.string()).optional().describe("Target topics to staff for; defaults to the area's in-scope topics."),
       },
     },
-    async ({ regionId, region, city, state, radiusKm, window, topicIds }): Promise<CallToolResult> => {
+    async ({ regionId, region, city, state, radiusMi, window, topicIds }): Promise<CallToolResult> => {
       const { ctx, label } = getContext();
       const rm = getReadModel();
       const contacts = await rm.searchContacts({ ctx });
@@ -598,13 +598,13 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       }
       const events = await rm.searchEvents({ ctx });
       const knownPoints = [...contacts.items.map((c) => c.location), ...events.items.map((e) => e.location)];
-      const area = resolveArea({ regionId, region, city, state, radiusKm }, rm.regions, knownPoints);
+      const area = resolveArea({ regionId, region, city, state, radiusMi }, rm.regions, knownPoints);
       if (!area) {
         const known = rm.regions.map((r) => `${r.id} (${r.name})`).join(', ');
         return errorResult(`Could not resolve an area from the given input. Try a known region: ${known}; or a city/state present in your contacts.`);
       }
-      const inArea = contacts.items.filter((c) => haversineKm(area.centroid, c.location) <= area.radiusKm);
-      const survey = topicsInArea({ centroid: area.centroid, radiusKm: area.radiusKm, contacts: contacts.items, events: events.items, topics: rm.topics });
+      const inArea = contacts.items.filter((c) => haversineMi(area.centroid, c.location) <= area.radiusMi);
+      const survey = topicsInArea({ centroid: area.centroid, radiusMi: area.radiusMi, contacts: contacts.items, events: events.items, topics: rm.topics });
       const resolvedTopicIds = topicIds?.length ? topicIds : survey.map((t) => t.topicId);
       const leaders = suggestLeaders({
         centroid: area.centroid,
@@ -618,7 +618,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         caller: label,
         rejected: false,
         today: rm.today,
-        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, radiusKm: area.radiusKm, resolvedVia: area.resolvedVia },
+        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, radiusMi: area.radiusMi, resolvedVia: area.resolvedVia },
         window,
         topicIds: resolvedTopicIds,
         leaderCount: leaders.length,
@@ -629,7 +629,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       const header = `Who should staff ${area.name} on [${resolvedTopicIds.join(', ') || 'any topic'}] over ${window.start}→${window.end}? ${leaders.length} option(s).`;
       const lines = leaders.map(
         (o, i) =>
-          `  ${i + 1}. ${o.leaderId} ${o.name} — score ${fixed(o.score)}, ${round(o.distanceKm)}km, ${o.availableInWindow ? 'available' : 'UNAVAILABLE'}` +
+          `  ${i + 1}. ${o.leaderId} ${o.name} — score ${fixed(o.score)}, ${round(o.distanceMi)}mi, ${o.availableInWindow ? 'available' : 'UNAVAILABLE'}` +
           `${o.notes.length ? `, notes: ${o.notes.join('; ')}` : ''}`,
       );
       return { content: [{ type: 'text', text: [header, ...lines, `filter: ${contacts.filter}`].join('\n') }], structuredContent };
@@ -653,7 +653,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         region: z.string().optional().describe('Region name or alias (e.g. "NCR", "Bay Area") — case-insensitive.'),
         city: z.string().optional().describe('City to anchor on when no region matches.'),
         state: z.string().optional().describe('State to disambiguate the city.'),
-        radiusKm: z.number().optional().describe('Override the in-area radius (km).'),
+        radiusMi: z.number().optional().describe('Override the in-area radius (mi).'),
         window: z
           .object({ start: z.string(), end: z.string() })
           .describe('Planning window (ISO YYYY-MM-DD) for availability + duration.'),
@@ -662,7 +662,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         requireTopicMatch: z.boolean().optional().describe('Drop candidate stops off the target topics (default false — a broad menu).'),
       },
     },
-    async ({ regionId, region, city, state, radiusKm, window, leaderId, topicIds, requireTopicMatch }): Promise<CallToolResult> => {
+    async ({ regionId, region, city, state, radiusMi, window, leaderId, topicIds, requireTopicMatch }): Promise<CallToolResult> => {
       const { ctx, label } = getContext();
       const rm = getReadModel();
       const contacts = await rm.searchContacts({ ctx });
@@ -672,7 +672,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       }
       const events = await rm.searchEvents({ ctx });
       const knownPoints = [...contacts.items.map((c) => c.location), ...events.items.map((e) => e.location)];
-      const area = resolveArea({ regionId, region, city, state, radiusKm }, rm.regions, knownPoints);
+      const area = resolveArea({ regionId, region, city, state, radiusMi }, rm.regions, knownPoints);
       if (!area) {
         const known = rm.regions.map((r) => `${r.id} (${r.name})`).join(', ');
         return errorResult(`Could not resolve an area from the given input. Try a known region: ${known}; or a city/state present in your contacts.`);
@@ -693,7 +693,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         caller: label,
         rejected: false,
         today: rm.today,
-        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, radiusKm: area.radiusKm, resolvedVia: area.resolvedVia },
+        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, radiusMi: area.radiusMi, resolvedVia: area.resolvedVia },
         window,
         topicIds: plan.topicIds,
         areaSurvey: plan.areaSurvey.map(topicInAreaView),
@@ -708,7 +708,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       };
       const chosen = plan.leaderOptions.find((o) => o.leaderId === plan.chosenLeaderId);
       const header =
-        `${area.name} (${area.radiusKm} km) over ${window.start}→${window.end}: ${plan.areaSurvey.length} topic(s); ` +
+        `${area.name} (${area.radiusMi} mi) over ${window.start}→${window.end}: ${plan.areaSurvey.length} topic(s); ` +
         `recommend ${chosen ? `${chosen.leaderId} ${chosen.name}` : '(no leader)'}; ` +
         `${plan.durationOptions.length} duration option(s); ${plan.extensionOptions.length} extension(s).`;
       const durLines = plan.durationOptions.map(
@@ -726,7 +726,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
   );
 
   // 5b) plan_radius — company/coords-first FIXED-DURATION planning (event-OPTIONAL): "go meet <company>
-  //     (or be within X km of <place>) for N days" → fill the trip with the best authorized contacts.
+  //     (or be within X mi of <place>) for N days" → fill the trip with the best authorized contacts.
   server.registerTool(
     'plan_radius',
     {
@@ -747,7 +747,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         state: z.string().optional().describe('State for the city anchor.'),
         region: z.string().optional().describe('Free-text region/alias ("NCR", "DC metro").'),
         regionId: z.string().optional().describe('Known region id (e.g. "R-NCR").'),
-        radiusKm: z.number().positive().optional().describe('Search radius around the anchor (km). Defaults to the region/area default.'),
+        radiusMi: z.number().positive().optional().describe('Search radius around the anchor (mi). Defaults to the region/area default.'),
         days: z.number().int().positive().describe('FIXED trip length in days the leader is on the ground.'),
         meetingsPerDay: z.number().int().positive().optional().describe(`Meetings/day capacity (default ${DEFAULT_MEETINGS_PER_DAY}).`),
         window: z.object({ start: z.string(), end: z.string() }).describe('Planning window (ISO YYYY-MM-DD) for availability + budget checks.'),
@@ -765,7 +765,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       state,
       region,
       regionId,
-      radiusKm,
+      radiusMi,
       days,
       meetingsPerDay,
       window,
@@ -781,13 +781,13 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         return { content: [{ type: 'text', text: 'Access rejected — no verified tenant claim.' }], structuredContent };
       }
       const events = await rm.searchEvents({ ctx });
-      const resolved = resolveRadiusAnchor(contacts.items, events.items, rm.regions, { anchorContactId, company, lat, lng, city, state, region, regionId, radiusKm });
+      const resolved = resolveRadiusAnchor(contacts.items, events.items, rm.regions, { anchorContactId, company, lat, lng, city, state, region, regionId, radiusMi });
       if ('error' in resolved) return errorResult(resolved.error);
       const { area, anchorContact } = resolved;
 
-      const areaSurvey = topicsInArea({ centroid: area.centroid, radiusKm: area.radiusKm, contacts: contacts.items, events: events.items, topics: rm.topics });
+      const areaSurvey = topicsInArea({ centroid: area.centroid, radiusMi: area.radiusMi, contacts: contacts.items, events: events.items, topics: rm.topics });
       const effectiveTopicIds = topicIds?.length ? topicIds : areaSurvey.map((t) => t.topicId);
-      const inArea = contacts.items.filter((c) => haversineKm(area.centroid, c.location) <= area.radiusKm);
+      const inArea = contacts.items.filter((c) => haversineMi(area.centroid, c.location) <= area.radiusMi);
       const leaderOptions = suggestLeaders({ centroid: area.centroid, window, topicIds: effectiveTopicIds, leaders: rm.leaders, topics: rm.topics, contacts: inArea });
       const chosen = leaderId
         ? rm.leaders.find((l) => l.id === leaderId)
@@ -795,7 +795,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
           ? rm.leaders.find((l) => l.id === leaderOptions[0].leaderId)
           : undefined;
 
-      const areaView = { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, lat: area.centroid.lat, lng: area.centroid.lng, radiusKm: area.radiusKm, resolvedVia: area.resolvedVia };
+      const areaView = { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, lat: area.centroid.lat, lng: area.centroid.lng, radiusMi: area.radiusMi, resolvedVia: area.resolvedVia };
       if (!chosen) {
         const structuredContent = {
           caller: label,
@@ -859,7 +859,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       };
 
       const header =
-        `${chosen.name} → ${area.name} (${area.radiusKm} km), ${plan.days} day(s) @ ${plan.meetingsPerDay}/day = ${plan.capacity} slot(s): ` +
+        `${chosen.name} → ${area.name} (${area.radiusMi} mi), ${plan.days} day(s) @ ${plan.meetingsPerDay}/day = ${plan.capacity} slot(s): ` +
         `${plan.stops.length} stop(s)${plan.anchor ? ` (anchor ${plan.anchor.contactId} ${plan.anchor.name})` : ''}, ` +
         `ROI ${fixed(plan.roi.roiScore)}${plan.roi.overBudget ? ' (OVER BUDGET)' : ''}; ${plan.extensionOptions.length} extension(s).`;
       const stopLines = plan.stops.map(
@@ -956,7 +956,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         state: z.string().optional().describe('Radius mode: state for the city anchor.'),
         region: z.string().optional().describe('Radius mode: free-text region/alias ("NCR").'),
         regionId: z.string().optional().describe('Radius mode: known region id (e.g. "R-NCR").'),
-        radiusKm: z.number().positive().optional().describe('Radius mode: search radius around the anchor (km).'),
+        radiusMi: z.number().positive().optional().describe('Radius mode: search radius around the anchor (mi).'),
         days: z.number().int().positive().optional().describe('Radius mode: FIXED trip length in days (required when there is no event).'),
         meetingsPerDay: z.number().int().positive().optional().describe('Radius mode: meetings/day capacity.'),
         window: z.object({ start: z.string(), end: z.string() }).optional().describe('Radius mode planning window (ISO); defaults to today → today+days-1.'),
@@ -981,7 +981,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       state,
       region,
       regionId,
-      radiusKm,
+      radiusMi,
       days,
       meetingsPerDay,
       window,
@@ -1062,7 +1062,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       const contacts = await rm.searchContacts({ ctx });
       if (isRejected(contacts.filter)) return errorResult('Access rejected — no verified tenant claim.');
       const events = await rm.searchEvents({ ctx });
-      const resolved = resolveRadiusAnchor(contacts.items, events.items, rm.regions, { anchorContactId, company, lat, lng, city, state, region, regionId, radiusKm });
+      const resolved = resolveRadiusAnchor(contacts.items, events.items, rm.regions, { anchorContactId, company, lat, lng, city, state, region, regionId, radiusMi });
       if ('error' in resolved) return errorResult(resolved.error);
       const { area, anchorContact } = resolved;
       const win = window ?? { start: rm.today, end: isoAddDays(rm.today, Math.max(0, days - 1)) };
@@ -1082,7 +1082,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         topicIds,
         requireTopicMatch,
       });
-      if (plan.stops.length === 0) return errorResult(`No authorized stops within ${area.radiusKm} km of ${area.name}.`);
+      if (plan.stops.length === 0) return errorResult(`No authorized stops within ${area.radiusMi} mi of ${area.name}.`);
 
       const chosenIds = new Set(plan.stops.map((s) => s.contactId));
       const notMatched = (acceptedContactIds ?? []).filter((id) => !chosenIds.has(id));
@@ -1097,7 +1097,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
             id: `area:${area.id}`,
             label: area.name,
             location: area.centroid,
-            detail: `${area.centroid.city}${area.centroid.state ? `, ${area.centroid.state}` : ''} · ${area.radiusKm} km`,
+            detail: `${area.centroid.city}${area.centroid.state ? `, ${area.centroid.state}` : ''} · ${area.radiusMi} mi`,
           };
       const tripMap = buildTripMapFromOrigin(`${leader.name} @ ${origin.label}`, origin, plan.stops, plan.route, plan.roi, label);
       const structuredContent = {
@@ -1105,7 +1105,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         today: rm.today,
         leader: { id: leader.id, name: leader.name, role: leader.role, daysAwayBudget: leader.daysAwayBudget },
         anchor: plan.anchor,
-        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, lat: area.centroid.lat, lng: area.centroid.lng, radiusKm: area.radiusKm, resolvedVia: area.resolvedVia },
+        area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, lat: area.centroid.lat, lng: area.centroid.lng, radiusMi: area.radiusMi, resolvedVia: area.resolvedVia },
         window: win,
         days: plan.days,
         meetingsPerDay: plan.meetingsPerDay,
@@ -1123,7 +1123,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         redactedCount: contacts.redactedCount,
       };
       const header =
-        `Itinerary for ${leader.name} @ ${origin.label} (${area.radiusKm} km): ${plan.stops.length} stop(s), ` +
+        `Itinerary for ${leader.name} @ ${origin.label} (${area.radiusMi} mi): ${plan.stops.length} stop(s), ` +
         `${plan.days} day(s), ROI ${fixed(plan.roi.roiScore)}${plan.roi.overBudget ? ' (OVER BUDGET)' : ''}.`;
       const orderLine = `  route: ${plan.route.order.map((s) => s.location.city).join(' → ')}`;
       const conflictLines = plan.conflicts.length

@@ -27,7 +27,7 @@ export interface TripMapLeg {
   toLat: number;
   toLng: number;
   mode: 'air' | 'ground';
-  distanceKm?: number;
+  distanceMi?: number;
 }
 
 /** The full geospatial payload attached to a `build_itinerary` result under `structuredContent.tripMap`. */
@@ -41,7 +41,7 @@ export interface TripMapPayload {
   legs: TripMapLeg[];
   roiScore?: number;
   overBudget?: boolean;
-  totalKm?: number;
+  totalMi?: number;
   /** Persona/label of the caller whose security trim produced this itinerary. */
   caller?: string;
 }

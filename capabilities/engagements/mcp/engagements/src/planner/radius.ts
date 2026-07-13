@@ -63,7 +63,7 @@ export interface RadiusPlanInput {
   messages: Message[];
   topicIds?: string[];
   requireTopicMatch?: boolean;
-  reachRadiusKm?: number;
+  reachRadiusMi?: number;
   weights?: PlannerWeights;
   cfg?: DemoConfig;
 }
@@ -104,7 +104,7 @@ function anchorCandidate(
     contactId: c.id,
     name: c.name,
     location: c.location,
-    distanceKm: 0,
+    distanceMi: 0,
     placement: 'on-site',
     kind: c.status === 'prospect' ? 'initiate' : 're-engage',
     status: c.status,
@@ -128,10 +128,10 @@ export function radiusPlan(input: RadiusPlanInput): RadiusPlanResult {
   const perDay = Math.max(1, Math.round(input.meetingsPerDay ?? DEFAULT_MEETINGS_PER_DAY));
   const days = Math.max(1, Math.round(input.days));
   const capacity = Math.max(1, days * perDay);
-  const { centroid, radiusKm } = input.area;
+  const { centroid, radiusMi } = input.area;
   // The EA's radius bounds the whole trip — do NOT widen to the engine's default "nearby" reach the
   // area-first flow uses (that would pull in stops beyond the radius the user explicitly asked for).
-  const reachRadiusKm = Math.max(radiusKm, input.reachRadiusKm ?? radiusKm);
+  const reachRadiusMi = Math.max(radiusMi, input.reachRadiusMi ?? radiusMi);
   const contactsById = new Map(input.contacts.map((c) => [c.id, c]));
   const topicIds = input.topicIds ?? [];
 
@@ -139,12 +139,12 @@ export function radiusPlan(input: RadiusPlanInput): RadiusPlanResult {
   //    physically within the radius. This is a pure-radius fill: unlike the area/event flow, we do
   //    NOT absorb nearby events' rosters, because the leader is anchored on the company/coordinate,
   //    not attending a conference. Absorbing an in-area event would pull in its far-HQ exhibitor
-  //    prospects (met "on-site" at distance 0) and pollute a trip the EA explicitly bounded by km.
+  //    prospects (met "on-site" at distance 0) and pollute a trip the EA explicitly bounded by radius.
   const gathered = gatherAreaCandidates({
     leader: input.leader,
     centroid,
-    radiusKm,
-    reachRadiusKm,
+    radiusMi,
+    reachRadiusMi,
     window: input.window,
     contacts: input.contacts,
     events: [],

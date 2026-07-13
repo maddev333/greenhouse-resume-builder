@@ -80,7 +80,7 @@ export function buildSystemPrompt(defaultLeaderId: string, topN: number): string
     'and nearby stale relationships worth re-engaging.',
     '',
     'The fixed-radius entry point: when the leader must visit a SPECIFIC company (or place) for a fixed',
-    'number of days with NO anchor event ("go meet Meridian Robotics for 3 days", "2 days within 60 km of',
+    'number of days with NO anchor event ("go meet Meridian Robotics for 3 days", "2 days within 60 mi of',
     'Reston"), use plan_radius to fill the trip around that anchor, then build_itinerary with the same anchor.',
     '',
     'Leaders (use the id):',
@@ -96,7 +96,7 @@ export function buildSystemPrompt(defaultLeaderId: string, topN: number): string
     '4. Event-anchored flow: call suggest_candidates to get the ranked menu, then ALWAYS follow with',
     `   build_itinerary using the top ${topN} candidate ids, so the route and ui://trip-map are produced.`,
     '5. Fixed-radius flow (a specific company/place + N days, NO event): call plan_radius with the anchor',
-    '   (anchorContactId, or a company name, or lat+lng, or city; plus radiusKm and days), then call',
+    '   (anchorContactId, or a company name, or lat+lng, or city; plus radiusMi and days), then call',
     '   build_itinerary with the SAME anchor + days (omit acceptedContactIds to accept the auto-filled plan).',
     '   Do NOT fabricate an event for these trips.',
     '6. Never invent contacts, events, or attributes — surface only what the tools return. Some records',
@@ -121,17 +121,17 @@ export function anchorGuess(question: string): string {
  * with no anchor event. Returns null when it doesn't look like a radius trip (so the event flow runs).
  * Heuristic only — the LLM path is primary; this keeps the offline demo working for the common phrasings.
  */
-export function parseRadiusAsk(question: string): { days: number; radiusKm?: number; company?: string; city?: string } | null {
+export function parseRadiusAsk(question: string): { days: number; radiusMi?: number; company?: string; city?: string } | null {
   const daysM = question.match(/\b(\d+)\s*(?:day|days)\b/i);
   if (!daysM) return null;
   const days = Number(daysM[1]);
   if (!Number.isFinite(days) || days <= 0) return null;
 
-  let radiusKm: number | undefined;
+  let radiusMi: number | undefined;
   const radM = question.match(/\bwithin\s+(\d+)\s*(km|kilometers?|mi|miles?)\b/i);
   if (radM) {
     const n = Number(radM[1]);
-    radiusKm = /^mi/i.test(radM[2]) ? Math.round(n * 1.60934) : n;
+    radiusMi = /^mi/i.test(radM[2]) ? n : Math.round(n * 0.621371);
   }
 
   // Company: proper-noun phrase after meet/visit/see/with.
@@ -141,8 +141,8 @@ export function parseRadiusAsk(question: string): { days: number; radiusKm?: num
   const placeM = question.match(/\b(?:of|near|around|in)\s+([A-Z][\w.]*(?:\s+[A-Z][\w.]*)*)/);
   const city = !company ? placeM?.[1]?.trim() : undefined;
 
-  if (!company && !city && radiusKm === undefined) return null;
-  return { days, radiusKm, company, city };
+  if (!company && !city && radiusMi === undefined) return null;
+  return { days, radiusMi, company, city };
 }
 
 /** Rebuild event-less build_itinerary args from a plan_radius result (anchor + fixed days + stops). */
@@ -153,7 +153,7 @@ function radiusBuildArgsFromPlan(plan: any, fallbackLeaderId: string): Record<st
     days: plan.days,
     ...(plan.window ? { window: plan.window } : {}),
     ...(typeof plan.meetingsPerDay === 'number' ? { meetingsPerDay: plan.meetingsPerDay } : {}),
-    ...(typeof plan.area.radiusKm === 'number' ? { radiusKm: plan.area.radiusKm } : {}),
+    ...(typeof plan.area.radiusMi === 'number' ? { radiusMi: plan.area.radiusMi } : {}),
   };
   if (plan.anchor?.contactId) args.anchorContactId = plan.anchor.contactId;
   else if (typeof plan.area.lat === 'number' && typeof plan.area.lng === 'number') {
@@ -184,11 +184,11 @@ function isRejected(result: any): boolean {
 async function deterministicPlan(client: ToolClient, opts: { question: string; leaderId: string; topN: number }): Promise<void> {
   const { question, leaderId, topN } = opts;
 
-  // Fixed-radius ask ("meet <Company> for N days", "N days within X km of <place>") → plan_radius → build.
+  // Fixed-radius ask ("meet <Company> for N days", "N days within X mi of <place>") → plan_radius → build.
   const radiusAsk = parseRadiusAsk(question);
   if (radiusAsk) {
     const planArgs: Record<string, unknown> = { leaderId, days: radiusAsk.days, window: defaultWindow() };
-    if (typeof radiusAsk.radiusKm === 'number') planArgs.radiusKm = radiusAsk.radiusKm;
+    if (typeof radiusAsk.radiusMi === 'number') planArgs.radiusMi = radiusAsk.radiusMi;
     if (radiusAsk.company) planArgs.company = radiusAsk.company;
     else if (radiusAsk.city) planArgs.city = radiusAsk.city;
     const plan: any = await client.callTool('plan_radius', planArgs);
@@ -431,7 +431,7 @@ export interface AreaOptionsRequest {
   region?: string;
   city?: string;
   state?: string;
-  radiusKm?: number;
+  radiusMi?: number;
   /** Planning window; defaults to the demo clock's `today` + horizon (see catalog.defaultWindow). */
   window?: { start: string; end: string };
   leaderId?: string;
@@ -471,7 +471,7 @@ export interface AreaBuildRequest {
   region?: string;
   city?: string;
   state?: string;
-  radiusKm?: number;
+  radiusMi?: number;
   window?: { start: string; end: string };
   /** Chosen leader (from the leader option menu). */
   leaderId: string;
@@ -503,13 +503,13 @@ function resolveAreaAnchor(req: { regionId?: string; region?: string; city?: str
 }
 
 /** Only forward the area keys the caller actually set (avoids sending `undefined` over JSON-RPC). */
-function areaArgs(area: AreaInput, radiusKm?: number): Record<string, unknown> {
+function areaArgs(area: AreaInput, radiusMi?: number): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (area.regionId) out.regionId = area.regionId;
   if (area.region) out.region = area.region;
   if (area.city) out.city = area.city;
   if (area.state) out.state = area.state;
-  if (typeof radiusKm === 'number') out.radiusKm = radiusKm;
+  if (typeof radiusMi === 'number') out.radiusMi = radiusMi;
   return out;
 }
 
@@ -542,7 +542,7 @@ export function buildOptionQuestions(plan: any): OptionQuestion[] {
         detail:
           `${o.role} · fit ${o.score}` +
           (o.availableInWindow === false ? ' · not free in window' : '') +
-          (typeof o.distanceKm === 'number' ? ` · ${o.distanceKm} km` : ''),
+          (typeof o.distanceMi === 'number' ? ` · ${o.distanceMi} mi` : ''),
         selected: o.leaderId === plan.chosenLeaderId,
         recommended: o.leaderId === plan.chosenLeaderId,
       })),
@@ -663,7 +663,7 @@ export async function planAreaOptions(req: AreaOptionsRequest): Promise<AreaOpti
 
   try {
     await client.callTool('plan_options', {
-      ...areaArgs(area, req.radiusKm),
+      ...areaArgs(area, req.radiusMi),
       window,
       ...(req.leaderId ? { leaderId: req.leaderId } : {}),
       ...(topicIds.length ? { topicIds } : {}),
@@ -793,7 +793,7 @@ export async function buildAreaItinerary(req: AreaBuildRequest): Promise<PlanRes
     if (acceptedContactIds.length === 0 || !anchorEventId) {
       if (!area) return { ...base, error: 'An area (regionId/region/city) is required to build the itinerary.' };
       await client.callTool('plan_options', {
-        ...areaArgs(area, req.radiusKm),
+        ...areaArgs(area, req.radiusMi),
         window,
         leaderId: req.leaderId,
         ...(topicIds.length ? { topicIds } : {}),
@@ -849,7 +849,7 @@ export interface RadiusOptionsRequest {
   state?: string;
   region?: string;
   regionId?: string;
-  radiusKm?: number;
+  radiusMi?: number;
   /** FIXED trip length (days on the ground). */
   days: number;
   meetingsPerDay?: number;
@@ -897,7 +897,7 @@ export interface RadiusBuildRequest {
   state?: string;
   region?: string;
   regionId?: string;
-  radiusKm?: number;
+  radiusMi?: number;
   days: number;
   meetingsPerDay?: number;
   window?: { start: string; end: string };
@@ -921,7 +921,7 @@ function radiusAnchorArgs(req: {
   state?: string;
   region?: string;
   regionId?: string;
-  radiusKm?: number;
+  radiusMi?: number;
 }): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (req.anchorContactId) out.anchorContactId = req.anchorContactId;
@@ -932,7 +932,7 @@ function radiusAnchorArgs(req: {
   if (req.state) out.state = req.state;
   if (req.region) out.region = req.region;
   if (req.regionId) out.regionId = req.regionId;
-  if (typeof req.radiusKm === 'number') out.radiusKm = req.radiusKm;
+  if (typeof req.radiusMi === 'number') out.radiusMi = req.radiusMi;
   return out;
 }
 
@@ -952,7 +952,7 @@ export function buildRadiusQuestions(plan: any): OptionQuestion[] {
         detail:
           `${o.role} · fit ${o.score}` +
           (o.availableInWindow === false ? ' · not free in window' : '') +
-          (typeof o.distanceKm === 'number' ? ` · ${o.distanceKm} km` : ''),
+          (typeof o.distanceMi === 'number' ? ` · ${o.distanceMi} mi` : ''),
         selected: o.leaderId === plan.chosenLeaderId,
         recommended: o.leaderId === plan.chosenLeaderId,
       })),

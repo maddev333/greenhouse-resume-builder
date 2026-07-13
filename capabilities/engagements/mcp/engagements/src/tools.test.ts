@@ -249,7 +249,7 @@ test('plan_radius: anchor on a company for a fixed 3 days fills the trip (anchor
   try {
     const res = await call(client, 'plan_radius', {
       company: 'Meridian Robotics',
-      radiusKm: 80,
+      radiusMi: 80,
       days: 3,
       window: { start: '2025-10-13', end: '2025-10-15' },
     });
@@ -275,7 +275,7 @@ test('plan_radius: raw coordinate + radius anchors without a must-meet company',
     const res = await call(client, 'plan_radius', {
       lat: 38.9586,
       lng: -77.357,
-      radiusKm: 60,
+      radiusMi: 60,
       days: 2,
       window: { start: '2025-10-13', end: '2025-10-14' },
     });
@@ -283,8 +283,8 @@ test('plan_radius: raw coordinate + radius anchors without a must-meet company',
     assert.equal(sc.rejected, false);
     assert.equal(sc.anchor, null, 'a raw coordinate has no mandatory company stop');
     assert.equal(sc.area.resolvedVia, 'coords');
-    assert.equal(sc.area.radiusKm, 60, "the user's radius bounds the trip");
-    for (const s of sc.stops) assert.ok(s.distanceKm <= 60 + 1, 'every stop is within the requested radius');
+    assert.equal(sc.area.radiusMi, 60, "the user's radius bounds the trip");
+    for (const s of sc.stops) assert.ok(s.distanceMi <= 60 + 1, 'every stop is within the requested radius');
   } finally {
     await close();
   }
@@ -296,7 +296,7 @@ test('build_itinerary: event-less radius build renders a company-anchored map, R
     const res = await call(client, 'build_itinerary', {
       leaderId: 'L1',
       anchorContactId: 'C3',
-      radiusKm: 80,
+      radiusMi: 80,
       days: 3,
       window: { start: '2025-10-13', end: '2025-10-15' },
     });

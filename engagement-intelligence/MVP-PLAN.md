@@ -232,7 +232,7 @@ Every meeting is anchored to a **Topic** and a **specific intended Message that 
 
 - **Trip**: `id, leaderId, purpose, region, window{start,end}, homeBase{city,lat,lng}, anchorEventId?, stopIds[], legIds[], estCost, roiScore, status(draft|proposed|approved|complete)`
 - **Stop**: `id, tripId, refType(engagement|event), refId, location{city,lat,lng}, arrive, depart, dwellMins, preBriefId?`
-- **Leg**: `id, tripId, fromStopId, toStopId, mode(air|ground), distanceKm, estTravelMins, cost`
+- **Leg**: `id, tripId, fromStopId, toStopId, mode(air|ground), distanceMi, estTravelMins, cost`
 
 **CRM spine:**
 

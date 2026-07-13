@@ -92,7 +92,7 @@ today and by the Day-1 loader later:
   and an approved message (`M-T4-v1`), so leader **L2** (USAREC) — previously idle — becomes a top
   option and its extensions carry approved talking points; **T3 stays intentionally message-less** to
   keep demonstrating the "coordinate talking points with the owner" extension fallback. All of these
-  sit >500 km from DC, so the canonical AUSA/NCR trace is unchanged.
+  sit >300 mi from DC, so the canonical AUSA/NCR trace is unchanged.
 - **Message-consistency thread (C1, value 5, stale @ 2025-02-20):**
   - `EX-002` (L1, 2025-01-18) → `AA-onmsg`: on-message.
   - `EX-003` (L5, 2025-02-20) → `AA-drift`: LTG Cole signaled a **specific program-dollar figure**,

@@ -5,7 +5,7 @@
  * OPTION (never hard-filtered), because the human always decides (ARCHITECTURE §6). Pure engine.
  */
 import type { Contact, DateRange, GeoPoint, Leader, Topic } from '@greenhouse-resume-builder/shared';
-import { haversineKm } from './distance';
+import { haversineMi } from './distance';
 import { addDays, daysBetween } from './clock';
 
 /** CONUS-scale normalizer: a home base at/above this distance contributes ~0 proximity. */
@@ -26,7 +26,7 @@ export interface LeaderOption {
   name: string;
   role: string;
   score: number; // 0..1 weighted blend of the factors
-  distanceKm: number;
+  distanceMi: number;
   availableInWindow: boolean;
   factors: LeaderFactors;
   /** Advisory badges, e.g. domain mismatch vs the target topics. */
@@ -111,8 +111,8 @@ export function suggestLeaders(input: SuggestLeadersInput): LeaderOption[] {
     const domainMatch = majorityDomain ? (leader.domain === majorityDomain ? 1 : 0) : 0.5;
     const topicMatch = hasTargets ? clamp01(0.6 * smeOverlap + 0.4 * domainMatch) : 0.5;
 
-    const distanceKm = haversineKm(input.centroid, leader.homeBase);
-    const proximity = clamp01(1 - distanceKm / MAX_PROXIMITY_KM);
+    const distanceMi = haversineMi(input.centroid, leader.homeBase);
+    const proximity = clamp01(1 - distanceMi / MAX_PROXIMITY_KM);
 
     const availability = availabilityOverlap(leader.availability ?? [], input.window);
     const budgetHeadroom = clamp01((leader.daysAwayBudget ?? 0) / windowDays);
@@ -146,7 +146,7 @@ export function suggestLeaders(input: SuggestLeadersInput): LeaderOption[] {
       name: leader.name,
       role: leader.role,
       score,
-      distanceKm,
+      distanceMi,
       availableInWindow: availability > 0,
       factors,
       notes,

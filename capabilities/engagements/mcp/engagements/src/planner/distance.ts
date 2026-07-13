@@ -6,43 +6,43 @@
 import type { GeoPoint } from '@greenhouse-resume-builder/shared';
 import { DEFAULT_WEIGHTS, PlannerWeights } from './weights';
 
-const EARTH_RADIUS_KM = 6371;
+const EARTH_RADIUS_MI = 3959;
 const toRad = (deg: number): number => (deg * Math.PI) / 180;
 
-/** Great-circle distance between two pre-geocoded points, in kilometers. */
-export function haversineKm(a: GeoPoint, b: GeoPoint): number {
+/** Great-circle distance between two pre-geocoded points, in miles. */
+export function haversineMi(a: GeoPoint, b: GeoPoint): number {
   const dLat = toRad(b.lat - a.lat);
   const dLng = toRad(b.lng - a.lng);
   const lat1 = toRad(a.lat);
   const lat2 = toRad(b.lat);
   const h =
     Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(h)));
+  return 2 * EARTH_RADIUS_MI * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
 export interface Eta {
   mode: 'air' | 'ground';
   minutes: number;
-  distanceKm: number;
+  distanceMi: number;
 }
 
 /**
  * Travel-time estimate between two points.
- * - Ground (haversine ≤ threshold): `distanceKm / groundSpeed + groundBuffer`.
- * - Air (otherwise): `airFixed + distanceKm / airSpeed + airArrivalBuffer`.
+ * - Ground (haversine ≤ threshold): `distanceMi / groundSpeed + groundBuffer`.
+ * - Air (otherwise): `airFixed + distanceMi / airSpeed + airArrivalBuffer`.
  */
 export function etaMinutes(a: GeoPoint, b: GeoPoint, w: PlannerWeights = DEFAULT_WEIGHTS): Eta {
-  const km = haversineKm(a, b);
-  if (km <= w.groundThresholdKm) {
+  const mi = haversineMi(a, b);
+  if (mi <= w.groundThresholdMi) {
     return {
       mode: 'ground',
-      distanceKm: km,
-      minutes: Math.round((km / w.groundSpeedKmh) * 60 + w.groundBufferMins),
+      distanceMi: mi,
+      minutes: Math.round((mi / w.groundSpeedMph) * 60 + w.groundBufferMins),
     };
   }
   return {
     mode: 'air',
-    distanceKm: km,
-    minutes: Math.round(w.airFixedMins + (km / w.airSpeedKmh) * 60 + w.airArrivalBufferMins),
+    distanceMi: mi,
+    minutes: Math.round(w.airFixedMins + (mi / w.airSpeedMph) * 60 + w.airArrivalBufferMins),
   };
 }

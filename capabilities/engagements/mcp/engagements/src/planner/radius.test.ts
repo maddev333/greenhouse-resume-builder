@@ -8,13 +8,13 @@ const ds = loadDataset();
 const leader = ds.leaders.find((l) => l.id === 'L1')!; // MG Whitfield, DC — owns C1/C3/C8
 const window = { start: '2025-10-13', end: '2025-10-16' };
 
-/** Anchor on Meridian Robotics (C3, Reston VA) — several authorized contacts sit within ~60 km. */
+/** Anchor on Meridian Robotics (C3, Reston VA) — several authorized contacts sit within ~40 mi. */
 const meridian = ds.contacts.find((c) => c.id === 'C3')!;
 const ncrArea: ResolvedArea = {
   id: 'coords:meridian',
   name: 'Meridian Robotics',
   centroid: meridian.location,
-  radiusKm: 120,
+  radiusMi: 120,
   resolvedVia: 'coords',
 };
 
@@ -46,7 +46,7 @@ test('radiusPlan: the anchor company is pinned as the first, on-site stop (dista
   assert.equal(r.anchor!.contactId, 'C3');
   assert.equal(r.stops[0].contactId, 'C3');
   assert.equal(r.stops[0].placement, 'on-site');
-  assert.equal(r.stops[0].distanceKm, 0);
+  assert.equal(r.stops[0].distanceMi, 0);
 });
 
 test('radiusPlan: fixed days fill — a tight budget overflows into extension options', () => {
@@ -90,7 +90,7 @@ test('radiusPlan: ROI and duration are costed against the FIXED days, not the ro
 test('radiusPlan: every chosen off-site stop is inside the requested radius', () => {
   const r = plan({ days: 5 });
   for (const s of r.stops) {
-    assert.ok(s.distanceKm <= ncrArea.radiusKm, `${s.contactId} within ${ncrArea.radiusKm} km`);
+    assert.ok(s.distanceMi <= ncrArea.radiusMi, `${s.contactId} within ${ncrArea.radiusMi} mi`);
   }
 });
 
@@ -107,7 +107,7 @@ test('radiusPlan: nothing within a tiny remote radius → empty plan (no anchor)
     id: 'coords:remote',
     name: 'mid-Pacific',
     centroid: { city: 'nowhere', lat: 0, lng: -160 },
-    radiusKm: 25,
+    radiusMi: 25,
     resolvedVia: 'coords',
   };
   const r = radiusPlan({

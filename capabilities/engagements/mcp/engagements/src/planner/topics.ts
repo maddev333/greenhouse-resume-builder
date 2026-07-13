@@ -5,7 +5,7 @@
  * records the caller may read.
  */
 import type { Contact, EngagementEvent, GeoPoint, Topic } from '@greenhouse-resume-builder/shared';
-import { haversineKm } from './distance';
+import { haversineMi } from './distance';
 import { isStale, loadConfig, DemoConfig } from './clock';
 
 export interface TopicInArea {
@@ -32,7 +32,7 @@ export interface TopicInArea {
 
 export interface TopicsInAreaInput {
   centroid: GeoPoint;
-  radiusKm: number;
+  radiusMi: number;
   /** Security-trimmed contacts (only records the caller may read). */
   contacts: Contact[];
   /** Optional security-trimmed events — add prospect magnets + topic presence. */
@@ -50,8 +50,8 @@ interface Agg {
   strategicValueSum: number;
 }
 
-const inRadius = (centroid: GeoPoint, p: GeoPoint, radiusKm: number): boolean =>
-  haversineKm(centroid, p) <= radiusKm;
+const inRadius = (centroid: GeoPoint, p: GeoPoint, radiusMi: number): boolean =>
+  haversineMi(centroid, p) <= radiusMi;
 
 /** Aggregate + rank the topics with a live footprint inside the area. Highest opportunity first. */
 export function topicsInArea(input: TopicsInAreaInput): TopicInArea[] {
@@ -73,7 +73,7 @@ export function topicsInArea(input: TopicsInAreaInput): TopicInArea[] {
   };
 
   for (const c of input.contacts) {
-    if (!inRadius(input.centroid, c.location, input.radiusKm)) continue;
+    if (!inRadius(input.centroid, c.location, input.radiusMi)) continue;
     const stale = c.status === 'active' && isStale(c.lastInteractionDate, cfg);
     for (const topicId of c.topicIds ?? []) {
       bump(topicId, {
@@ -86,7 +86,7 @@ export function topicsInArea(input: TopicsInAreaInput): TopicInArea[] {
   }
 
   for (const e of input.events ?? []) {
-    if (!inRadius(input.centroid, e.location, input.radiusKm)) continue;
+    if (!inRadius(input.centroid, e.location, input.radiusMi)) continue;
     for (const topicId of e.topicIds ?? []) bump(topicId, { eventCount: 1 });
   }
 

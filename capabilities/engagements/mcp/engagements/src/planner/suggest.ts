@@ -9,7 +9,7 @@
 import type { Contact, EngagementEvent, Leader } from '@greenhouse-resume-builder/shared';
 import { DEFAULT_WEIGHTS, PlannerWeights } from './weights';
 import { loadConfig, demoToday, isStale, DemoConfig } from './clock';
-import { haversineKm } from './distance';
+import { haversineMi } from './distance';
 import { suggestionScore } from './score';
 import type { Anchor, Candidate, FitFlag } from './types';
 
@@ -40,7 +40,7 @@ export interface SuggestInput {
   /** The anchor event, when the anchor is one — supplies attendee + exhibitor rosters. */
   event?: EngagementEvent;
   /** "Nearby" radius for off-site candidates (default from weights). */
-  radiusKm?: number;
+  radiusMi?: number;
   /** When true, drop candidates whose topics don't intersect the anchor topics (the "who to meet on X" path). */
   requireTopicMatch?: boolean;
   weights?: PlannerWeights;
@@ -52,7 +52,7 @@ export function suggest(input: SuggestInput): Candidate[] {
   const w = input.weights ?? DEFAULT_WEIGHTS;
   const cfg = input.cfg ?? loadConfig();
   const today = demoToday(cfg);
-  const radiusKm = input.radiusKm ?? w.nearbyRadiusKm;
+  const radiusMi = input.radiusMi ?? w.nearbyRadiusMi;
   const targetTopics = input.anchor.topicIds ?? input.event?.topicIds;
 
   const byId = new Map(input.contacts.map((c) => [c.id, c]));
@@ -64,7 +64,7 @@ export function suggest(input: SuggestInput): Candidate[] {
 
   const out = new Map<string, Candidate>(); // dedupe by contactId; on-site wins over off-site
 
-  const add = (c: Contact, placement: 'on-site' | 'off-site', distanceKm: number): void => {
+  const add = (c: Contact, placement: 'on-site' | 'off-site', distanceMi: number): void => {
     if (input.requireTopicMatch && !topicHit(c)) return;
     if (out.has(c.id) && out.get(c.id)!.placement === 'on-site') return; // keep the on-site variant
     const { score, factors } = suggestionScore(c, targetTopics, today, w);
@@ -72,7 +72,7 @@ export function suggest(input: SuggestInput): Candidate[] {
       contactId: c.id,
       name: c.name,
       location: c.location,
-      distanceKm,
+      distanceMi,
       placement,
       kind: c.status === 'prospect' ? 'initiate' : 're-engage',
       status: c.status,
@@ -97,8 +97,8 @@ export function suggest(input: SuggestInput): Candidate[] {
   // (b) nearby active contacts — off-site within radius (skip those already on-site)
   for (const c of input.contacts) {
     if (c.status !== 'active' || attendeeIds.has(c.id) || out.has(c.id)) continue;
-    const distanceKm = haversineKm(input.anchor.location, c.location);
-    if (distanceKm <= radiusKm) add(c, 'off-site', distanceKm);
+    const distanceMi = haversineMi(input.anchor.location, c.location);
+    if (distanceMi <= radiusMi) add(c, 'off-site', distanceMi);
   }
 
   return [...out.values()].sort((a, b) => b.score - a.score);

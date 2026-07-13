@@ -32,7 +32,7 @@ test('planRoute: greedy nearest-neighbor sweeps Reston before LA', () => {
   assert.equal(r.legs[1].fromStopId, 'reston');
   assert.equal(r.legs[1].toStopId, 'la');
   assert.equal(r.legs[1].mode, 'air');
-  assert.ok(r.totalKm > 0 && r.totalTravelMins > 0);
+  assert.ok(r.totalMi > 0 && r.totalTravelMins > 0);
 });
 
 test('planRoute: all on-site → no legs', () => {
@@ -42,6 +42,6 @@ test('planRoute: all on-site → no legs', () => {
   ];
   const r = planRoute(DC, stops);
   assert.equal(r.legs.length, 0);
-  assert.equal(r.totalKm, 0);
+  assert.equal(r.totalMi, 0);
   assert.deepEqual(r.order.map((s) => s.id), ['a', 'b']);
 });

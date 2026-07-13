@@ -8,14 +8,14 @@ const airLeg: RouteLeg = {
   fromStopId: ORIGIN_ID,
   toStopId: 'la',
   mode: 'air',
-  distanceKm: 3690,
+  distanceMi: 3690,
   estTravelMins: 427,
 };
 const groundLeg: RouteLeg = {
   fromStopId: ORIGIN_ID,
   toStopId: 'reston',
   mode: 'ground',
-  distanceKm: 28,
+  distanceMi: 28,
   estTravelMins: 49,
 };
 

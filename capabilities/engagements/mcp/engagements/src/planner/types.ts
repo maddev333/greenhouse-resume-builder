@@ -36,7 +36,7 @@ export interface Candidate {
   name: string;
   location: GeoPoint;
   /** Distance from the anchor; 0 for on-site (we meet them at the venue). */
-  distanceKm: number;
+  distanceMi: number;
   placement: SuggestionPlacement; // 'on-site' | 'off-site'
   kind: SuggestionKind; // 're-engage' | 'initiate'
   status: 'active' | 'prospect';
@@ -79,14 +79,14 @@ export interface RouteLeg {
   fromStopId: string; // '__origin__' for the first leg out of the anchor
   toStopId: string;
   mode: 'air' | 'ground';
-  distanceKm: number;
+  distanceMi: number;
   estTravelMins: number;
 }
 
 export interface RouteResult {
   order: RouteStop[];
   legs: RouteLeg[];
-  totalKm: number;
+  totalMi: number;
   totalTravelMins: number;
 }
 

@@ -42,7 +42,7 @@ const DEMO_PAYLOAD: TripMapPayload = {
   caller: 'demo',
   roiScore: 3.4,
   overBudget: false,
-  totalKm: 1580,
+  totalMi: 1580,
   origin: { id: 'event:E-AUSA', label: 'AUSA Annual Meeting', lat: 38.9037, lng: -77.0229, kind: 'origin', detail: 'Washington, DC · 2025-10-13→2025-10-15' },
   stops: [
     { id: 'C1', label: 'Dr. Alan Pierce', lat: 38.9037, lng: -77.0229, kind: 'on-site', detail: 're-engage · initiate · val 5 · score 0.81' },
@@ -51,9 +51,9 @@ const DEMO_PAYLOAD: TripMapPayload = {
     { id: 'C4', label: 'Redstone PM', lat: 34.6866, lng: -86.6689, kind: 'off-site', detail: 're-engage · STALE · val 5 · score 0.63' },
   ],
   legs: [
-    { fromLat: 38.9037, fromLng: -77.0229, toLat: 38.8816, toLng: -77.091, mode: 'ground', distanceKm: 8 },
-    { fromLat: 38.8816, fromLng: -77.091, toLat: 39.529, toLng: -76.162, mode: 'ground', distanceKm: 120 },
-    { fromLat: 39.529, fromLng: -76.162, toLat: 34.6866, toLng: -86.6689, mode: 'air', distanceKm: 1120 },
+    { fromLat: 38.9037, fromLng: -77.0229, toLat: 38.8816, toLng: -77.091, mode: 'ground', distanceMi: 8 },
+    { fromLat: 38.8816, fromLng: -77.091, toLat: 39.529, toLng: -76.162, mode: 'ground', distanceMi: 120 },
+    { fromLat: 39.529, fromLng: -76.162, toLat: 34.6866, toLng: -86.6689, mode: 'air', distanceMi: 1120 },
   ],
 };
 
@@ -214,7 +214,7 @@ function TripMap({ payload }: { payload: TripMapPayload }) {
         <h1 style={{ margin: '0 0 4px', fontSize: 20 }}>{payload.title}</h1>
         <div className="muted" style={{ fontSize: 13, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <span>{stopCount} stop(s) · {offSite} off-site</span>
-          {typeof payload.totalKm === 'number' && <span>{payload.totalKm} km travel</span>}
+          {typeof payload.totalMi === 'number' && <span>{payload.totalMi} mi travel</span>}
           {typeof payload.roiScore === 'number' && (
             <span style={{ color: payload.overBudget ? '#f85149' : undefined }}>
               ROI {payload.roiScore}{payload.overBudget ? ' · OVER BUDGET' : ''}
