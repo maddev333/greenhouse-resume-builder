@@ -8,9 +8,12 @@ _"a chat UI that supports MCP UI apps."_
 Browser (chat host page :8080)
   │  chat + persona selector
   │
-  ├─► free-form is the PRIMARY path — type anything (Enter / "Ask ▸") — POST :3020/ask { question, persona }
+  ├─► free-form is the PRIMARY path — type anything (Enter / "Ask ▸") — POST :3020/ask { question, persona, leaderId? }
   │      ⇒ { answer, menu[], itinerary, tripMap, redactedCount, rejected, mode }
-  │   render: assistant text + candidate cards (chat‑native)
+  │      OR (event-anchored, leader-first) stage:"clarify" { questions:[{ id:"leader", choices[] }] }
+  │         → pick a leader → re-ask with leaderId ⇒ stage:"options" { options:[different-length itineraries], recommendedOptionId }
+  │   render: assistant text + candidate cards (chat‑native); leader chips → different-length option cards;
+  │           select an option to drill into its full detail (meetings, trip-ROI, advisories, nearby leaders, map)
   │
   ├─► quick-start chips just *seed* a free-form /ask (they never lock you into a flow):
   │     ├─ 🔥 hot topics — GET :3020/topics?persona
@@ -96,9 +99,15 @@ npm run start --workspace @greenhouse-resume-builder/cap-engagements-ui
 
 Open **http://localhost:8080** and keep the persona on **EA · G8**.
 
-**Free-form is the primary path** — type anything and press **Ask ▸** (or just **Enter**). The
-agent picks the leader, resolves the topic/anchor, and returns assistant text + candidate cards
-(and a live trip map when one applies):
+**Free-form is the primary path** — type anything and press **Ask ▸** (or just **Enter**). For an
+**event-anchored** ask (like the AUSA example below) the agent is **leader-first**: it first shows a
+ranked roster of senior leaders ("which senior leader are you planning for?") as chips; pick one and
+it returns **multiple different-length itinerary options** (conference footprint → regional swing →
+full regional tour, one recommended). **Select any option to drill into its full detail** — the
+meetings (candidate cards), route, trip-ROI breakdown, advisories, nearby senior leaders, and the
+live trip map. For any other ask it resolves
+the leader/topic/anchor itself and returns assistant text + candidate cards (and a live trip map
+when one applies):
 
 > _I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?_
 >

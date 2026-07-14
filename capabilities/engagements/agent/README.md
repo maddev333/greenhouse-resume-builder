@@ -23,17 +23,26 @@ question ──▶ orchestrator ──(MCP tools/call, x-demo-persona)──▶ 
                 └─ suggest_candidates ──▶ build_itinerary ──▶ menu + itinerary + trip-map
 ```
 
-- **Primary path:** an Azure OpenAI tool-calling loop (`runAgentLoop` from `mcp-core`) picks the
-  leader, maps the topic phrase to `topicIds`, resolves the anchor event, and composes
-  `suggest_candidates → build_itinerary`.
+- **Event-anchored `/ask` (leader-first, deterministic):** when the ask resolves to an event
+  (e.g. *"a trip to AUSA…"*), `/ask` runs the **same leader-first flow as `/plan-options`** — it
+  first **asks which senior leader** you're planning for (a ranked roster, top pick recommended),
+  then returns **multiple full itinerary options of different lengths** (conference footprint → a
+  regional swing → a full regional tour), one recommended. This runs **before** the LLM, so it never
+  silently infers a leader and never collapses to a single itinerary. If the ask already names a
+  leader (`leaderId` or a surname in the text), it skips straight to the options.
+- **Free-form `/ask` (LLM path):** for non-event asks an Azure OpenAI tool-calling loop
+  (`runAgentLoop` from `mcp-core`) picks the leader, maps the topic phrase to `topicIds`, resolves
+  the anchor, and composes `suggest_candidates → build_itinerary`.
 - **Deterministic fallback:** when Azure OpenAI is not configured/reachable, a keyword router runs
   the same tool sequence — so the demo always works offline.
 - **Auth boundary:** the caller's **persona** is sent as `x-demo-persona` (stand-in for verified
   Keycloak claims). The capability enforces the trim **server-side**; the orchestrator only ever
   sees authorized rows and reports `redactedCount`.
-- **Area-first planning:** the `/plan-options` + `/build` seam (see *2c*) anchors on a region,
-  surveys the topics active there, and returns leader / duration / extension **options** via the
-  capability's `plan_options` tool — deterministic, so this path runs without Azure OpenAI.
+- **Area-first planning:** the `/plan-options` → `/build-options` → `/build` seam (see *2c*) anchors
+  on a region, **asks which senior leader** you're planning for, then returns **multiple full
+  itinerary options of different lengths** (a short visit → a full regional tour) to compare and
+  proceed with — deterministic, so this
+  path runs without Azure OpenAI.
 - **Fixed-radius planning:** the `/plan-radius` + `/build-radius` seam (see *2d*) anchors on a
   **company / coordinate / city** for a **fixed number of days** (no event) and fills the trip by
   radius via the capability's `plan_radius` + event-less `build_itinerary` — also deterministic.
@@ -68,6 +77,13 @@ npm run serve --workspace @greenhouse-resume-builder/cap-engagements-agent
 # POST /ask { question, persona?, leaderId?, topN? }  on http://localhost:3020
 curl -s localhost:3020/ask -H 'content-type: application/json' \
   -d '{"question":"who should I meet at AUSA on UAS/drone?","persona":"EA_G8"}' | jq
+# Event-anchored asks are leader-first: with no `leaderId` this returns
+#   { stage:"clarify", clarify:"leader", questions:[{ id:"leader", choices:[…ranked roster…] }] }
+# Re-send the SAME question with the chosen leader to get the different-length options:
+curl -s localhost:3020/ask -H 'content-type: application/json' \
+  -d '{"question":"who should I meet at AUSA on UAS/drone?","persona":"EA_G8","leaderId":"L1"}' | jq
+# → { stage:"options", leaderName, event, recommendedOptionId,
+#     options:[{ id, label, days, roiScore, recommended, contactIds, itinerary, tripMap }, …] }
 
 # Hot topics — a topic-first entry point (persona-trimmed). Each item carries a ready-made
 # free-form `question`; the UI fires it straight back into /ask, so it never locks the EA in.
@@ -86,18 +102,25 @@ npm run ask --workspace @greenhouse-resume-builder/cap-engagements-agent -- \
 
 **2c. Interactive area-first planning** (the seam the chat UI's *"Plan a trip"* flow calls):
 
-Instead of one-shot Q→A, anchor on a **geographical area** and let the orchestrator ask
-*who should go, how long, and what each extra day unlocks* — always returning **options** so the
-EA decides. Two stateless stages, both deterministic (no LLM required, works offline):
+Instead of one-shot Q→A, anchor on a **geographical area** and let the orchestrator walk the EA
+through the trip — always returning **options** so the human decides. Stateless, deterministic
+stages (no LLM required, works offline):
 
 ```bash
-# Stage 1 — area → option menus (leader / duration tiers / extension add-ons)
+# Stage 1 — area → (asks "which area?" if none anchors, then) "which senior leader?"
 curl -s localhost:3020/plan-options -H 'content-type: application/json' \
   -d '{"regionId":"E-BOSTON","persona":"EA_G8"}' | jq
-# → { stage:"options", area, window, areaSurvey[], questions:[leader|duration|extensions], redactedCount }
-# (omit the area to get stage:"clarify" + region chips to pick from)
+# → { stage:"clarify", clarify:"leader", leaderOptions[], questions:[leader], answer:"Which senior leader…" }
+#   (omit the area entirely → stage:"clarify", clarify:"area" + region chips)
+#   (pass "leaderId" → stage:"options" with questions:[leader|duration|extensions])
 
-# Stage 2 — the EA's picks → security-trimmed itinerary + trip map
+# Stage 2 (options) — for the CHOSEN leader, build MULTIPLE full itineraries of DIFFERENT LENGTHS
+curl -s localhost:3020/build-options -H 'content-type: application/json' \
+  -d '{"regionId":"E-BOSTON","persona":"EA_G8","leaderId":"L1"}' | jq
+# → { leaderId, leaderName, recommendedOptionId, options:[{ id:"2d", days, label:"2-day trip", summary, itinerary, tripMap, … }] }
+#   knobs: optionCount (default 3), maxDays (default 7), targetDays:[2,5,7] (explicit lengths), meetingsPerDay
+
+# Stage 2 (commit) — proceed with one option (or hand-tune duration/extensions) → itinerary + trip map
 curl -s localhost:3020/build -H 'content-type: application/json' \
   -d '{"regionId":"E-BOSTON","persona":"EA_G8","leaderId":"L1","durationTier":"extended","extensionContactIds":["C20"]}' | jq
 # → { answer, menu[], itinerary, tripMap, redactedCount, rejected }
@@ -107,16 +130,26 @@ Or from the CLI — renders the same menus as text:
 
 ```bash
 npm run ask --workspace @greenhouse-resume-builder/cap-engagements-agent -- \
-  --options "plan a trip to Boston" --persona EA_G8
-# also: --region E-BOSTON, --window 2025-10-06..2025-10-31
+  --options "plan a trip to Boston" --persona EA_G8            # → asks WHICH senior leader
+npm run ask --workspace @greenhouse-resume-builder/cap-engagements-agent -- \
+  --itineraries --leader L1 --region E-BOSTON --persona EA_G8  # → different-length itinerary options
+# also: --window 2025-10-06..2025-10-31, --count 3, --max-days 7, --target-days 2,5,7, --per-day 2
 ```
 
 The area is resolved from a seed **region** (id or alias, e.g. `NCR`, `bay area`) or a city named
 after a locative preposition (*"in/near/to <City>"*); if nothing anchors, `/plan-options` returns
-`stage:"clarify"` with the known regions as chips. Duration tiers (**core** / **extended**) and
-**extension add-ons** (each `+N day(s)` unlocks another meeting, with approved-vs-coordinate
-talking points) come straight from the capability's `plan_options` tool — the security trim is
-still enforced server-side, so `/build` re-authorizes every stop.
+`stage:"clarify"` (`clarify:"area"`) with the known regions as chips. **Who goes is asked first:**
+when the ask names no leader, `/plan-options` returns `stage:"clarify"` (`clarify:"leader"`) with the
+ranked roster (top pick recommended) — the UI re-calls it with the picked `leaderId` to advance.
+`/build-options` then returns several fully-costed itineraries of **genuinely different lengths**
+(a short visit → a full regional tour), packing the best authorized meetings into `days ×
+meetingsPerDay` slots; each option carries its own route, trip-ROI, advisory conflicts, **nearby
+senior leaders**, and `ui://trip-map`, and the best in-budget ROI is flagged `recommended` — so the
+EA compares finished trips of different durations. Lengths auto-spread across the area's stop pool,
+or you can pin them with `targetDays`/`optionCount`/`maxDays`. Everything comes straight from the
+capability's `build_itinerary` radius fill — the security trim is still enforced server-side, so
+every option re-authorizes each stop (a `NO_TENANT`/cross-tenant caller gets `rejected:true`, empty
+options).
 
 **2d. Fixed-radius planning** (a leader must visit a specific company for a fixed number of days,
 **no anchor event**):

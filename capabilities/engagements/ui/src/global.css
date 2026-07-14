@@ -579,6 +579,80 @@ body {
   font-size: 12px;
 }
 
+/* Area-intelligence briefing: hot topics / stale re-engage / event freshness — each with a "why". */
+.opt-intel {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #d98324);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+
+.opt-intel-stale {
+  border-left-color: #d9534f;
+}
+
+.opt-intel-events {
+  border-left-color: #4a90d9;
+}
+
+.opt-intel-head {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.opt-intel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.opt-intel-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  line-height: 1.4;
+}
+
+.opt-intel-name {
+  font-weight: 600;
+}
+
+.opt-intel-why {
+  font-size: 11px;
+}
+
+.opt-evt-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.opt-evt-upcoming {
+  background: rgba(74, 144, 217, 0.18);
+  color: #4a90d9;
+}
+
+.opt-evt-in-window {
+  background: rgba(76, 175, 80, 0.18);
+  color: #4caf50;
+}
+
+.opt-evt-lapsed {
+  background: rgba(217, 83, 79, 0.18);
+  color: #d9534f;
+}
+
 .opt-chips {
   display: flex;
   flex-wrap: wrap;
@@ -599,6 +673,147 @@ body {
 
 .opt-chip:hover {
   border-color: var(--accent);
+}
+
+/* Leader-first `/ask` — different-length itinerary option cards. */
+.ask-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.opt-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+}
+
+.opt-card-rec {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.opt-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+/* The card header doubles as the select/drill-down control. */
+.opt-card-select {
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.opt-card-select:hover strong,
+.opt-card-select:focus-visible strong {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.opt-card-toggle {
+  margin-left: auto;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.opt-card-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.opt-card-summary {
+  font-size: 12px;
+}
+
+/* Drill-down detail panel (stops, ROI, advisories, nearby leaders, map). */
+.opt-detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.opt-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.opt-detail-label {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.opt-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.opt-stat {
+  font-size: 12px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+}
+
+.opt-route {
+  font-size: 12px;
+}
+
+.opt-roi {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.opt-advisories,
+.opt-leaders {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.opt-advisory {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-left: 3px solid var(--warn-text);
+  background: var(--warn-bg);
+  border-radius: 4px;
+}
+
+.opt-advisory.sev-hard {
+  border-left-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.opt-leader {
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
 }
 
 .opt-group {

@@ -34,7 +34,10 @@ export const {
   anchorFromArea,
   resolveArea,
   topicsInArea,
+  staleContactsInArea,
+  eventsInArea,
   suggestLeaders,
+  nearbyLeaders,
   estimateDuration,
   durationOptions,
   extensionOptions,
@@ -88,7 +91,20 @@ export type {
 } from './planner/types.js';
 export type { AreaInput, ResolvedArea } from './planner/area.js';
 export type { TopicInArea, TopicsInAreaInput } from './planner/topics.js';
+export type {
+  StaleContact,
+  StaleContactsInput,
+  AreaEvent,
+  AreaEventStatus,
+  EventsInAreaInput,
+} from './planner/area-intel.js';
 export type { LeaderOption, LeaderFactors, SuggestLeadersInput } from './planner/leaders.js';
+export type {
+  NearbyLeader,
+  NearbyLeadersInput,
+  NearbyReason,
+  NearbyReasonType,
+} from './planner/co-location.js';
 export type {
   DurationEstimate,
   DurationOption,

@@ -53,6 +53,15 @@ async function startHttp(): Promise<void> {
     console.log(`  default caller: set header 'x-demo-persona: EA_G8' (or EA_BASIC/ADMIN/CROSS_TENANT/NO_TENANT) to switch the security trim.`);
   });
 
+  httpServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Engagements MCP server: port ${PORT} is already in use — a previous MCP server may still be running. Stop that process or set ENGAGEMENTS_MCP_PORT to a free port, then retry.`);
+    } else {
+      console.error(err);
+    }
+    process.exit(1);
+  });
+
   const shutdown = () => httpServer.close(() => process.exit(0));
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

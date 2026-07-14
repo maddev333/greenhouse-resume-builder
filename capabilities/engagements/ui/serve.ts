@@ -110,13 +110,24 @@ sandboxApp.use((_req, res) => {
 });
 
 // ============ Start ============
+function onListenError(port: number, label: string) {
+  return (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`${label}: port ${port} is already in use — a previous chat host may still be running. Stop that process or free the port, then retry.`);
+    } else {
+      console.error(err);
+    }
+    process.exit(1);
+  };
+}
+
 hostApp.listen(HOST_PORT, () => {
   console.log(`Chat host:      http://localhost:${HOST_PORT}`);
   console.log(`  -> orchestrator: ${ORCHESTRATOR_URL}  (POST /ask)`);
   console.log(`  -> engagements MCP: ${ENGAGEMENTS_MCP_URL}  (ui://trip-map resource)`);
-});
+}).on("error", onListenError(HOST_PORT, "Chat host"));
 
 sandboxApp.listen(SANDBOX_PORT, () => {
   console.log(`Sandbox proxy:  http://localhost:${SANDBOX_PORT}/sandbox.html`);
   console.log("\nOpen the chat host URL above. Press Ctrl+C to stop.\n");
-});
+}).on("error", onListenError(SANDBOX_PORT, "Sandbox proxy"));

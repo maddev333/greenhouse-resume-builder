@@ -28,6 +28,21 @@ export interface TopicInArea {
   strategicValueSum: number;
   /** Ranking heuristic — higher = more reason to go now. */
   opportunityScore: number;
+  /** One-line "why this topic is hot here" (active/stale/prospect/event/message footprint). */
+  reason: string;
+}
+
+/** Compose the human-readable "why it's hot" line for a topic's in-area footprint. */
+function topicReason(a: Agg, hasApprovedMessage: boolean): string {
+  const parts = [
+    a.activeCount ? `${a.activeCount} active` : null,
+    a.staleCount ? `${a.staleCount} stale (re-engage)` : null,
+    a.prospectCount ? `${a.prospectCount} prospect` : null,
+    a.eventCount ? `${a.eventCount} event${a.eventCount > 1 ? 's' : ''}` : null,
+    a.strategicValueSum ? `Σ value ${a.strategicValueSum}` : null,
+    hasApprovedMessage ? 'approved message ✓' : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : 'no live footprint';
 }
 
 export interface TopicsInAreaInput {
@@ -96,19 +111,21 @@ export function topicsInArea(input: TopicsInAreaInput): TopicInArea[] {
     // Opportunity: strategic weight + prospect upside + urgency from staleness + event leverage.
     const opportunityScore =
       a.strategicValueSum + a.prospectCount * 2 + a.staleCount * 3 + a.eventCount * 4;
+    const hasApprovedMessage = !!(t && t.approvedMessageId);
     out.push({
       topicId,
       name: t?.name ?? topicId,
       domain: t?.domain ?? 'unknown',
       smeAreas: t?.smeAreas ?? [],
       ownerOrg: t?.ownerOrg,
-      hasApprovedMessage: !!(t && t.approvedMessageId),
+      hasApprovedMessage,
       activeCount: a.activeCount,
       prospectCount: a.prospectCount,
       staleCount: a.staleCount,
       eventCount: a.eventCount,
       strategicValueSum: a.strategicValueSum,
       opportunityScore,
+      reason: topicReason(a, hasApprovedMessage),
     });
   }
   return out.sort(

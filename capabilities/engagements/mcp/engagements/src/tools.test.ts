@@ -32,13 +32,14 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
   return res;
 }
 
-test('tools/list exposes the eight engagement tools', async () => {
+test('tools/list exposes the nine engagement tools', async () => {
   const { client, close } = await connect('EA_G8');
   try {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
       'build_itinerary',
+      'nearby_leaders',
       'plan_options',
       'plan_radius',
       'search_contacts',
@@ -137,6 +138,55 @@ test('build_itinerary: EA_G8 accepts [P2, C4, C3] → routed stops, ROI and no o
   }
 });
 
+test('build_itinerary: additionalContactIds adds an authorized regional swing (keeps on-site attendees, adds days)', async () => {
+  const { client, close } = await connect('EA_G8');
+  try {
+    const core = await call(client, 'build_itinerary', {
+      leaderId: 'L1',
+      eventQuery: 'AUSA',
+      topicIds: ['T3'],
+      acceptedContactIds: ['P2', 'C4', 'C3'],
+    });
+    const swing = await call(client, 'build_itinerary', {
+      leaderId: 'L1',
+      eventQuery: 'AUSA',
+      topicIds: ['T3'],
+      acceptedContactIds: ['P2', 'C4', 'C3'],
+      additionalContactIds: ['C11', 'C29'], // Boston + Austin — far T3 stops beyond the nearby pool
+    });
+    const swingIds = swing.structuredContent.accepted.map((c: { contactId: string }) => c.contactId);
+    // on-site attendee (P2) is retained AND the far stops are appended
+    assert.ok(swingIds.includes('P2'), 'keeps the on-site AUSA attendee P2');
+    assert.ok(swingIds.includes('C11') && swingIds.includes('C29'), 'adds the far regional-swing stops');
+    assert.equal(swing.structuredContent.accepted.length, 5);
+    // a real cross-country swing genuinely lengthens the trip
+    assert.ok(
+      swing.structuredContent.duration.days > core.structuredContent.duration.days,
+      `swing (${swing.structuredContent.duration.days}d) should be longer than core (${core.structuredContent.duration.days}d)`,
+    );
+  } finally {
+    await close();
+  }
+});
+
+test('build_itinerary: additionalContactIds cannot smuggle an unauthorized contact (C12 redacted for EA_G8)', async () => {
+  const { client, close } = await connect('EA_G8');
+  try {
+    const res = await call(client, 'build_itinerary', {
+      leaderId: 'L1',
+      eventQuery: 'AUSA',
+      topicIds: ['T3'],
+      acceptedContactIds: ['P2', 'C3'],
+      additionalContactIds: ['C12'],
+    });
+    const acceptedIds = res.structuredContent.accepted.map((c: { contactId: string }) => c.contactId);
+    assert.ok(!acceptedIds.includes('C12'), 'C12 is not in EA_G8 authorized set → dropped');
+    assert.ok(res.structuredContent.notMatched.includes('C12'), 'C12 surfaced as notMatched');
+  } finally {
+    await close();
+  }
+});
+
 test('build_itinerary: EA_BASIC cannot route through C4 (not in its authorized set)', async () => {
   const { client, close } = await connect('EA_BASIC');
   try {
@@ -212,6 +262,17 @@ test('plan_options: NCR in AUSA week returns survey + leader + duration + extens
     assert.equal(sc.area.id, 'R-NCR');
     // survey + leader options
     assert.ok(sc.areaSurvey.some((t: { topicId: string }) => t.topicId === 'T1'), 'NCR has a T1 footprint');
+    assert.ok(sc.areaSurvey.every((t: { reason?: string }) => typeof t.reason === 'string'), 'each hot topic carries a why');
+    // area intelligence: stale relationships to re-engage + event freshness, each with a why
+    assert.ok(Array.isArray(sc.staleContacts), 'stale-contact list is present');
+    for (const c of sc.staleContacts) {
+      assert.ok(c.overdueDays >= 0 && typeof c.reason === 'string', 'stale contact carries overdue + why');
+    }
+    assert.ok(Array.isArray(sc.areaEvents), 'area-event freshness list is present');
+    for (const e of sc.areaEvents) {
+      assert.ok(['lapsed', 'in-window', 'upcoming'].includes(e.status), 'event carries a freshness verdict');
+      assert.ok(typeof e.reason === 'string', 'event carries a why');
+    }
     assert.ok(sc.leaderOptions.length >= 2, 'a ranked leader menu');
     assert.equal(sc.chosenLeaderId, sc.leaderOptions[0].leaderId, 'top option chosen by default');
     // event auto-absorption + stop-derived duration
@@ -324,6 +385,72 @@ test('plan_radius: NO_TENANT is rejected fail-closed (no stops leak)', async () 
     assert.equal(res.structuredContent.rejected, true);
     assert.equal(res.structuredContent.stops.length, 0);
     assert.equal(res.structuredContent.extensionOptions.length, 0);
+  } finally {
+    await close();
+  }
+});
+
+test('nearby_leaders: event mode flags the other senior leaders at the same event (planning leader excluded)', async () => {
+  const { client, close } = await connect('EA_G8');
+  try {
+    const res = await call(client, 'nearby_leaders', { leaderId: 'L1', eventQuery: 'AUSA' });
+    const sc = res.structuredContent;
+    assert.equal(sc.rejected, false);
+    assert.equal(sc.anchor.kind, 'event');
+    assert.equal(sc.anchor.id, 'E-AUSA');
+    const ids = sc.nearbyLeaders.map((n: { leaderId: string }) => n.leaderId);
+    assert.ok(!ids.includes('L1'), 'the planning leader is excluded');
+    assert.ok(ids.includes('L5'), 'L5 owns an AUSA attendee (same-event)');
+    const l5 = sc.nearbyLeaders.find((n: { leaderId: string }) => n.leaderId === 'L5');
+    assert.ok(l5.reasons.some((r: { type: string }) => r.type === 'same-event'));
+  } finally {
+    await close();
+  }
+});
+
+test('nearby_leaders: NO_TENANT is rejected fail-closed (no leaders leak)', async () => {
+  const { client, close } = await connect('NO_TENANT');
+  try {
+    const res = await call(client, 'nearby_leaders', { leaderId: 'L1', eventQuery: 'AUSA' });
+    assert.equal(res.structuredContent.rejected, true);
+    assert.equal(res.structuredContent.nearbyLeaders.length, 0);
+  } finally {
+    await close();
+  }
+});
+
+test('build_itinerary: event build carries nearby-leader awareness for the same event', async () => {
+  const { client, close } = await connect('EA_G8');
+  try {
+    const res = await call(client, 'build_itinerary', {
+      leaderId: 'L1',
+      eventQuery: 'AUSA',
+      topicIds: ['T3'],
+      acceptedContactIds: ['P2', 'C3'],
+    });
+    const sc = res.structuredContent;
+    assert.ok(Array.isArray(sc.nearbyLeaders), 'awareness is attached to the itinerary');
+    const ids = sc.nearbyLeaders.map((n: { leaderId: string }) => n.leaderId);
+    assert.ok(!ids.includes('L1'), 'the trip owner is not listed as nearby');
+    assert.ok(ids.includes('L5'), 'L5 is flagged as engaged at the same event');
+  } finally {
+    await close();
+  }
+});
+
+test('build_itinerary: event-less radius build also carries nearby-leader awareness', async () => {
+  const { client, close } = await connect('EA_G8');
+  try {
+    const res = await call(client, 'build_itinerary', {
+      leaderId: 'L1',
+      anchorContactId: 'C3',
+      radiusMi: 80,
+      days: 3,
+      window: { start: '2025-10-13', end: '2025-10-15' },
+    });
+    const sc = res.structuredContent;
+    assert.ok(Array.isArray(sc.nearbyLeaders), 'radius build attaches awareness');
+    assert.ok(sc.nearbyLeaders.every((n: { leaderId: string }) => n.leaderId !== 'L1'), 'planning leader excluded');
   } finally {
     await close();
   }

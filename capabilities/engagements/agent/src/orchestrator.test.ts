@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { loadLeaders, loadRegions, loadTopics, defaultWindow, regionChoices, resolveAreaInput, resolveDefaultLeaderId, rosterForPrompt, topicIdsFromText, topicsForPrompt } from './catalog.js';
 import { AGENT_TOOLS } from './tools.js';
-import { anchorGuess, areaClarifyQuestion, buildOptionQuestions, buildRadiusQuestions, buildSystemPrompt, hotTopicQuestion, parseRadiusAsk, rankHotTopics, selectedContactIds } from './orchestrator.js';
+import { anchorGuess, areaAskAnchor, areaClarifyQuestion, buildOptionQuestions, buildRadiusQuestions, buildSystemPrompt, itineraryLengthTargets, hotTopicQuestion, leaderClarifyQuestion, leaderFromQuestion, optionsToPlanResult, parseRadiusAsk, rankHotTopics, selectedContactIds } from './orchestrator.js';
 
 test('topicIdsFromText maps UAS/drone to T3', () => {
   assert.deepEqual(topicIdsFromText('who should I meet on UAS/drone?'), ['T3']);
@@ -57,6 +57,21 @@ test('anchorGuess extracts the AUSA acronym from the canonical demo question', (
 
 test('anchorGuess falls back to the phrase after a preposition', () => {
   assert.equal(anchorGuess('planning a visit to Fort Bragg next week'), 'Fort Bragg');
+});
+
+// ── Leader-first `/ask`: name the senior leader, or ASK who ─────────────────
+
+test('leaderFromQuestion returns null when NO leader is named (→ ask WHO first)', () => {
+  assert.equal(leaderFromQuestion("I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?"), null);
+});
+
+test('leaderFromQuestion matches an explicit roster id', () => {
+  assert.equal(leaderFromQuestion('Plan AUSA for L2 on recruiting'), 'L2');
+});
+
+test('leaderFromQuestion matches a distinctive surname', () => {
+  assert.equal(leaderFromQuestion('Build an AUSA itinerary for MG Whitfield'), 'L1');
+  assert.equal(leaderFromQuestion('what should Nguyen do at AUSA?'), 'L6');
 });
 
 // ── Fixed-radius planning: parse + menu helpers ─────────────────────────────
@@ -141,12 +156,69 @@ test('resolveAreaInput maps a region alias to its region id (longest match wins)
   assert.deepEqual(resolveAreaInput('what should we do in Washington DC?'), { regionId: 'R-NCR' });
 });
 
+test('resolveAreaInput resolves the "Central TX" shorthand to R-CENTRAL-TX (the flagship area query)', () => {
+  assert.deepEqual(
+    resolveAreaInput("Plan a trip to Central TX — who should go, how long, and what's worth doing there?"),
+    { regionId: 'R-CENTRAL-TX' },
+  );
+  assert.deepEqual(resolveAreaInput('anything happening in central tx?'), { regionId: 'R-CENTRAL-TX' });
+});
+
 test('resolveAreaInput falls back to a city after a locative preposition', () => {
   assert.deepEqual(resolveAreaInput('any reason to travel to Huntsville next month?'), { city: 'Huntsville' });
 });
 
 test('resolveAreaInput returns null when nothing anchors an area', () => {
   assert.equal(resolveAreaInput('what should i have for lunch'), null);
+});
+
+test('areaAskAnchor routes a KNOWN-REGION ask into the area-first leader→options flow', () => {
+  assert.deepEqual(
+    areaAskAnchor("Plan a trip to Central TX — who should go, how long, and what's worth doing there?"),
+    { regionId: 'R-CENTRAL-TX' },
+  );
+  assert.deepEqual(areaAskAnchor('what is worth doing in the Bay Area?'), { regionId: 'R-BAY-AREA' });
+});
+
+test('areaAskAnchor declines event asks, bare cities, and fixed-radius asks (they keep their own paths)', () => {
+  assert.equal(areaAskAnchor('plan a trip to AUSA'), null); // event token, not a known region
+  assert.equal(areaAskAnchor('any reason to travel to Huntsville next month?'), null); // locative city, not a region
+  assert.equal(areaAskAnchor('3 days within 60 mi of Reston'), null); // fixed-radius ask
+  assert.equal(areaAskAnchor('what should i have for lunch'), null);
+});
+
+test('optionsToPlanResult renders an AREA options envelope (no event) — area name + stage:options + recommended', () => {
+  const base = {
+    ok: false, mode: 'deterministic', persona: 'EA_G8', question: 'q', answer: null, toolCalls: [],
+    menu: null, itinerary: null, tripMap: null, redactedCount: null, rejected: false, stage: 'plan', clarify: null,
+  } as any;
+  const opts = {
+    ok: true, persona: 'EA_G8', question: 'Itinerary options for L1', leaderId: 'L1', leaderName: 'MG D. Whitfield',
+    area: { name: 'Central Texas' }, window: { start: '2025-10-06', end: '2025-10-31' }, today: '2025-10-06',
+    topicIds: ['T3'],
+    options: [
+      { id: '2d', tier: 'short', label: '2-day trip', summary: '2 meeting(s) · ROI 1.10', days: 2, stopCount: 2,
+        roiScore: 1.1, overBudget: false, recommended: false, contactIds: ['C6', 'C29'], ok: true,
+        itinerary: { accepted: [{ contactId: 'C6' }, { contactId: 'C29' }] }, tripMap: { k: 1 }, answer: null },
+      { id: '5d', tier: 'extended', label: '5-day trip', summary: '5 meeting(s) · ROI 1.40', days: 5, stopCount: 5,
+        roiScore: 1.4, overBudget: false, recommended: true, contactIds: ['C6', 'C29', 'C9', 'C30'], ok: true,
+        itinerary: { accepted: [{ contactId: 'C6' }] }, tripMap: { k: 2 }, answer: null },
+    ],
+    recommendedOptionId: '5d', redactedCount: 0, rejected: false,
+  } as any;
+
+  const pr = optionsToPlanResult(base, opts, null);
+  assert.equal(pr.stage, 'options');
+  assert.equal(pr.clarify, null);
+  assert.equal(pr.leaderId, 'L1');
+  assert.equal(pr.event, null);
+  assert.equal(pr.options?.length, 2);
+  assert.equal(pr.recommendedOptionId, '5d');
+  assert.match(pr.answer ?? '', /Central Texas/);
+  assert.match(pr.answer ?? '', /2 itinerary option\(s\)/);
+  // The recommended option's finished itinerary/map are surfaced as the headline plan.
+  assert.equal(pr.tripMap, opts.options[1].tripMap);
+  assert.deepEqual(pr.menu, opts.options[1].itinerary.accepted);
 });
 
 test('defaultWindow returns an ISO start/end and honors the env override', () => {
@@ -215,6 +287,44 @@ test('selectedContactIds combines the chosen duration tier stops with toggled ex
     selectedContactIds(PLAN_FIXTURE, { durationTier: 'core', extensionContactIds: ['C24', 'C22'] }),
     ['C21', 'C22', 'C24'],
   );
+});
+
+// ── Feature: ask WHO first + offer multiple full itinerary options ──────────
+
+test('leaderClarifyQuestion asks WHICH senior leader with the ranked roster (top pick recommended)', () => {
+  const q = leaderClarifyQuestion(PLAN_FIXTURE.leaderOptions, PLAN_FIXTURE.chosenLeaderId);
+  assert.equal(q.id, 'leader');
+  assert.equal(q.kind, 'single');
+  assert.match(q.prompt, /which senior leader/i);
+  const l2 = q.choices.find((c) => c.value === 'L2')!;
+  assert.ok(l2.selected && l2.recommended, 'the recommended top pick is pre-selected');
+  const l1 = q.choices.find((c) => c.value === 'L1')!;
+  assert.equal(l1.selected, false);
+  assert.ok(l1.detail!.includes('not free in window'));
+});
+
+test('itineraryLengthTargets spreads DISTINCT, ascending trip lengths across the stop pool', () => {
+  // NCR-sized pool (13 stops, 2/day) → a short visit, a mid trip, and the full regional tour.
+  const ncr = itineraryLengthTargets({ availableStops: 13, meetingsPerDay: 2 });
+  assert.deepEqual(ncr, [2, 5, 7]);
+  assert.equal(new Set(ncr).size, ncr.length, 'lengths are all different');
+  assert.deepEqual([...ncr].sort((a, b) => a - b), ncr, 'lengths are ascending');
+});
+
+test('itineraryLengthTargets caps at maxDays and never exceeds what the pool can fill', () => {
+  // Only enough stops for 3 days → offers 1/2/3-day trips, not a padded week.
+  assert.deepEqual(itineraryLengthTargets({ availableStops: 6, meetingsPerDay: 2 }), [1, 2, 3]);
+  // Huge pool but maxDays=4 → capped, still distinct.
+  const capped = itineraryLengthTargets({ availableStops: 99, meetingsPerDay: 2, maxDays: 4 });
+  assert.equal(Math.max(...capped), 4);
+  assert.equal(new Set(capped).size, capped.length);
+});
+
+test('itineraryLengthTargets honours an explicit targetDays list (deduped + sorted) and count=1', () => {
+  assert.deepEqual(itineraryLengthTargets({ availableStops: 99, targetDays: [3, 3, 1, 10] }), [1, 3, 10]);
+  assert.deepEqual(itineraryLengthTargets({ availableStops: 13, meetingsPerDay: 2, count: 1 }), [7]);
+  // A pool too small to differentiate collapses to a single 1-day option.
+  assert.deepEqual(itineraryLengthTargets({ availableStops: 1, meetingsPerDay: 2 }), [1]);
 });
 
 // ── Hot topics — topic-first entry point (persona-trimmed footprint ranking) ─

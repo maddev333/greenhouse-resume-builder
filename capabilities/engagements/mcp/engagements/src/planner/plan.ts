@@ -28,6 +28,7 @@ import { planRoute } from './route';
 import { tripRoi } from './roi';
 import { detectAvailabilityBudget, detectFit, detectOpportunityCost } from './conflicts';
 import { topicsInArea, type TopicInArea } from './topics';
+import { staleContactsInArea, eventsInArea, type StaleContact, type AreaEvent } from './area-intel';
 import { suggestLeaders, type LeaderOption, type LeaderWeights } from './leaders';
 import type { ResolvedArea } from './area';
 import type { Anchor, Candidate, Conflict, RouteResult, RoiResult, RouteStop } from './types';
@@ -354,6 +355,10 @@ export interface PlanOptionsResult {
   window: DateRange;
   topicIds: string[];
   areaSurvey: TopicInArea[];
+  /** Active in-area relationships overdue for a touch — the "re-engage while you're there" list. */
+  staleContacts: StaleContact[];
+  /** In-area events with a freshness verdict (lapsed follow-up / in-window / upcoming magnet). */
+  areaEvents: AreaEvent[];
   leaderOptions: LeaderOption[];
   chosenLeaderId: string | null;
   onSiteDays: number;
@@ -374,6 +379,8 @@ export function planOptions(input: PlanOptionsInput): PlanOptionsResult {
   const inArea = input.contacts.filter((c) => haversineMi(centroid, c.location) <= radiusMi);
 
   const areaSurvey = topicsInArea({ centroid, radiusMi, contacts: input.contacts, events: input.events, topics: input.topics, cfg: input.cfg });
+  const staleContacts = staleContactsInArea({ centroid, radiusMi, contacts: input.contacts, cfg: input.cfg });
+  const areaEvents = eventsInArea({ centroid, radiusMi, events: input.events, cfg: input.cfg });
   const topicIds = input.topicIds?.length ? input.topicIds : areaSurvey.map((t) => t.topicId);
 
   const leaderOptions = suggestLeaders({ centroid, window: input.window, topicIds, leaders: input.leaders, topics: input.topics, contacts: inArea, weights: input.leaderWeights });
@@ -384,7 +391,7 @@ export function planOptions(input: PlanOptionsInput): PlanOptionsResult {
       : undefined;
 
   if (!chosen) {
-    return { area: input.area, window: input.window, topicIds, areaSurvey, leaderOptions, chosenLeaderId: null, onSiteDays: 0, absorbedEventIds: [], durationOptions: [], extensionOptions: [] };
+    return { area: input.area, window: input.window, topicIds, areaSurvey, staleContacts, areaEvents, leaderOptions, chosenLeaderId: null, onSiteDays: 0, absorbedEventIds: [], durationOptions: [], extensionOptions: [] };
   }
 
   const reachRadiusMi = Math.max(radiusMi, input.reachRadiusMi ?? Math.max(radiusMi, w.nearbyRadiusMi));
@@ -415,6 +422,8 @@ export function planOptions(input: PlanOptionsInput): PlanOptionsResult {
     window: input.window,
     topicIds,
     areaSurvey,
+    staleContacts,
+    areaEvents,
     leaderOptions,
     chosenLeaderId: chosen.id,
     onSiteDays: gathered.onSiteDays,

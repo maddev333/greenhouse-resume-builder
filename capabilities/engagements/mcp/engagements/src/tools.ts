@@ -21,7 +21,10 @@ import {
   anchorFromEvent,
   resolveArea,
   topicsInArea,
+  staleContactsInArea,
+  eventsInArea,
   suggestLeaders,
+  nearbyLeaders,
   planOptions,
   radiusPlan,
   DEFAULT_MEETINGS_PER_DAY,
@@ -41,7 +44,10 @@ import {
   type ResolvedArea,
   type RadiusPlanResult,
   type TopicInArea,
+  type StaleContact,
+  type AreaEvent,
   type LeaderOption,
+  type NearbyLeader,
   type DurationOption,
   type ExtensionOption,
   type Conflict,
@@ -134,6 +140,43 @@ function topicInAreaView(t: TopicInArea) {
     eventCount: t.eventCount,
     strategicValueSum: t.strategicValueSum,
     opportunityScore: t.opportunityScore,
+    reason: t.reason,
+  };
+}
+
+function staleContactView(c: StaleContact) {
+  return {
+    contactId: c.contactId,
+    name: c.name,
+    org: c.org,
+    sector: c.sector,
+    city: c.city,
+    state: c.state,
+    topicIds: c.topicIds,
+    strategicValue: c.strategicValue,
+    distanceMi: c.distanceMi,
+    lastInteractionDate: c.lastInteractionDate,
+    daysSinceContact: c.daysSinceContact,
+    monthsSinceContact: c.monthsSinceContact,
+    overdueDays: c.overdueDays,
+    reason: c.reason,
+  };
+}
+
+function areaEventView(e: AreaEvent) {
+  return {
+    eventId: e.eventId,
+    name: e.name,
+    city: e.city,
+    state: e.state,
+    start: e.start,
+    end: e.end,
+    topicIds: e.topicIds,
+    attendees: e.attendees,
+    status: e.status,
+    daysUntil: e.daysUntil,
+    daysSince: e.daysSince,
+    reason: e.reason,
   };
 }
 
@@ -154,6 +197,35 @@ function leaderOptionView(o: LeaderOption) {
     },
     notes: o.notes,
   };
+}
+
+function nearbyLeaderView(n: NearbyLeader) {
+  return {
+    leaderId: n.leaderId,
+    name: n.name,
+    role: n.role,
+    level: n.level,
+    homeBaseCity: n.homeBaseCity,
+    distanceMi: round(n.distanceMi),
+    homeBaseDistanceMi: round(n.homeBaseDistanceMi),
+    availableInWindow: n.availableInWindow,
+    primaryReason: n.primaryReason,
+    reasons: n.reasons.map((r) => ({
+      type: r.type,
+      detail: r.detail,
+      ...(r.contactIds ? { contactIds: r.contactIds } : {}),
+      ...(r.distanceMi !== undefined ? { distanceMi: round(r.distanceMi) } : {}),
+    })),
+  };
+}
+
+/** One-line "who else is around" summary for a tool's text output. */
+function nearbyLeadersLine(nearby: NearbyLeader[]): string {
+  if (!nearby.length) return '  nearby leaders: none flagged';
+  const items = nearby.map(
+    (n) => `${n.leaderId} ${n.name} (${n.primaryReason}${n.primaryReason === 'nearby-geo' ? `, ${round(n.distanceMi)}mi` : ''}${n.availableInWindow ? '' : ', UNAVAILABLE'})`,
+  );
+  return `  nearby leaders: ${items.join('; ')}`;
 }
 
 function conflictView(k: Conflict) {
@@ -545,6 +617,8 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         events: events.items,
         topics: rm.topics,
       });
+      const staleContacts = staleContactsInArea({ centroid: area.centroid, radiusMi: area.radiusMi, contacts: contacts.items });
+      const areaEvents = eventsInArea({ centroid: area.centroid, radiusMi: area.radiusMi, events: events.items });
       const structuredContent = {
         caller: label,
         rejected: false,
@@ -552,6 +626,8 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         area: { id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, radiusMi: area.radiusMi, resolvedVia: area.resolvedVia },
         topicCount: topics.length,
         topics: topics.map(topicInAreaView),
+        staleContacts: staleContacts.map(staleContactView),
+        areaEvents: areaEvents.map(areaEventView),
         contactsInScope: contacts.items.length,
         redactedCount: contacts.redactedCount,
         filter: contacts.filter,
@@ -561,7 +637,24 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         (t) =>
           `  • ${t.topicId} ${t.name} — ${t.activeCount} active/${t.staleCount} stale/${t.prospectCount} prospect, ${t.eventCount} event(s), msg ${t.hasApprovedMessage ? '✓' : '—'}, opp ${t.opportunityScore}`,
       );
-      return { content: [{ type: 'text', text: [header, ...lines, `filter: ${contacts.filter}`].join('\n') }], structuredContent };
+      const staleLines = staleContacts.slice(0, 5).map((c) => `  • ${c.contactId} ${c.name}${c.org ? ` (${c.org})` : ''}, ${c.city ?? '?'} — ${c.reason}`);
+      const evtLines = areaEvents.slice(0, 5).map((e) => `  • ${e.eventId} ${e.name}, ${e.city ?? '?'} [${e.status}] — ${e.reason}`);
+      const section = (title: string, l: string[]): string[] => (l.length ? [title, ...l] : []);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: [
+              header,
+              ...lines,
+              ...section('stale — worth re-engaging (why):', staleLines),
+              ...section('events here (why):', evtLines),
+              `filter: ${contacts.filter}`,
+            ].join('\n'),
+          },
+        ],
+        structuredContent,
+      };
     },
   );
 
@@ -636,6 +729,110 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
     },
   );
 
+  // 4b) nearby_leaders — deconfliction / awareness: who ELSE (senior leaders) will be at or near
+  //     this anchor? Same-event (roster ownership), same-contact (stop ownership), or nearby-geo.
+  server.registerTool(
+    'nearby_leaders',
+    {
+      title: 'Find other senior leaders at or near the same place',
+      description:
+        'Situational awareness / deconfliction: anchor on an EVENT (eventId/eventQuery) or an AREA ' +
+        '(region or city/state) + a window, and see WHICH OTHER senior leaders will plausibly be there ' +
+        'or close by — because they hold a relationship at the same event (same-event), own a contact ' +
+        "you are meeting on this trip (same-contact), or are simply home-based within reach and available " +
+        '(nearby-geo). Pass the leader you are planning for (leaderId) to frame "who else", and the ' +
+        'accepted stop ids (stopContactIds) to light up same-contact overlaps. Advisory only; runs over ' +
+        "the caller's authorized records (same server-side trim + $filter reporting).",
+      inputSchema: {
+        leaderId: z.string().optional().describe('The leader being planned for — excluded from results so you see "who else".'),
+        eventId: z.string().optional().describe('Event anchor id (e.g. "E-AUSA"). Takes precedence over eventQuery.'),
+        eventQuery: z.string().optional().describe('Free-text event anchor ("AUSA") resolved to one authorized event.'),
+        regionId: z.string().optional().describe('Area mode: known region id (e.g. "R-NCR").'),
+        region: z.string().optional().describe('Area mode: region name or alias ("NCR", "Bay Area").'),
+        city: z.string().optional().describe('Area mode: city to anchor on when no region matches.'),
+        state: z.string().optional().describe('Area mode: state to disambiguate the city.'),
+        radiusMi: z.number().optional().describe('Area mode: override the area radius (mi).'),
+        window: z
+          .object({ start: z.string(), end: z.string() })
+          .optional()
+          .describe('Planning window (ISO YYYY-MM-DD); defaults to the event window in event mode, required for an area.'),
+        stopContactIds: z.array(z.string()).optional().describe('Contact ids on the itinerary being planned — drives same-contact overlaps.'),
+        nearbyRadiusMi: z.number().positive().optional().describe('Home-base proximity threshold (mi) for the geo signal (default 300).'),
+      },
+    },
+    async ({ leaderId, eventId, eventQuery, regionId, region, city, state, radiusMi, window, stopContactIds, nearbyRadiusMi }): Promise<CallToolResult> => {
+      const { ctx, label } = getContext();
+      const rm = getReadModel();
+      const contacts = await rm.searchContacts({ ctx });
+      if (isRejected(contacts.filter)) {
+        const structuredContent = { caller: label, rejected: true, today: rm.today, anchor: null, nearbyLeaders: [], redactedCount: 0, filter: contacts.filter };
+        return { content: [{ type: 'text', text: 'Access rejected — no verified tenant claim.' }], structuredContent };
+      }
+      const events = await rm.searchEvents({ ctx });
+
+      let anchorLocation: GeoPoint;
+      let anchorName: string;
+      let win = window;
+      let event: Labeled<EngagementEvent> | undefined;
+      let anchorView: Record<string, unknown>;
+
+      if (eventId || eventQuery) {
+        const resolved = await resolveEvent(rm, ctx, { eventId, eventQuery });
+        if (!resolved.event) {
+          const which = eventId ?? eventQuery ?? '(none)';
+          return errorResult(`No authorized anchor event matched '${which}'.`);
+        }
+        event = resolved.event;
+        anchorLocation = event.location;
+        anchorName = event.name;
+        win = win ?? { start: event.start, end: event.end };
+        anchorView = { kind: 'event', id: event.id, name: event.name, city: event.location.city, state: event.location.state, start: event.start, end: event.end };
+      } else {
+        const knownPoints = [...contacts.items.map((c) => c.location), ...events.items.map((e) => e.location)];
+        const area = resolveArea({ regionId, region, city, state, radiusMi }, rm.regions, knownPoints);
+        if (!area) {
+          const known = rm.regions.map((r) => `${r.id} (${r.name})`).join(', ');
+          return errorResult(`Could not resolve an anchor. Give an event (eventId/eventQuery), a known region: ${known}, or a city/state present in your contacts.`);
+        }
+        anchorLocation = area.centroid;
+        anchorName = area.name;
+        anchorView = { kind: 'area', id: area.id, name: area.name, city: area.centroid.city, state: area.centroid.state, radiusMi: area.radiusMi, resolvedVia: area.resolvedVia };
+      }
+
+      if (!win) return errorResult('A planning window { start, end } is required when anchoring on an area.');
+
+      const nearby = nearbyLeaders({
+        planningLeaderId: leaderId ?? '',
+        location: anchorLocation,
+        window: win,
+        leaders: rm.leaders,
+        contacts: contacts.items,
+        stopContactIds,
+        event,
+        nearbyRadiusMi,
+      });
+
+      const structuredContent = {
+        caller: label,
+        rejected: false,
+        today: rm.today,
+        planningLeaderId: leaderId ?? null,
+        anchor: anchorView,
+        window: win,
+        nearbyCount: nearby.length,
+        nearbyLeaders: nearby.map(nearbyLeaderView),
+        redactedCount: contacts.redactedCount,
+        filter: contacts.filter,
+      };
+      const header = `${nearby.length} other senior leader(s) at/near ${anchorName} over ${win.start}→${win.end}; ${contacts.redactedCount} contact(s) redacted by trim.`;
+      const lines = nearby.map(
+        (n) =>
+          `  • ${n.leaderId} ${n.name} — ${n.primaryReason}, ${round(n.distanceMi)}mi${n.availableInWindow ? '' : ', UNAVAILABLE'}: ${n.reasons.map((r) => r.detail).join(' | ')}`,
+      );
+      return { content: [{ type: 'text', text: [header, ...lines, `filter: ${contacts.filter}`].join('\n') }], structuredContent };
+    },
+  );
+
   // 5) plan_options — area-first CAPSTONE: survey → leader → duration → extensions, in one call
   server.registerTool(
     'plan_options',
@@ -697,6 +894,8 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         window,
         topicIds: plan.topicIds,
         areaSurvey: plan.areaSurvey.map(topicInAreaView),
+        staleContacts: plan.staleContacts.map(staleContactView),
+        areaEvents: plan.areaEvents.map(areaEventView),
         chosenLeaderId: plan.chosenLeaderId,
         leaderOptions: plan.leaderOptions.map(leaderOptionView),
         onSiteDays: plan.onSiteDays,
@@ -711,6 +910,9 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         `${area.name} (${area.radiusMi} mi) over ${window.start}→${window.end}: ${plan.areaSurvey.length} topic(s); ` +
         `recommend ${chosen ? `${chosen.leaderId} ${chosen.name}` : '(no leader)'}; ` +
         `${plan.durationOptions.length} duration option(s); ${plan.extensionOptions.length} extension(s).`;
+      const hotLines = plan.areaSurvey.slice(0, 5).map((t) => `  • ${t.topicId} ${t.name} — ${t.reason} (opp ${t.opportunityScore})`);
+      const staleLines = plan.staleContacts.slice(0, 5).map((c) => `  • ${c.contactId} ${c.name}${c.org ? ` (${c.org})` : ''}, ${c.city ?? '?'} — ${c.reason}`);
+      const evtLines = plan.areaEvents.slice(0, 5).map((e) => `  • ${e.eventId} ${e.name}, ${e.city ?? '?'} [${e.status}] — ${e.reason}`);
       const durLines = plan.durationOptions.map(
         (d) => `  • ${d.tier}: ${d.days} day(s), ${d.stops.length} stop(s), ROI ${fixed(d.roi.roiScore)}${d.overBudget ? ' (OVER BUDGET)' : ''}`,
       );
@@ -718,8 +920,24 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         const pts = e.talkingPoints.slice(0, 3).map((p) => `“${p}”`).join('; ');
         return `  • +${e.extraDays}d → ${e.contactId} ${e.name}${e.sector ? ` (${e.sector})` : ''} on ${e.topicId ?? '—'}, mROI ${fixed(e.marginalRoi)} · ${e.talkingPointsSource}: ${pts}`;
       });
+      const section = (title: string, lines: string[]): string[] => (lines.length ? [title, ...lines] : []);
       return {
-        content: [{ type: 'text', text: [header, 'duration:', ...durLines, 'extensions:', ...extLines, `filter: ${contacts.filter}`].join('\n') }],
+        content: [
+          {
+            type: 'text',
+            text: [
+              header,
+              ...section('hot topics here (why):', hotLines),
+              ...section('stale — re-engage while you’re there (why):', staleLines),
+              ...section('events here (why):', evtLines),
+              'duration:',
+              ...durLines,
+              'extensions:',
+              ...extLines,
+              `filter: ${contacts.filter}`,
+            ].join('\n'),
+          },
+        ],
         structuredContent,
       };
     },
@@ -964,6 +1182,10 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
           .array(z.string())
           .optional()
           .describe('Chosen stop ids. Event mode: from suggest_candidates (required). Radius mode: from plan_radius (omit to accept the auto-filled plan).'),
+        additionalContactIds: z
+          .array(z.string())
+          .optional()
+          .describe('Event mode: extra AUTHORIZED stops to add BEYOND the event\'s nearby pool (a regional swing to other metros). Re-authorized + scored as off-site legs, so on-site attendees stay and the trip can genuinely extend.'),
         topicIds: z.array(z.string()).optional().describe('Topic focus (keeps the candidate set consistent with the plan step).'),
         requireTopicMatch: z.boolean().optional().describe('Event mode default true; radius mode default false.'),
       },
@@ -986,6 +1208,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       meetingsPerDay,
       window,
       acceptedContactIds,
+      additionalContactIds,
       topicIds,
       requireTopicMatch,
     }): Promise<CallToolResult> => {
@@ -999,8 +1222,29 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         if (!r.ok) return errorResult(r.error);
 
         const ids = acceptedContactIds ?? [];
-        const accepted = r.candidates.filter((c) => ids.includes(c.contactId));
-        const notMatched = ids.filter((id) => !accepted.some((c) => c.contactId === id));
+        const nearbyAccepted = r.candidates.filter((c) => ids.includes(c.contactId));
+
+        // Regional-swing extensions: authorized stops the caller chose to add BEYOND the event's nearby
+        // pool (e.g. on-topic contacts in other metros). We re-run the ranker over the SAME trimmed set
+        // with an unbounded radius so these resolve to scored off-site legs — the on-site attendees stay
+        // put AND the trip genuinely lengthens. Anything not in the authorized set is dropped (notMatched).
+        const extraIds = (additionalContactIds ?? []).filter((id) => !nearbyAccepted.some((c) => c.contactId === id));
+        let extraStops: Candidate[] = [];
+        if (extraIds.length) {
+          const pool = await rm.searchContacts({ ctx, topicIds });
+          const wide = suggest({
+            leader: r.leader,
+            anchor: { ...anchorFromEvent(r.event), ...(topicIds?.length ? { topicIds } : {}) },
+            contacts: pool.items,
+            event: r.event,
+            radiusMi: Number.MAX_SAFE_INTEGER,
+            requireTopicMatch: false,
+          });
+          extraStops = wide.filter((c) => extraIds.includes(c.contactId) && !nearbyAccepted.some((a) => a.contactId === c.contactId));
+        }
+
+        const accepted = [...nearbyAccepted, ...extraStops];
+        const notMatched = [...ids, ...extraIds].filter((id) => !accepted.some((c) => c.contactId === id));
         if (accepted.length === 0) {
           return errorResult(
             `None of [${ids.join(', ')}] are in ${r.leader.name}'s authorized candidate set for ${r.event.name}.`,
@@ -1025,6 +1269,17 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
           ...detectOpportunityCost(roi),
         ];
 
+        const awarenessContacts = await rm.searchContacts({ ctx });
+        const nearby = nearbyLeaders({
+          planningLeaderId: r.leader.id,
+          location: r.event.location,
+          window: { start: r.event.start, end: r.event.end },
+          leaders: rm.leaders,
+          contacts: awarenessContacts.items,
+          stopContactIds: accepted.map((c) => c.contactId),
+          event: r.event,
+        });
+
         const tripMap = buildTripMapPayload(r.leader, r.event, accepted, route, roi, label);
         const structuredContent = {
           caller: label,
@@ -1037,6 +1292,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
           duration: { days: days2, onSiteDays: duration.onSiteDays, offSiteStops: duration.offSiteStops, travelMins: round(duration.travelMins), dwellMins: duration.dwellMins },
           roi,
           conflicts,
+          nearbyLeaders: nearby.map(nearbyLeaderView),
           tripMap,
           filter: r.filter,
           redactedCount: r.redactedCount,
@@ -1050,7 +1306,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
           : ['  no conflicts flagged'];
         const notMatchedLine = notMatched.length ? [`  (ignored, not authorized/suggested: ${notMatched.join(', ')})`] : [];
         return {
-          content: [{ type: 'text', text: [header, orderLine, ...conflictLines, ...notMatchedLine].join('\n') }],
+          content: [{ type: 'text', text: [header, orderLine, ...conflictLines, nearbyLeadersLine(nearby), ...notMatchedLine].join('\n') }],
           structuredContent,
         };
       }
@@ -1099,6 +1355,14 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
             location: area.centroid,
             detail: `${area.centroid.city}${area.centroid.state ? `, ${area.centroid.state}` : ''} · ${area.radiusMi} mi`,
           };
+      const nearby = nearbyLeaders({
+        planningLeaderId: leader.id,
+        location: area.centroid,
+        window: win,
+        leaders: rm.leaders,
+        contacts: contacts.items,
+        stopContactIds: plan.stops.map((s) => s.contactId),
+      });
       const tripMap = buildTripMapFromOrigin(`${leader.name} @ ${origin.label}`, origin, plan.stops, plan.route, plan.roi, label);
       const structuredContent = {
         caller: label,
@@ -1118,6 +1382,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         conflicts: plan.conflicts.map(conflictView),
         overflowCount: plan.overflowCount,
         extensionOptions: plan.extensionOptions.map(extensionOptionView),
+        nearbyLeaders: nearby.map(nearbyLeaderView),
         tripMap,
         filter: contacts.filter,
         redactedCount: contacts.redactedCount,
@@ -1131,7 +1396,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         : ['  no conflicts flagged'];
       const notMatchedLine = notMatched.length ? [`  (ignored, not authorized/in-radius: ${notMatched.join(', ')})`] : [];
       return {
-        content: [{ type: 'text', text: [header, orderLine, ...conflictLines, ...notMatchedLine].join('\n') }],
+        content: [{ type: 'text', text: [header, orderLine, ...conflictLines, nearbyLeadersLine(nearby), ...notMatchedLine].join('\n') }],
         structuredContent,
       };
     },

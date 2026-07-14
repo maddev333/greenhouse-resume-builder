@@ -30,7 +30,7 @@
   {
     "id": "R-CENTRAL-TX",
     "name": "Central Texas",
-    "aliases": ["Austin", "Central Texas", "Texas Hill Country", "San Antonio"],
+    "aliases": ["Austin", "Central Texas", "Central TX", "Texas Hill Country", "San Antonio"],
     "centroid": { "city": "Austin", "state": "TX", "lat": 30.2672, "lng": -97.7431 },
     "defaultRadiusMi": 90
   }
