@@ -1,0 +1,37 @@
+[
+  {
+    "id": "R-NCR",
+    "name": "National Capital Region",
+    "aliases": ["NCR", "DC", "DC metro", "Washington", "Washington DC", "DMV"],
+    "centroid": { "city": "Washington", "state": "DC", "lat": 38.9072, "lng": -77.0369 },
+    "defaultRadiusMi": 75
+  },
+  {
+    "id": "R-FRONT-RANGE",
+    "name": "Colorado Front Range",
+    "aliases": ["Front Range", "Colorado Springs", "Colorado", "Pikes Peak"],
+    "centroid": { "city": "Colorado Springs", "state": "CO", "lat": 38.8339, "lng": -104.821 },
+    "defaultRadiusMi": 75
+  },
+  {
+    "id": "R-BOSTON",
+    "name": "Greater Boston",
+    "aliases": ["Boston", "New England", "Cambridge"],
+    "centroid": { "city": "Boston", "state": "MA", "lat": 42.3601, "lng": -71.0589 },
+    "defaultRadiusMi": 50
+  },
+  {
+    "id": "R-BAY-AREA",
+    "name": "San Francisco Bay Area",
+    "aliases": ["Bay Area", "San Francisco", "SF", "Silicon Valley"],
+    "centroid": { "city": "San Francisco", "state": "CA", "lat": 37.7749, "lng": -122.419 },
+    "defaultRadiusMi": 60
+  },
+  {
+    "id": "R-CENTRAL-TX",
+    "name": "Central Texas",
+    "aliases": ["Austin", "Central Texas", "Central TX", "Texas Hill Country", "San Antonio"],
+    "centroid": { "city": "Austin", "state": "TX", "lat": 30.2672, "lng": -97.7431 },
+    "defaultRadiusMi": 90
+  }
+]

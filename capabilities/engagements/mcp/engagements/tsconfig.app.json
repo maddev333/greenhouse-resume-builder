@@ -1,0 +1,18 @@
+{
+  "//": "Browser/App program (DOM + react-jsx + bundler resolution). Separate from tsconfig.json, which is the NodeNext server program. app-payload.ts is intentionally shared by both.",
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["app/**/*.ts", "app/**/*.tsx", "src/app-payload.ts"]
+}

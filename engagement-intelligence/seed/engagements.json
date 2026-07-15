@@ -1,0 +1,46 @@
+[
+  {
+    "id": "EX-001",
+    "contactId": "C1",
+    "leaderIds": ["L1"],
+    "topicId": "T1",
+    "intendedMessageId": "M-T1-v2",
+    "date": "2024-12-05",
+    "location": { "city": "Arlington", "state": "VA", "lat": 38.8816, "lng": -77.091 },
+    "status": "held",
+    "summary": "Initial touchpoint on multi-year contracting and munitions onshoring.",
+    "outstandingAsks": ["TechCorp requested clarity on FY26 contracting timelines"],
+    "commitments": [],
+    "afterActionNoteIds": []
+  },
+  {
+    "id": "EX-002",
+    "contactId": "C1",
+    "leaderIds": ["L1"],
+    "topicId": "T1",
+    "intendedMessageId": "M-T1-v2",
+    "date": "2025-01-18",
+    "location": { "city": "Washington", "state": "DC", "lat": 38.9072, "lng": -77.0369 },
+    "status": "held",
+    "summary": "Follow-up reinforcing multi-year contracting stability and supply-chain onshoring.",
+    "outstandingAsks": [],
+    "commitments": ["Share unclassified industrial-base resilience one-pager"],
+    "afterActionNoteIds": ["AA-onmsg"],
+    "messageConveyedScore": 1.0
+  },
+  {
+    "id": "EX-003",
+    "contactId": "C1",
+    "leaderIds": ["L5"],
+    "topicId": "T1",
+    "intendedMessageId": "M-T1-v2",
+    "date": "2025-02-20",
+    "location": { "city": "Arlington", "state": "VA", "lat": 38.8816, "lng": -77.091 },
+    "status": "held",
+    "summary": "Principal-level readout; strong rapport but message drifted on program specifics.",
+    "outstandingAsks": ["TechCorp seeking a signal on a specific program line"],
+    "commitments": ["LTG Cole implied a specific program-dollar figure was likely"],
+    "afterActionNoteIds": ["AA-drift"],
+    "messageConveyedScore": 0.55
+  }
+]

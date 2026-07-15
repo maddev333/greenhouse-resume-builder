@@ -1,43 +1,29 @@
-# Capability modules (IL5 modular reference)
+# Capability modules
 
-Self-contained, independently deployable **capability modules** for the Greenhouse Resume
-Builder, structured so other teams can lift a module as a reference when building more
-complex DoD **IL5** systems.
+The demo is organized as **capability modules** — each a self-contained slice that bundles an
+MCP capability server, an agent runtime, and an MCP UI App. The layout is intentionally modular
+so new data sources / capabilities can be added without touching existing ones.
 
-Each capability bundles:
+A capability bundles:
 
-- **1-2 MCP capability servers** (`mcp/<server>/`) — IL5-authorized **Azure Functions**
-  apps exposing tools over Streamable HTTP.
-- **An agent-framework runtime** (`agent/`) — the self-hosted Azure OpenAI tool-calling
-  loop (the IL5 agent pattern; the managed Foundry Agent Service is IL2-only and not used).
-- **An MCP UI App** (`ui/`) — a recruiter surface that also runs standalone
-  (hybrid web + MCP App).
+- **MCP capability server(s)** (`mcp/<server>/`) — tools exposed over Streamable HTTP, plus any
+  MCP UI App resources (e.g. `ui://trip-map`).
+- **An agent runtime** (`agent/`) — a self-hosted Azure OpenAI tool-calling loop that orchestrates
+  the capability's tools (with a deterministic fallback when no model is configured).
+- **An MCP UI App / host** (`ui/`) — the browser surface.
 
-A shared library, [`mcp-core`](./mcp-core), provides the MCP server helper, the IL5
-identity/token helpers (managed-identity credential precedence + cloud-configurable
-scopes), and the agent loop, so every module follows the same compliant pattern.
+The shared library [`mcp-core`](./mcp-core) provides the MCP-server helper, identity/token helpers
+(managed-identity credential precedence + cloud-configurable scopes), the agent loop, and an
+optional governance gate — so every module follows the same pattern.
 
 ## Modules
 
-| Capability | MCP servers | MCP UI App |
-|------------|-------------|------------|
-| [ingestion](./ingestion) | acquisition, extraction | Ingestion Console |
-| [quality](./quality) | quality | Review Queue |
-| [relationships](./relationships) | relationships | Relationship Confirmation |
-| [temporal](./temporal) | temporal | Prediction Review |
-| [geospatial](./geospatial) | geospatial | Map Pins |
-| [discovery](./discovery) | search | Resume + Diff |
+| Capability | MCP server | Agent | UI |
+|------------|------------|-------|----|
+| [engagements](./engagements) | `mcp/engagements` (seed data, security trim, `suggest_candidates` / `build_itinerary`, `ui://trip-map` App) | orchestrator "chat brain" (`POST /ask`) | chat UI + MCP-Apps host |
+| [mcp-core](./mcp-core) | — (shared library: MCP helper, agent loop, identity, governance) | — | — |
 
-## IL5 posture (configuration, not a fork)
-
-- **Identity:** `DefaultAzureCredential` everywhere; supply keys only for local dev.
-- **Endpoints:** cloud-configurable via env (Commercial vs Government/DoD); see
-  `mvp_architecture.md` Section 7.10.
-- **Hosting:** Azure Functions / App Service / AKS / ACI behind API Management — never
-  Azure Container Apps (IL2-only).
-- **Network:** Private Link/VNet; Streamable HTTP over TLS; no public egress.
-
-## Build
+## Build & run
 
 These packages join the repo's npm workspaces. From the repo root:
 
@@ -46,18 +32,17 @@ npm install
 npm run build -w @greenhouse-resume-builder/mcp-core
 ```
 
-Each capability's MCP server runs with the Azure Functions Core Tools (`func start`) and
-each UI with Vite (`npm run dev`).
+To run the full engagements demo with one command, see the repo-root
+[`README.md`](../README.md) Quickstart or [`engagements/ui/README.md`](./engagements/ui/README.md).
 
 ## Common environment
 
-See each module's README. Common variables:
+All variables are optional (see the repo-root `.env.example`). The most relevant:
 
-- `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION`
-- `AZURE_OPENAI_TOKEN_SCOPE` (Gov: `https://cognitiveservices.azure.us/.default`)
-- `AZURE_OPENAI_API_KEY` (local dev only; omit for IL5 managed identity)
-- `MCP_TOKEN_SCOPE` (agent → MCP server bearer token; IL5)
-- `MCP_REQUIRE_BEARER` (`true` to require a bearer locally)
-- `MCP_CORS_ALLOWED_ORIGINS` — browser CORS for the standalone MCP UI Apps. Unset reflects
-  `localhost`/`127.0.0.1` origins (local-dev default); set to `*` or a comma-separated allow-list
-  otherwise. In IL5 the gateway/APIM owns CORS.
+- `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION` — enable the LLM
+  planning path (omit to use the deterministic fallback).
+- `AZURE_OPENAI_TOKEN_SCOPE` (Gov: `https://cognitiveservices.azure.us/.default`).
+- `MCP_REQUIRE_BEARER` (`true` to require a bearer token locally).
+- `MCP_CORS_ALLOWED_ORIGINS` — browser CORS for the MCP servers. Unset reflects
+  `localhost`/`127.0.0.1` (local-dev default); set to `*` or a comma-separated allow-list otherwise.
+- `GOVERNANCE_ENABLED` (`true` to enforce `governance/policy.yaml` via mcp-core).

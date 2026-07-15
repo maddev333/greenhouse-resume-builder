@@ -1,0 +1,6 @@
+{
+  "today": "2025-10-06",
+  "staleCutoffDays": 180,
+  "shiftMonths": 0,
+  "_note": "Single source of truth for the demo clock. Seed dates are AUTHORED for 2025 (shiftMonths=0). To relocate the whole demo to another year (e.g. to align with the next AUSA), set shiftMonths (12 => 2026). The shift is applied UNIFORMLY to `today` AND every date in the seed at load time, so all staleness / freshness / event-window relationships are preserved regardless of the year. `staleCutoffDays` (default 180) defines the stale threshold: an active contact is stale when its lastInteractionDate is more than this many days before the (shifted) `today`."
+}

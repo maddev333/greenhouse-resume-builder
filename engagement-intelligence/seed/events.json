@@ -1,0 +1,78 @@
+[
+  {
+    "id": "E-AUSA",
+    "name": "AUSA Annual Meeting & Exposition",
+    "type": "conference",
+    "location": { "city": "Washington", "state": "DC", "lat": 38.9072, "lng": -77.0369 },
+    "start": "2025-10-12",
+    "end": "2025-10-15",
+    "topicIds": ["T1", "T3"],
+    "targetAttendeeProfile": "Army enterprise, industrial base, and non-traditional innovators",
+    "attendingContactIds": ["C8", "C10", "C13", "C15", "C16", "C19"],
+    "exhibitorProspectIds": ["P1", "P2", "P3"],
+    "scale": { "attendees": 44000, "exhibitors": 750, "countries": 92 }
+  },
+  {
+    "id": "E-LUNCH",
+    "name": "Defense Startup Luncheon",
+    "type": "function",
+    "location": { "city": "Arlington", "state": "VA", "lat": 38.8816, "lng": -77.091 },
+    "start": "2025-10-16",
+    "end": "2025-10-16",
+    "topicIds": ["T3"],
+    "targetAttendeeProfile": "Venture-backed defense startups and innovation partners",
+    "attendingContactIds": [],
+    "exhibitorProspectIds": []
+  },
+  {
+    "id": "E-SPACE",
+    "name": "Space & Missile Defense Symposium",
+    "type": "convention",
+    "location": { "city": "Colorado Springs", "state": "CO", "lat": 38.8339, "lng": -104.821 },
+    "start": "2025-10-14",
+    "end": "2025-10-16",
+    "topicIds": ["T2"],
+    "targetAttendeeProfile": "Space, missile-defense, and C5ISR community",
+    "attendingContactIds": [],
+    "exhibitorProspectIds": []
+  },
+  {
+    "id": "E-BOSTON",
+    "name": "New England Defense Innovation Forum",
+    "type": "convention",
+    "location": { "city": "Boston", "state": "MA", "lat": 42.3601, "lng": -71.0589 },
+    "start": "2025-10-16",
+    "end": "2025-10-17",
+    "topicIds": ["T2", "T3", "T4"],
+    "targetAttendeeProfile": "New England labs, robotics startups, and STEM partners",
+    "attendingContactIds": ["C11", "C21", "C23"],
+    "exhibitorProspectIds": ["P4"],
+    "scale": { "attendees": 2200, "exhibitors": 60, "countries": 6 }
+  },
+  {
+    "id": "E-BAY",
+    "name": "Silicon Valley Dual-Use Summit",
+    "type": "convention",
+    "location": { "city": "Mountain View", "state": "CA", "lat": 37.3861, "lng": -122.0839 },
+    "start": "2025-10-14",
+    "end": "2025-10-15",
+    "topicIds": ["T2", "T3"],
+    "targetAttendeeProfile": "Silicon Valley dual-use, autonomy, and compute vendors",
+    "attendingContactIds": ["C24", "C25"],
+    "exhibitorProspectIds": ["P5"],
+    "scale": { "attendees": 3100, "exhibitors": 120, "countries": 14 }
+  },
+  {
+    "id": "E-TX",
+    "name": "Lone Star Defense Tech Expo",
+    "type": "convention",
+    "location": { "city": "Austin", "state": "TX", "lat": 30.2672, "lng": -97.7431 },
+    "start": "2025-10-13",
+    "end": "2025-10-14",
+    "topicIds": ["T1", "T3", "T4"],
+    "targetAttendeeProfile": "Central Texas industrial base, startups, and university STEM programs",
+    "attendingContactIds": ["C6", "C29", "C30"],
+    "exhibitorProspectIds": [],
+    "scale": { "attendees": 4800, "exhibitors": 180, "countries": 9 }
+  }
+]

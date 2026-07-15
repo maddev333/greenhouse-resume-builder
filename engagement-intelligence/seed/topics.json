@@ -1,0 +1,38 @@
+[
+  {
+    "id": "T1",
+    "name": "Defense industrial base (DIB) resilience",
+    "description": "Supply-chain resilience, munitions onshoring, and multi-year contracting stability.",
+    "domain": "non-technical",
+    "smeAreas": ["industrial-base", "acquisition", "policy"],
+    "ownerOrg": "ASA(ALT)",
+    "approvedMessageId": "M-T1-v2"
+  },
+  {
+    "id": "T2",
+    "name": "Cyber / zero-trust modernization",
+    "description": "Zero-trust reference architecture adoption across the enterprise.",
+    "domain": "technical",
+    "smeAreas": ["cyber", "zero-trust", "C5ISR", "software"],
+    "ownerOrg": "Army Cyber",
+    "approvedMessageId": "M-T2-v1"
+  },
+  {
+    "id": "T3",
+    "name": "Defense innovation & startups",
+    "description": "Non-traditional vendors, venture-backed startups, and dual-use innovation.",
+    "domain": "non-technical",
+    "smeAreas": ["innovation/startups", "autonomy", "venture"],
+    "ownerOrg": "Army Applications Lab",
+    "approvedMessageId": null
+  },
+  {
+    "id": "T4",
+    "name": "Talent / STEM outreach & recruiting",
+    "description": "STEM pipeline, recruiting partnerships, and workforce development.",
+    "domain": "non-technical",
+    "smeAreas": ["talent/STEM", "recruiting"],
+    "ownerOrg": "USAREC",
+    "approvedMessageId": "M-T4-v1"
+  }
+]

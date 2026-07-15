@@ -1,0 +1,46 @@
+{
+  "name": "@greenhouse-resume-builder/cap-engagements-mcp-engagements",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Engagements MCP capability server — exposes the deterministic travel-planner engine + security-trimmed retrieval as MCP tools (ARCHITECTURE §5.3). Local-first (tsx); ui://trip-map App added at M3.",
+  "main": "src/main.ts",
+  "scripts": {
+    "preserve": "npm run build:app",
+    "serve": "tsx src/main.ts",
+    "serve:stdio": "tsx src/main.ts --stdio",
+    "dev": "tsx watch src/main.ts",
+    "build:app": "cross-env INPUT=trip-map.html vite build",
+    "watch:app": "cross-env NODE_ENV=development INPUT=trip-map.html vite build --watch",
+    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.app.json",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "provision:search": "tsx src/provision.ts"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.13.1",
+    "@azure/search-documents": "^13.0.0",
+    "@greenhouse-resume-builder/shared": "*",
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "azure-maps-control": "^3.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.0",
+    "express": "^5.1.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "zod": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "cross-env": "^7.0.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0",
+    "vite": "^5.4.0",
+    "vite-plugin-singlefile": "^2.0.0"
+  }
+}

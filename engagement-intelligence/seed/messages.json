@@ -1,0 +1,41 @@
+[
+  {
+    "id": "M-T1-v2",
+    "topicId": "T1",
+    "version": 2,
+    "status": "approved",
+    "effectiveFrom": "2025-09-01",
+    "approvedBy": "Comms / Strategic Messaging",
+    "intendedPoints": [
+      "Multi-year contracting stability is coming",
+      "Prioritize supply-chain onshoring for munitions",
+      "No commitments on specific program dollars"
+    ]
+  },
+  {
+    "id": "M-T2-v1",
+    "topicId": "T2",
+    "version": 1,
+    "status": "approved",
+    "effectiveFrom": "2025-03-01",
+    "approvedBy": "Army Cyber / Comms",
+    "intendedPoints": [
+      "Accelerate zero-trust reference-architecture adoption",
+      "Prioritize identity and micro-segmentation first",
+      "No endorsement of specific vendor products"
+    ]
+  },
+  {
+    "id": "M-T4-v1",
+    "topicId": "T4",
+    "version": 1,
+    "status": "approved",
+    "effectiveFrom": "2025-06-01",
+    "approvedBy": "USAREC / Comms",
+    "intendedPoints": [
+      "Expand STEM apprenticeship and ROTC-to-industry pipelines",
+      "Prioritize partnerships in critical-skill fields (AI, cyber, advanced manufacturing)",
+      "No commitments on specific hiring numbers or basing decisions"
+    ]
+  }
+]

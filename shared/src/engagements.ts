@@ -1,0 +1,329 @@
+/**
+ * Strategic Engagements Travel Planner — CANONICAL DOMAIN SCHEMA
+ * =============================================================
+ *
+ * Promoted from `engagement-intelligence/seed/schema.ts` (the "schema we would ETL to")
+ * into the shared package on Platform Day-1, so every workspace — the `api` planner engine,
+ * the `engagements` capability server, and the `ui://trip-map` app — imports one set of
+ * framework-free types from `@greenhouse-resume-builder/shared`.
+ *
+ * Framework-free on purpose: each entity is stored as per-source JSON blobs in Blob Storage
+ * (source of record) and indexed into one Azure AI Search index — no Postgres. See
+ * `engagement-intelligence/ARCHITECTURE.md` §5.
+ *
+ * ENVELOPE NOTE: each stored record carries an envelope the AI Search indexer maps to
+ * filterable trim fields — `tenantId`, `source`, `aclGroups[]`, `sensitivity` (plus
+ * `createdAt`/`updatedAt`) — baked into the blob (no separate relational loader). The staged
+ * `*.json` seed carries only DOMAIN fields; the loader bakes in the envelope at load time.
+ */
+
+// ── Shared scalars ──────────────────────────────────────────────────────
+
+export type Domain = 'technical' | 'non-technical';
+export type Level = 'L1' | 'L2' | 'L3' | 'L4';
+
+/**
+ * Coarse entity sector for a {@link Contact} — powers the "meet this industry / academic / political
+ * entity" option label and an optional retrieval narrowing (area-first planning). Orthogonal to
+ * `type` (individual/company/org), which is the legal form, not the sector.
+ */
+export type Sector =
+  | 'industry' // defense primes, startups, commercial vendors
+  | 'academic' // universities, labs, FFRDCs, think tanks
+  | 'congressional' // Congress: member offices + HASC/SASC & appropriations committee staff
+  | 'political' // other legislative / policy / elected offices & staff
+  | 'army-internal' // internal Army: HQDA staff, ACOMs, PEOs, installations, RDECs/labs
+  | 'government' // other federal / state / local government
+  | 'nonprofit' // associations, NGOs, foundations
+  | 'international'; // foreign government / multinational / allied partners
+
+/**
+ * Coarse engagement CATEGORY — the four strategic stakeholder AUDIENCES an Army leader balances on a
+ * single trip (plus a catch-all `other`). This is the reporting/coverage layer over {@link Sector}:
+ * the planner uses it to IDENTIFY and report engagements across Congressional / Academia / Industry /
+ * Army-internal, so a trip's options aren't lopsided toward a single audience. Derived, never
+ * authored — see {@link categoryForSector}.
+ */
+export type EngagementCategory = 'congressional' | 'academia' | 'industry' | 'army-internal' | 'other';
+
+/** The four target audiences in report order, followed by the catch-all. */
+export const ENGAGEMENT_CATEGORIES: readonly EngagementCategory[] = [
+  'congressional',
+  'academia',
+  'industry',
+  'army-internal',
+  'other',
+] as const;
+
+/** Human-readable label per {@link EngagementCategory} (UI + narration). */
+export const CATEGORY_LABEL: Record<EngagementCategory, string> = {
+  congressional: 'Congressional',
+  academia: 'Academia',
+  industry: 'Industry',
+  'army-internal': 'Army internal',
+  other: 'Other',
+};
+
+/** How each {@link Sector} rolls up into an {@link EngagementCategory} (see the audience buckets above). */
+const SECTOR_TO_CATEGORY: Record<Sector, EngagementCategory> = {
+  congressional: 'congressional',
+  political: 'congressional', // the legislative / policy sphere rolls up with Congress
+  academic: 'academia',
+  industry: 'industry',
+  'army-internal': 'army-internal',
+  government: 'army-internal', // internal DoD / Army & government orgs
+  nonprofit: 'other',
+  international: 'other',
+};
+
+/** Map a contact's {@link Sector} (or `undefined`) to its {@link EngagementCategory}. Total + pure. */
+export function categoryForSector(sector?: Sector): EngagementCategory {
+  return sector ? SECTOR_TO_CATEGORY[sector] : 'other';
+}
+
+/** Pre-geocoded point. `lat/lng` are populated at ETL time by the Azure Maps geocoder. */
+export interface GeoPoint {
+  city: string;
+  state?: string;
+  lat: number;
+  lng: number;
+}
+
+/** Inclusive ISO-8601 date range (YYYY-MM-DD). */
+export interface DateRange {
+  start: string;
+  end: string;
+}
+
+/**
+ * Loader-applied envelope base. Every stored entity carries these fields; the AI Search
+ * indexer maps `tenantId` (and timestamps) into filterable trim fields.
+ */
+export interface BaseEntity {
+  id: string;
+  tenantId: string;
+  createdAt: string; // ISO-8601
+  updatedAt?: string; // ISO-8601
+}
+
+/**
+ * A pre-resolved geographic area for **area-first** planning — a named region (or a city/state)
+ * mapped to a centroid + default radius at seed time, so anchoring on "the National Capital Region"
+ * needs no live geocode (ARCHITECTURE.md §1, offline-reliable demo).
+ */
+export interface Region extends BaseEntity {
+  name: string;
+  aliases?: string[]; // e.g. ["NCR", "DC metro"]
+  centroid: GeoPoint;
+  defaultRadiusMi: number;
+}
+
+// ── CRM spine ───────────────────────────────────────────────────────────
+
+/** Trip purpose / subject each engagement is anchored to. */
+export interface Topic extends BaseEntity {
+  name: string;
+  description?: string;
+  domain: Domain; // technical vs non-technical → drives the soft "fit" flag
+  smeAreas: string[];
+  ownerOrg?: string;
+  /** The currently-approved message for this topic (null when none is approved yet). */
+  approvedMessageId?: string | null;
+}
+
+/** Centrally-approved, per-topic talking points (versioned) that MUST be conveyed. */
+export interface Message extends BaseEntity {
+  topicId: string;
+  version: number;
+  status: 'draft' | 'approved';
+  intendedPoints: string[];
+  effectiveFrom?: string; // ISO date
+  approvedBy?: string;
+}
+
+/** Pool A — a senior leader whose time we are allocating. */
+export interface Leader extends BaseEntity {
+  name: string;
+  role: string; // echelon / billet
+  domain: Domain;
+  smeAreas: string[];
+  level: Level;
+  homeBase: GeoPoint;
+  availability: DateRange[];
+  daysAwayBudget: number; // max travel-days in the planning window
+  /**
+   * The strategic audiences THIS leader engages — the planner offers ONE single-audience itinerary
+   * per category here (never a blended trip), because which audience a leader would meet on a trip
+   * depends on their billet. Authored per leader (an ASA(ALT) principal works Industry + Congress; a
+   * USAREC leader works Academia). Omitted → the planner falls back to every audience present in the area.
+   */
+  engagementCategories?: EngagementCategory[];
+}
+
+/**
+ * Pool B — a person/company/org we engage.
+ * `status: 'prospect'` = a NEW company we've never engaged (no `lastInteractionDate`);
+ * scored by topic-fit for the "initiate" path instead of by staleness.
+ */
+export interface Contact extends BaseEntity {
+  name: string;
+  type: 'individual' | 'company' | 'org';
+  sector?: Sector; // coarse entity sector (industry/academic/political/…) — see {@link Sector}
+  org?: string;
+  domain: Domain;
+  smeAreas: string[];
+  topicIds: string[]; // topics of interest / relevance
+  level?: Level; // present for active contacts; optional for prospects
+  location: GeoPoint;
+  relationshipOwnerLeaderIds: string[];
+  strategicValue: number; // 1–5 (5 = enterprise priority)
+  status: 'active' | 'prospect';
+  source?: string; // provenance, e.g. 'sharepoint:contacts' | 'exhibitor-directory:ausa-2026'
+  lastInteractionDate?: string; // ISO date; ABSENT for prospects
+  /**
+   * DERIVED labels (projection-computed from Interactions × CadencePolicy — NOT authored;
+   * recomputed on reindex, so agents stay stateless). `nextEligibleDate` = lastInteractionDate +
+   * cooldownDays: the contacts agent suppresses or down-ranks a contact until this date, so a
+   * just-held meeting isn't re-recommended (see ARCHITECTURE.md §16.4).
+   */
+  nextEligibleDate?: string; // ISO date; derived
+}
+
+/** A travel anchor AND an attendee/exhibitor magnet (people/prospects gather here). */
+export interface EngagementEvent extends BaseEntity {
+  name: string;
+  type: 'conference' | 'convention' | 'function';
+  location: GeoPoint;
+  start: string; // ISO date
+  end: string; // ISO date
+  topicIds: string[]; // topics present
+  targetAttendeeProfile?: string;
+  attendingContactIds: string[]; // existing contacts on-site → engage at ~zero travel
+  exhibitorProspectIds: string[]; // new companies → "initiate" (want intros?)
+  scale?: { attendees?: number; exhibitors?: number; countries?: number };
+}
+
+/** A meeting/interaction (past or planned). Establishes history for the pre-brief. */
+export interface Engagement extends BaseEntity {
+  contactId: string;
+  leaderIds: string[];
+  topicId?: string;
+  intendedMessageId?: string; // snapshot of the approved message governing this meeting
+  date: string; // ISO date (held date or window start)
+  location?: GeoPoint;
+  status: 'scheduled' | 'held' | 'followup';
+  tripId?: string;
+  anchorEventId?: string;
+  summary?: string;
+  outstandingAsks?: string[];
+  commitments?: string[];
+  afterActionNoteIds?: string[];
+  messageConveyedScore?: number;
+}
+
+/** Ingested (or pre-extracted) after-action notes → drive the message-consistency check. */
+export interface AfterActionNote extends BaseEntity {
+  engagementId: string;
+  sourceDocRef?: string; // path to the source PDF artifact, when one exists
+  extractedSummary: string;
+  actualMessagePoints: string[];
+  commitments?: string[];
+  sentiment?: string;
+  /** 'document-intelligence' when parsed live; 'seed' when pre-extracted (demo fallback). */
+  ingestedVia?: 'document-intelligence' | 'seed';
+}
+
+// ── Recency & cadence (scale: stateless agents, state as labels — ARCHITECTURE.md §16) ──
+
+/**
+ * Append-only INTERACTION event — the canonical recency signal.
+ * One immutable record per touch (meeting/call/email/event-touch), landed from Outlook/Kanban.
+ * A projection step rolls the latest ones up into the derived `Contact.lastInteractionDate` /
+ * `Contact.nextEligibleDate` labels that drive the cooldown (ARCHITECTURE.md §16.4).
+ */
+export interface Interaction extends BaseEntity {
+  contactId: string;
+  leaderIds: string[];
+  topicId?: string;
+  occurredAt: string; // ISO date/datetime — immutable
+  kind: 'meeting' | 'call' | 'email' | 'event-touch';
+  outcome?: string;
+  engagementId?: string; // link back when this touch corresponds to a full Engagement
+}
+
+/**
+ * Tunable cooldown policy (policy-as-data) — how long to wait before re-recommending a contact.
+ * The projection picks the most specific matching rule (topicId > contactType > minStrategicValue)
+ * and computes `Contact.nextEligibleDate = lastInteractionDate + cooldownDays`.
+ */
+export interface CadencePolicy extends BaseEntity {
+  appliesTo: {
+    minStrategicValue?: number; // e.g. 5
+    contactType?: 'individual' | 'company' | 'org';
+    topicId?: string;
+  };
+  cooldownDays: number; // e.g. value-5 → 90, value-2 → 270
+  description?: string;
+}
+
+/**
+ * Caller PREFERENCES (leader / EA profile) — a RUNTIME input, not a stored record. The orchestrator
+ * forwards it to each sub-agent to RANK and FILTER candidates for the "menu of options"
+ * (ARCHITECTURE.md §5.3, §9). It NEVER widens access — the security trim (§5.4) is separate and
+ * authoritative; preferences only re-order or narrow what the trim already allowed.
+ */
+export interface Preferences {
+  leaderId?: string;
+  topicFocus?: string[]; // topicIds to boost in ranking
+  seniorityFloor?: number; // drop contacts below this strategicValue (1–5)
+  doNotMeet?: string[]; // contactIds to exclude from menus
+  blackoutDates?: { from: string; to: string }[]; // ISO ranges the leader is unavailable
+  maxDaysAway?: number; // trip-length budget the nudge respects
+  homeBaseId?: string; // origin leader id/location for distance + ETA
+}
+
+// ── Planner core (RUNTIME-PRODUCED — not seeded) ─────────────────────────
+// The planner engine emits these at demo time; they are defined here for completeness.
+
+export interface Trip extends BaseEntity {
+  leaderId: string;
+  purpose: string;
+  region?: string;
+  window: DateRange;
+  homeBase: GeoPoint;
+  anchorEventId?: string;
+  stopIds: string[];
+  legIds: string[];
+  estCost?: number;
+  roiScore?: number;
+  status: 'draft' | 'proposed' | 'approved' | 'complete';
+}
+
+export interface Stop {
+  id: string;
+  tripId: string;
+  refType: 'engagement' | 'event' | 'contact';
+  refId: string;
+  kind: 'on-site' | 'off-site'; // on-site = at the event venue (no travel leg)
+  location: GeoPoint;
+  arrive?: string;
+  depart?: string;
+  dwellMins?: number;
+  preBriefId?: string;
+}
+
+export interface Leg {
+  id: string;
+  tripId: string;
+  fromStopId: string;
+  toStopId: string;
+  mode: 'air' | 'ground';
+  distanceMi: number;
+  estTravelMins: number;
+  cost?: number;
+}
+
+// ── Suggestion tagging (engine output shape, for reference) ──────────────
+
+export type SuggestionKind = 're-engage' | 'initiate';
+export type SuggestionPlacement = 'on-site' | 'off-site';
