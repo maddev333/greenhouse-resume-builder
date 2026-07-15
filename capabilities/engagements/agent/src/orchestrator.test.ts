@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { loadLeaders, loadRegions, loadTopics, defaultWindow, regionChoices, resolveAreaInput, resolveDefaultLeaderId, rosterForPrompt, topicIdsFromText, topicsForPrompt } from './catalog.js';
 import { AGENT_TOOLS } from './tools.js';
-import { anchorGuess, areaAskAnchor, areaClarifyQuestion, buildOptionQuestions, buildRadiusQuestions, buildSystemPrompt, itineraryLengthTargets, hotTopicQuestion, leaderClarifyQuestion, leaderFromQuestion, optionsToPlanResult, parseRadiusAsk, rankHotTopics, selectedContactIds } from './orchestrator.js';
+import { anchorGuess, areaAskAnchor, areaClarifyQuestion, bestLeadersForCategory, buildOptionQuestions, buildRadiusQuestions, buildSystemPrompt, categoryClarifyQuestion, categoryFromQuestion, itineraryLengthTargets, leaderCategoryTargets, hotTopicQuestion, leaderClarifyQuestion, leaderFromQuestion, optionsToPlanResult, parseRadiusAsk, rankHotTopics, selectedContactIds } from './orchestrator.js';
 
 test('topicIdsFromText maps UAS/drone to T3', () => {
   assert.deepEqual(topicIdsFromText('who should I meet on UAS/drone?'), ['T3']);
@@ -199,9 +199,11 @@ test('optionsToPlanResult renders an AREA options envelope (no event) — area n
     options: [
       { id: '2d', tier: 'short', label: '2-day trip', summary: '2 meeting(s) · ROI 1.10', days: 2, stopCount: 2,
         roiScore: 1.1, overBudget: false, recommended: false, contactIds: ['C6', 'C29'], ok: true,
+        categoryMix: 'Industry×2', categoryCounts: { industry: 2 },
         itinerary: { accepted: [{ contactId: 'C6' }, { contactId: 'C29' }] }, tripMap: { k: 1 }, answer: null },
       { id: '5d', tier: 'extended', label: '5-day trip', summary: '5 meeting(s) · ROI 1.40', days: 5, stopCount: 5,
         roiScore: 1.4, overBudget: false, recommended: true, contactIds: ['C6', 'C29', 'C9', 'C30'], ok: true,
+        categoryMix: 'Industry×3 · Congressional×1', categoryCounts: { industry: 3, congressional: 1 },
         itinerary: { accepted: [{ contactId: 'C6' }] }, tripMap: { k: 2 }, answer: null },
     ],
     recommendedOptionId: '5d', redactedCount: 0, rejected: false,
@@ -216,9 +218,82 @@ test('optionsToPlanResult renders an AREA options envelope (no event) — area n
   assert.equal(pr.recommendedOptionId, '5d');
   assert.match(pr.answer ?? '', /Central Texas/);
   assert.match(pr.answer ?? '', /2 itinerary option\(s\)/);
+  // Each itinerary option keeps its engagement-audience tag through the envelope.
+  assert.equal(pr.options?.[0].categoryMix, 'Industry×2');
+  assert.equal(pr.options?.[1].categoryMix, 'Industry×3 · Congressional×1');
   // The recommended option's finished itinerary/map are surfaced as the headline plan.
   assert.equal(pr.tripMap, opts.options[1].tripMap);
   assert.deepEqual(pr.menu, opts.options[1].itinerary.accepted);
+});
+
+test('leaderCategoryTargets intersects the leader audiences with the area, in report order', () => {
+  const breakdown = [
+    { category: 'congressional', contactIds: ['C9'] },
+    { category: 'academia', contactIds: ['C40'] }, // present in the area but NOT a leader audience → excluded
+    { category: 'industry', contactIds: ['C6', 'C29'] },
+    { category: 'army-internal', contactIds: [] }, // no in-area contacts → excluded
+  ];
+  const targets = leaderCategoryTargets({ leaderCategories: ['industry', 'congressional'], breakdown });
+  // Report order (congressional before industry), single-audience, only leader ∩ present audiences.
+  assert.deepEqual(targets.map((t) => t.category), ['congressional', 'industry']);
+  assert.deepEqual(targets.map((t) => t.label), ['Congressional', 'Industry']);
+  assert.deepEqual(targets[1].contactIds, ['C6', 'C29']);
+});
+
+test('leaderCategoryTargets falls back to EVERY present audience when the leader has none authored', () => {
+  const breakdown = [
+    { category: 'congressional', contactIds: ['C9'] },
+    { category: 'academia', contactIds: ['C40'] },
+    { category: 'industry', contactIds: ['C6'] },
+    { category: 'army-internal', contactIds: [] },
+  ];
+  assert.deepEqual(leaderCategoryTargets({ leaderCategories: null, breakdown }).map((t) => t.category), [
+    'congressional',
+    'academia',
+    'industry',
+  ]);
+  // A leader audience absent from the area is simply skipped (no empty itinerary).
+  assert.deepEqual(
+    leaderCategoryTargets({ leaderCategories: ['industry', 'academia'], breakdown: [{ category: 'industry', contactIds: ['C6'] }] }).map(
+      (t) => t.category,
+    ),
+    ['industry'],
+  );
+});
+
+test('optionsToPlanResult narrates SINGLE-AUDIENCE options grouped by engagement category', () => {
+  const base = {
+    ok: false, mode: 'deterministic', persona: 'EA_G8', question: 'q', answer: null, toolCalls: [],
+    menu: null, itinerary: null, tripMap: null, redactedCount: null, rejected: false, stage: 'plan', clarify: null,
+  } as any;
+  const opts = {
+    ok: true, persona: 'EA_G8', question: 'Itinerary options for L1', leaderId: 'L1', leaderName: 'MG D. Whitfield',
+    area: { name: 'National Capital Region' }, window: { start: '2025-10-06', end: '2025-10-31' }, today: '2025-10-06',
+    topicIds: [],
+    options: [
+      { id: 'congressional', tier: 'congressional', label: 'Congressional engagements', category: 'congressional',
+        summary: '2 Congressional meeting(s) · 1 day(s) · ROI 1.10', days: 1, stopCount: 2, roiScore: 1.1,
+        overBudget: false, recommended: false, contactIds: ['C9', 'C10'], ok: true,
+        categoryMix: 'Congressional×2', categoryCounts: { congressional: 2 },
+        itinerary: { accepted: [{ contactId: 'C9' }] }, tripMap: { k: 1 }, answer: null },
+      { id: 'industry', tier: 'industry', label: 'Industry engagements', category: 'industry',
+        summary: '3 Industry meeting(s) · 2 day(s) · ROI 1.40', days: 2, stopCount: 3, roiScore: 1.4,
+        overBudget: false, recommended: true, contactIds: ['C6', 'C29', 'C30'], ok: true,
+        categoryMix: 'Industry×3', categoryCounts: { industry: 3 },
+        itinerary: { accepted: [{ contactId: 'C6' }] }, tripMap: { k: 2 }, answer: null },
+    ],
+    recommendedOptionId: 'industry', redactedCount: 0, rejected: false,
+  } as any;
+
+  const pr = optionsToPlanResult(base, opts, null);
+  assert.equal(pr.stage, 'options');
+  // The narration explains the grouping (one single-audience trip per category the leader engages).
+  assert.match(pr.answer ?? '', /one per engagement category/);
+  assert.match(pr.answer ?? '', /Congressional engagements/);
+  // The single engagement category passes through per option (drives the UI category badge).
+  assert.equal(pr.options?.[0].category, 'congressional');
+  assert.equal(pr.options?.[1].category, 'industry');
+  assert.equal(pr.recommendedOptionId, 'industry');
 });
 
 test('defaultWindow returns an ISO start/end and honors the env override', () => {
@@ -251,8 +326,8 @@ const PLAN_FIXTURE = {
     { leaderId: 'L1', name: 'GEN One', role: 'CG', score: '0.64', distanceMi: 40, availableInWindow: false },
   ],
   durationOptions: [
-    { tier: 'core', days: 3, stops: [{ contactId: 'C21' }, { contactId: 'C22' }], roiScore: '0.55', overBudget: false },
-    { tier: 'extended', days: 5, stops: [{ contactId: 'C21' }, { contactId: 'C22' }, { contactId: 'C23' }], roiScore: '0.71', overBudget: true },
+    { tier: 'core', days: 3, stops: [{ contactId: 'C21' }, { contactId: 'C22' }], roiScore: '0.55', overBudget: false, categoryMix: 'Industry×2' },
+    { tier: 'extended', days: 5, stops: [{ contactId: 'C21' }, { contactId: 'C22' }, { contactId: 'C23' }], roiScore: '0.71', overBudget: true, categoryMix: 'Industry×2 · Academia×1' },
   ],
   extensionOptions: [
     { contactId: 'C24', name: 'Dr. Four', sector: 'academia', topicId: 'T4', topicName: 'Talent/STEM', extraDays: 1, marginalRoi: '0.18', overBudget: false, talkingPointsSource: 'approved-message' },
@@ -272,6 +347,8 @@ test('buildOptionQuestions surfaces leader/duration/extension menus with the top
   const duration = qs.find((q) => q.id === 'duration')!;
   assert.equal(duration.choices[0].value, 'core');
   assert.ok(duration.choices[0].selected);
+  // Each duration option is tagged with its engagement-audience mix.
+  assert.ok(duration.choices[0].detail!.includes('Industry×2'));
   assert.ok(duration.choices.find((c) => c.value === 'extended')!.detail!.includes('OVER BUDGET'));
 
   const ext = qs.find((q) => q.id === 'extensions')!;
@@ -368,4 +445,70 @@ test('hotTopicQuestion is a free-form ask naming the topic', () => {
   const q = hotTopicQuestion('Cyber / zero-trust modernization');
   assert.ok(q.includes('Cyber / zero-trust modernization'));
   assert.ok(/who should we meet/i.test(q));
+});
+
+// ── Category-first `/ask`: pick an engagement audience, THEN recommend the leader ──
+
+test('categoryClarifyQuestion offers the present audiences as chips, hottest (strategicValue) recommended', () => {
+  const breakdown = [
+    { category: 'congressional', label: 'Congressional', total: 2, strategicValueSum: 3, staleCount: 0, reason: '2 in area' },
+    { category: 'academia', label: 'Academia', total: 3, strategicValueSum: 9, staleCount: 1, reason: '3 in area' },
+    { category: 'industry', label: 'Industry', total: 4, strategicValueSum: 7, staleCount: 2, reason: '4 in area' },
+    { category: 'army-internal', label: 'Army-internal', total: 0, strategicValueSum: 0, staleCount: 0, reason: 'none in area' },
+    { category: 'other', label: 'Other', total: 5, strategicValueSum: 99, staleCount: 0, reason: 'ignored' },
+  ];
+  const q = categoryClarifyQuestion(breakdown);
+  assert.equal(q.id, 'category');
+  assert.equal(q.kind, 'single');
+  // Only audiences PRESENT in the area (total>0) and never the catch-all 'other'.
+  assert.deepEqual(q.choices.map((c) => c.value), ['congressional', 'academia', 'industry']);
+  // Highest strategicValueSum among present, non-other → academia is recommended + pre-selected.
+  const academia = q.choices.find((c) => c.value === 'academia')!;
+  assert.ok(academia.recommended && academia.selected);
+  assert.equal(q.choices.filter((c) => c.recommended).length, 1);
+});
+
+test('categoryFromQuestion pulls a named engagement category out of the ask (else null → show the menu)', () => {
+  assert.equal(categoryFromQuestion('plan an industry trip to Boston'), 'industry');
+  assert.equal(categoryFromQuestion('a congressional visit to the Bay Area'), 'congressional');
+  assert.equal(categoryFromQuestion('university / research engagements in Boston'), 'academia');
+  assert.equal(categoryFromQuestion('garrison / installation visit'), 'army-internal');
+  // A bare area ask names NO category → null (the signal to show the category menu).
+  assert.equal(categoryFromQuestion("Plan a trip to Boston — who should go and how long?"), null);
+});
+
+test('bestLeadersForCategory recommends the best-fit leader who ENGAGES the chosen audience (leader = OUTPUT)', () => {
+  // Ranked area options (best composite score first); roster carries authored engagementCategories.
+  const leaderOptions = [
+    { leaderId: 'L2', name: 'MG Two', role: 'DCG', score: '0.90', distanceMi: 12, availableInWindow: true },
+    { leaderId: 'L1', name: 'GEN One', role: 'CG', score: '0.80', distanceMi: 40, availableInWindow: true },
+    { leaderId: 'L5', name: 'BG Five', role: 'Dep', score: '0.70', distanceMi: 20, availableInWindow: true },
+  ];
+  const roster = loadLeaders().map((l) => ({ id: l.id, engagementCategories: l.engagementCategories }));
+
+  // congressional is authored by L1 + L5 (not L2, the top-scored). So L2 is skipped; L1 (higher score) leads.
+  const congress = bestLeadersForCategory({ category: 'congressional', leaderOptions, roster });
+  assert.equal(congress.fellBack, false);
+  assert.equal(congress.recommended?.leaderId, 'L1');
+  assert.ok(congress.recommended?.recommended, 'the top pick carries recommended:true');
+  assert.deepEqual(congress.alternates.map((a) => a.leaderId), ['L5']);
+  assert.ok(!congress.alternates.some((a) => a.leaderId === 'L2'), 'L2 does not engage Congress → excluded');
+
+  // academia is authored by L2 → L2 (also the top score) leads.
+  const academia = bestLeadersForCategory({ category: 'academia', leaderOptions, roster });
+  assert.equal(academia.recommended?.leaderId, 'L2');
+  assert.equal(academia.fellBack, false);
+});
+
+test('bestLeadersForCategory falls back to the best overall leader when NONE engage the audience', () => {
+  const leaderOptions = [
+    { leaderId: 'L3', name: 'MG Three', score: '0.60', distanceMi: 10, availableInWindow: true },
+    { leaderId: 'L4', name: 'MG Four', score: '0.75', distanceMi: 30, availableInWindow: true },
+  ];
+  // Neither L3 nor L4 engages 'congressional' (authored: industry/army-internal) → fall back to best score (L4).
+  const roster = loadLeaders().map((l) => ({ id: l.id, engagementCategories: l.engagementCategories }));
+  const res = bestLeadersForCategory({ category: 'congressional', leaderOptions, roster });
+  assert.equal(res.fellBack, true);
+  assert.equal(res.recommended?.leaderId, 'L4');
+  assert.deepEqual(res.alternates.map((a) => a.leaderId), ['L3']);
 });

@@ -2,7 +2,11 @@
 
 ## Status
 Phases 0–3 implemented (schema/data, geo anchor + survey, leader selection, duration + extension
-options). Phases 4–5 proposed. See "Implementation Roadmap" for the shipped vs. pending breakdown.
+options), plus **engagement-category coverage** (identification across the four strategic audiences —
+Congressional, Academia, Industry, Army-internal — with explicit gaps) and a **category-first `/ask`
+chat flow** (pick the engagement category → build a single-audience itinerary → recommend the best
+senior leader; the leader is the *output*, §H). Phases 4–5 proposed. See "Implementation Roadmap" for
+the shipped vs. pending breakdown.
 
 ## Purpose
 Today the planner runs **one** direction: given a **leader** and an **event anchor**, it ranks *who*
@@ -83,16 +87,19 @@ trim, and it keeps the existing event-anchored flow intact:
 
 ### 1. `Contact.sector` (new) — the industry/academic/political label
 `Contact.type` today is only `company | individual | org` (`engagement-intelligence/seed/schema.ts`),
-which can't express "industry vs academic vs political." Add a structured, optional enum:
+which can't express "industry vs academic vs political." Add a structured, optional enum (shipped in
+`shared/src/engagements.ts`):
 
 ```ts
 export type Sector =
-  | 'industry'      // defense primes, startups, commercial vendors
-  | 'academic'      // universities, labs, FFRDCs, think tanks
-  | 'political'     // legislative / policy / elected offices & staff
-  | 'government'    // other federal/state/local government
-  | 'nonprofit'     // associations, NGOs, foundations
-  | 'international'; // foreign gov / multinational / allied partners
+  | 'industry'       // defense primes, startups, commercial vendors
+  | 'academic'       // universities, labs, FFRDCs, think tanks
+  | 'congressional'  // Congress: member offices + HASC/SASC & appropriations committee staff
+  | 'political'      // other legislative / policy / elected offices & staff
+  | 'army-internal'  // internal Army: HQDA staff, ACOMs, PEOs, installations, RDECs/labs
+  | 'government'     // other federal/state/local government
+  | 'nonprofit'      // associations, NGOs, foundations
+  | 'international';  // foreign gov / multinational / allied partners
 
 export interface Contact extends BaseEntity {
   // …existing fields…
@@ -103,6 +110,23 @@ export interface Contact extends BaseEntity {
 - **Backfill** every seed contact with a `sector` value (see Open Questions on defaults).
 - Exposed as a **filterable trim/behavior facet** in the AI Search envelope (ARCHITECTURE.md §16.3),
   so a caller can optionally narrow "show me academic partners on zero-trust."
+
+### 1a. `EngagementCategory` (new) — the four-audience reporting roll-up
+`Sector` is fine-grained; leaders think in **four strategic audiences** they must balance on one trip.
+`EngagementCategory` is the coarse reporting layer over `Sector` (`shared/src/engagements.ts`):
+
+```ts
+export type EngagementCategory = 'congressional' | 'academia' | 'industry' | 'army-internal' | 'other';
+
+// SECTOR_TO_CATEGORY: industry→industry, academic→academia, congressional+political→congressional,
+// army-internal+government→army-internal, nonprofit+international→other.
+export function categoryForSector(sector?: Sector): EngagementCategory; // total + pure; undefined → 'other'
+```
+
+- The **four target audiences are always reported** (even at zero, so a coverage GAP is explicit);
+  `other` surfaces only when non-empty.
+- This is the first "key outcome": **identification of engagements across Congressional, Academia,
+  Industry, and Army-internal** in any surveyed area.
 
 ### 2. Area gazetteer (new, seed-time) — offline geo anchoring
 To keep the demo offline (ARCHITECTURE.md §1, "pre-geocoded once at seed time"), add a small
@@ -185,6 +209,64 @@ with `{Topic.ownerOrg}`."* (Open Question.)
 - This is exactly the requested surface: *"extend 1 day → meet this **industry/academic/political**
   entity on this topic; here are the approved talking points."*
 
+### F. Engagement-category coverage (the four-audience identification)
+- **New:** `categoryBreakdown({ centroid, radiusMi, contacts, itineraryContactIds })`
+  (`.../mcp/engagements/src/planner/categories.ts`) — rolls every in-area, security-trimmed contact
+  up into the four audiences (+ `other`) via `categoryForSector`, and reports **per audience**:
+  `{ category, label, total, activeCount, prospectCount, staleCount, onItineraryCount, covered,
+  reason, contactIds[], contacts[] }`. The four targets are always emitted, so a **coverage gap** ("no Congressional
+  engagement on this trip") is explicit; `covered = onItineraryCount > 0`. `contactIds[]` is **every**
+  in-area contact for that audience (not just the `topN` shown in `contacts[]`) — the seam the agent uses
+  to build a **single-audience** itinerary.
+- **Per-option audience mix:** `categoryCountsForStops` + `summarizeCategoryCounts` render each
+  itinerary option's own "who it reaches" (e.g. `Industry×2 · Academia×1`).
+- Surfaced on `plan_options` / `plan_radius` (area-wide `categoryBreakdown`) and `build_itinerary`
+  (the committed itinerary's `categoryCoverage`); the agent passes both through to the chat UI, which
+  renders a **"🎯 Engagement coverage"** panel (green = covered, amber = gap, red = none in area).
+
+### G. Itinerary options GROUPED BY engagement category (leader-dependent)
+- The Stage-2 area builder (`buildAreaItineraryOptions`, `.../agent/src/orchestrator.ts`) offers **one
+  fully-built, SINGLE-AUDIENCE itinerary per engagement category** — never a blended trip. Which
+  audience a leader would meet on a trip **depends on the leader's billet**, so each `Leader` carries an
+  authored **`engagementCategories`** (`engagement-intelligence/seed/leaders.json`; e.g. L1 ASA(ALT) →
+  `["industry","congressional"]`, L2 USAREC → `["academia","army-internal"]`).
+- **Which options are offered** = `leaderCategoryTargets(leaderCategories ∩ audiences-present-in-area)`,
+  in report order. A leader audience absent from the area is skipped; a leader with **no** authored
+  categories falls back to every audience present. Each option forces its audience by passing that
+  category's `categoryBreakdown[].contactIds` as `build_itinerary`'s **`acceptedContactIds`** (routes
+  exactly that set, re-authorized server-side — the persona trim still holds).
+- Each `AreaItineraryOption` carries `category` (single audience), `label` ("Industry engagements"),
+  `categoryMix` (single-audience by construction), its own route/ROI/conflicts/nearby-leaders/`ui://trip-map`;
+  the recommended pick is the highest in-budget ROI. The chat UI tags each option card with a
+  **category chip**. Example: in the NCR, **L1 → {Congressional, Industry}**, **L5 → {Congressional,
+  Academia}**, **L3 → {Industry, Army-internal}** — same area, different single-audience menus per leader.
+
+### H. Category-first `/ask` — pick the audience, THEN recommend the leader (the default chat flow)
+- **Inversion.** In the chat `/ask` flow the leader is the **output, not the first question**. A bare
+  known-region ask ("*Plan a trip to Boston — who should go, how long, and what's worth doing there?*")
+  now routes **category-first**: `planTrip` (`.../agent/src/orchestrator.ts`) runs the area/category
+  branch **before** the event branch, so a city that also names an event (Boston = both `R-BOSTON` and
+  the `E-BOSTON` forum) is treated as an **area**, not an event anchor.
+- **Stage 1 — clarify the engagement category.** `categoryClarifyQuestion(categoryBreakdown)` emits a
+  single-select menu of the audiences **present in the area** (`total > 0`, never `other`), the
+  hottest by `strategicValueSum` pre-selected/recommended. The reply reuses the §F area briefing
+  (hot topics, stale contacts, events, per-audience coverage) so the human picks *what to anchor on*.
+  If the ask already names an audience (`categoryFromQuestion` — "*industry* trip", "*congressional*
+  visit") Stage 1 is skipped. Envelope: `stage:'clarify'`, `clarify:'category'`, `category:null`.
+- **Stage 2 — build the single-audience trip, then recommend WHO.** With a category chosen,
+  `buildCategoryPlan` forces that audience's `categoryBreakdown[].contactIds` through
+  `build_itinerary`'s `acceptedContactIds` (one **single-audience** itinerary, days auto-sized from the
+  stop count unless `days` is given), then `bestLeadersForCategory({ category, leaderOptions, roster })`
+  ranks WHO should go: it keeps only leaders whose authored `engagementCategories` include the chosen
+  audience, best composite-score first (recommended), the rest as alternates; when **none** engage the
+  audience it falls back to the best-fit leader overall (`fellBack`). Because the stops are forced, the
+  leader affects **ROI / availability only** — it never changes *which* audience is met. Envelope:
+  `stage:'plan'`, `category:<chosen>`, `leaderShortlist:[{ …, why, recommended }]`. The chat UI renders
+  the recommended-leader panel; the CLI accepts `--category <id>` to drive Stage 2.
+- **Event-anchored flow preserved.** An explicitly-named event that is **not** a known region (e.g.
+  "*Plan a trip to AUSA*" — `areaAskAnchor` returns null) still hits the leader-first event path (§G),
+  where conferences are intentionally mixed-audience. The `/plan-options` guided panel is unchanged.
+
 ## The Optioned Result — `PlanOptions`
 A single envelope the agent renders as menus along each axis (the model narrates; it does **not**
 compute these):
@@ -196,6 +278,7 @@ interface PlanOptions {
   leaderOptions: LeaderOption[];     // C — who should go (ranked, with factors)
   durationOptions: DurationOption[]; // D — core vs extended (days, ROI, conflicts)
   extensionOptions: ExtensionOption[]; // E — marginal "+N day" unlocks w/ talking points
+  categoryBreakdown: CategoryCoverage[]; // F — the four-audience footprint + coverage/gaps
   filter: string;                    // the security $filter that ran (audit)
   redactedCount: number;             // trimmed-out count (fail-closed transparency)
 }
@@ -219,6 +302,10 @@ options rather than accepting a single plan.
 5. **Extension** → *"**+1 day** → meet **Meridian Robotics (industry)** on **T1**; talking points:
    'Multi-year contracting stability is coming; prioritize munitions onshoring; no program-dollar
    commitments.'"*
+6. **Audience coverage** → *"This area holds **Industry ×3, Academia ×1, Congressional ×2,
+   Army-internal ×2**. The recommended 2-day trip reaches Industry + Army-internal; **Congressional is
+   a gap** (2 stale HASC/appropriations contacts here) — extend a day to close it."* This is the
+   four-audience "identification" outcome, with the gap called out explicitly.
 
 ## Alignment with Existing Architecture
 | This design | Reuses / relates to |
@@ -245,9 +332,16 @@ options rather than accepting a single plan.
   unified `PlanOptions` result exposed as the `plan_options` tool. Also folded in the deferred
   `build_itinerary` `days`-duration fix (now stop-derived). (The `area`/optional-`leaderId` inputs on
   `suggest_candidates` were superseded by the capstone `plan_options` tool.)
-- **Phase 4 — Agent & UI:** teach the orchestrator to surface the new menus (area survey → leader
-  options → duration → extensions) and render talking points inline; map still renders the chosen
-  option.
+- **Phase 4 — Agent & UI:** ✅ **Partial.** The orchestrator surfaces the leader → duration → extension
+  menus and passes through the **engagement-category coverage** (four-audience `categoryBreakdown` +
+  per-itinerary `categoryCoverage`); the chat UI renders the area briefing and a **"🎯 Engagement
+  coverage"** panel (covered / gap / none-in-area) in both the `/plan-options` and `/ask` bubbles. The
+  Stage-2 area options are **grouped by engagement category** (one single-audience itinerary per
+  category the selected leader engages — §G), each option card tagged with its category chip. The chat
+  **`/ask` flow is now category-first** (§H): a bare known-region ask clarifies the **engagement
+  category** first, then builds the single-audience itinerary and **recommends the best senior leader**
+  (`leaderShortlist`) — the leader is the output, not the opening question. The leader-first event path
+  and the `/plan-options` guided panel are unchanged.
 - **Phase 5 — Hardening:** tune leader/extension weights (`weights.ts`), add tests mirroring the
   existing `*.test.ts` suites, optional 2-opt route pass.
 

@@ -195,4 +195,13 @@ test('planOptions: NCR in AUSA week yields survey + leader + duration + extensio
   // E — extensions always carry talking points
   assert.ok(Array.isArray(res.extensionOptions));
   for (const e of res.extensionOptions) assert.ok(e.talkingPoints.length >= 1);
+  // F — engagement identification across the four target audiences (Congressional / Academia / Industry / Army-internal)
+  const cats = res.categoryBreakdown.map((c) => c.category);
+  for (const target of ['congressional', 'academia', 'industry', 'army-internal']) {
+    assert.ok(cats.includes(target as (typeof cats)[number]), `NCR breakdown must always report ${target}`);
+  }
+  const congressional = res.categoryBreakdown.find((c) => c.category === 'congressional')!;
+  assert.ok(congressional.total >= 2, 'NCR has a Congressional footprint (C31/C32)');
+  // each duration option reports its own audience mix
+  for (const d of res.durationOptions) assert.equal(typeof d.categoryCounts, 'object');
 });

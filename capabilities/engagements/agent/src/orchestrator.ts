@@ -15,7 +15,10 @@ import mcpCore from '@greenhouse-resume-builder/mcp-core';
 import { AGENT_TOOLS, makeToolClient, type CapturedCall, type ToolClient } from './tools.js';
 import {
   type AreaInput,
+  type EngagementCategory,
   type Topic,
+  CATEGORY_LABEL,
+  ENGAGEMENT_CATEGORY_ORDER,
   defaultWindow,
   demoToday,
   loadLeaders,
@@ -40,6 +43,15 @@ export interface PlanRequest {
   leaderId?: string;
   /** How many top candidates to route into the itinerary. */
   topN?: number;
+  /**
+   * Engagement CATEGORY to anchor the trip on (category-first flow). When set, skip the category
+   * clarify and build a single-audience itinerary for this audience + recommend the best leader.
+   */
+  category?: EngagementCategory;
+  /** Trip radius (miles) around the area centroid; defaults to the region's default radius. */
+  radiusMi?: number;
+  /** Trip length (days); defaults to a size that holds the chosen audience's in-area meetings. */
+  days?: number;
   /** Engagements MCP endpoint; defaults to ENGAGEMENTS_MCP_URL or http://localhost:3010/mcp. */
   serverUrl?: string;
 }
@@ -63,11 +75,18 @@ export interface PlanResult {
   error?: string;
 
   // ── Leader-first, multi-option `/ask` envelope (additive; absent on the legacy single-plan path) ──
-  /** 'clarify' = ask a question first (e.g. WHO); 'options' = multiple finished itineraries; 'plan' = one itinerary. */
+  /** 'clarify' = ask a question first (WHICH audience); 'options' = multiple finished itineraries; 'plan' = one itinerary. */
   stage?: 'clarify' | 'options' | 'plan';
-  /** What is being clarified when stage === 'clarify' (currently only the senior leader). */
-  clarify?: 'leader' | null;
-  /** Clarifying questions the UI renders as option groups (e.g. the ranked leader roster). */
+  /**
+   * What is being clarified when stage === 'clarify'. Category-first flow asks 'category' (which
+   * audience to anchor the trip on); the event-anchored path still asks 'leader' (WHO to send).
+   */
+  clarify?: 'leader' | 'category' | null;
+  /** The engagement category the plan is anchored on (category-first flow). */
+  category?: EngagementCategory | null;
+  /** Ranked "who should go" shortlist for the chosen category — recommended leader first (stage 'plan'). */
+  leaderShortlist?: LeaderPick[];
+  /** Clarifying questions the UI renders as option groups (the category menu, or the ranked leader roster). */
   questions?: OptionQuestion[];
   /** The finished, DIFFERENT-LENGTH itineraries to choose between (stage === 'options'). */
   options?: AreaItineraryOption[];
@@ -92,6 +111,8 @@ export interface PlanResult {
   staleContacts?: any[];
   /** In-area events with a freshness verdict + why. */
   areaEvents?: any[];
+  /** In-area engagements rolled up by audience (Congressional / Academia / Industry / Army-internal) + coverage. */
+  categoryBreakdown?: any[];
 }
 
 const DEFAULT_URL = (): string => process.env.ENGAGEMENTS_MCP_URL || 'http://localhost:3010/mcp';
@@ -411,11 +432,80 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
   }
 
   try {
-    // ── Leader-first, multi-option workflow (event-anchored asks) ───────────────────────────────
-    // When the ask anchors on an authorized EVENT ("a trip to AUSA"), do NOT silently default the
-    // leader or one-shot a single itinerary. First make WHO explicit (a ranked roster), then — once
-    // a leader is chosen — present several DIFFERENT-LENGTH itineraries (conference footprint →
-    // regional swing) to compare. Radius asks ("3 days within 60 mi of Reston") keep the legacy path.
+    // ── Area/CATEGORY-first workflow (KNOWN-REGION asks — the DEFAULT for "Plan a trip to X") ─────
+    // A KNOWN-REGION ask ("Plan a trip to Boston", "what's worth doing in the Bay Area") drives a
+    // CATEGORY-FIRST flow: survey the area, roll its hot topics / timely events / key contacts up by
+    // engagement category, and ASK which audience to anchor on. Once the human picks a category (with
+    // the trip's radius/days), build ONE single-audience itinerary for that audience and RECOMMEND the
+    // best senior leader to send. The leader is the OUTPUT of the plan, not the first question. This
+    // runs BEFORE the event branch so a region that merely HOSTS an event (Boston → New England Defense
+    // Innovation Forum) still gets the category briefing rather than auto-anchoring on the event.
+    const areaAnchor = areaAskAnchor(req.question);
+    if (areaAnchor) {
+      const topicIds = topicIdsFromText(req.question);
+      const category = req.category ?? categoryFromQuestion(req.question);
+      const daysM = req.question.match(/\b(\d+)\s*(?:day|days)\b/i);
+      const days = req.days ?? (daysM ? Number(daysM[1]) : undefined);
+      const intel = await rankRosterForArea(client, areaAnchor, topicIds);
+      const toolCalls = () => client.captured.map((c) => ({ name: c.name, args: c.args }));
+
+      // STAGE 2 — a category is chosen: build the single-audience itinerary + recommend WHO should go.
+      if (category) {
+        const plan = await buildCategoryPlan(client, {
+          area: areaAnchor,
+          category,
+          leaderId: req.leaderId,
+          leaderOptions: intel.leaders,
+          categoryBreakdown: intel.categoryBreakdown,
+          areaResolved: intel.area,
+          today: intel.today,
+          redactedCount: intel.redactedCount,
+          topicIds: intel.topicIds ?? topicIds,
+          radiusMi: req.radiusMi,
+          days,
+        });
+        const pr = categoryPlanToResult(base, plan);
+        pr.areaSurvey = intel.areaSurvey;
+        pr.staleContacts = intel.staleContacts;
+        pr.areaEvents = intel.areaEvents;
+        pr.topicIds = intel.topicIds ?? topicIds;
+        pr.toolCalls = toolCalls();
+        return pr;
+      }
+
+      // STAGE 1 — no category yet: show the area briefing grouped by engagement category + ASK which one.
+      const catQ = categoryClarifyQuestion(intel.categoryBreakdown);
+      const hasCats = catQ.choices.length > 0;
+      const hasIntel = intel.areaSurvey.length + intel.staleContacts.length + intel.areaEvents.length > 0;
+      return {
+        ...base,
+        ok: hasCats,
+        stage: 'clarify',
+        clarify: 'category',
+        leaderId: null,
+        answer: hasCats
+          ? `Here's what's worth doing around ${intel.area?.name ?? 'this area'}, grouped by engagement category` +
+            (hasIntel ? ' — hot topics to advance, stale relationships to re-engage, and timely events are below. ' : '. ') +
+            `Which engagement category should this trip focus on? Once you pick, I'll build the itinerary and recommend the best senior leader to send.`
+          : `No engagements found around ${intel.area?.name ?? 'this area'} for this persona.`,
+        area: intel.area,
+        today: intel.today,
+        topicIds: intel.topicIds ?? topicIds,
+        areaSurvey: intel.areaSurvey,
+        staleContacts: intel.staleContacts,
+        areaEvents: intel.areaEvents,
+        categoryBreakdown: intel.categoryBreakdown,
+        redactedCount: intel.redactedCount,
+        questions: hasCats ? [catQ] : [],
+        toolCalls: toolCalls(),
+      };
+    }
+
+    // ── Leader-first, multi-option workflow (an explicitly-named EVENT that is NOT a known region) ─
+    // When the ask anchors on an authorized EVENT the user NAMES ("a trip to AUSA") — and the token is
+    // not itself a known region — keep the "you're already going there" flow: make WHO explicit (a
+    // ranked roster), then present several DIFFERENT-LENGTH itineraries (conference footprint → regional
+    // swing) to compare. Radius asks ("3 days within 60 mi of Reston") keep the legacy path.
     const event = await resolveEventAnchor(client, req.question);
     if (event) {
       const topicIds = topicIdsFromText(req.question);
@@ -440,53 +530,6 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
       const pr = optionsToPlanResult(base, opts, event);
       pr.toolCalls = client.captured.map((c) => ({ name: c.name, args: c.args }));
       return pr;
-    }
-
-    // ── Area-anchored, leader-first multi-option workflow (bare-area asks) ───────────────────────
-    // A KNOWN-REGION ask that is neither an authorized event nor a fixed-radius trip ("plan a trip to
-    // Central TX", "what's worth doing in the Bay Area") gets the SAME leader-first, compare-several-
-    // itineraries experience as an event ask: make WHO explicit first, then — once a leader is chosen —
-    // present finished itineraries of DIFFERENT lengths (short visit → full regional tour), each a
-    // complete route + ROI + ui://trip-map. This is what turns the one-shot "Plan a trip to X" ask into
-    // the guided "pick a leader, then compare itinerary options" workflow.
-    const areaAnchor = areaAskAnchor(req.question);
-    if (areaAnchor) {
-      const topicIds = topicIdsFromText(req.question);
-      const leaderId = req.leaderId || leaderFromQuestion(req.question);
-      if (!leaderId) {
-        const { leaders, area, today, topicIds: surveyedTopicIds, areaSurvey, staleContacts, areaEvents } =
-          await rankRosterForArea(client, areaAnchor, topicIds);
-        const hasIntel = areaSurvey.length + staleContacts.length + areaEvents.length > 0;
-        return {
-          ...base,
-          ok: leaders.length > 0,
-          stage: 'clarify',
-          clarify: 'leader',
-          leaderId: null,
-          answer:
-            `Here's what's worth doing around ${area?.name ?? 'this area'}` +
-            (hasIntel
-              ? ' — hot topics to advance, stale relationships to re-engage, and timely events are below. '
-              : '. ') +
-            `Which senior leader are you planning for? ${leaders.length} option(s) — top pick recommended, but you decide.`,
-          area,
-          today,
-          topicIds: surveyedTopicIds,
-          areaSurvey,
-          staleContacts,
-          areaEvents,
-          questions: [leaderClarifyQuestion(leaders, leaders[0]?.leaderId ?? null)],
-          toolCalls: client.captured.map((c) => ({ name: c.name, args: c.args })),
-        };
-      }
-      const opts = await buildAreaItineraryOptions({
-        persona,
-        leaderId,
-        ...areaArgs(areaAnchor),
-        topicIds,
-        serverUrl: url,
-      });
-      return optionsToPlanResult(base, opts, null);
     }
 
     // ── Legacy single-itinerary path (non-event asks: radius trips, free-form) ──────────────────
@@ -551,7 +594,7 @@ export interface OptionChoice {
 
 /** A question the UI renders as an option group (radios for `single`, checkboxes for `multi`). */
 export interface OptionQuestion {
-  id: 'area' | 'leader' | 'duration' | 'extensions';
+  id: 'area' | 'category' | 'leader' | 'duration' | 'extensions';
   kind: 'single' | 'multi';
   prompt: string;
   choices: OptionChoice[];
@@ -593,6 +636,11 @@ export interface AreaOptionsResult {
   staleContacts: any[];
   /** In-area events with a freshness verdict (lapsed follow-up / in-window / upcoming magnet) + why. */
   areaEvents: any[];
+  /**
+   * In-area engagements rolled up into the four target audiences (+ `other`) with per-audience footprint
+   * and itinerary coverage — the "identification across Congressional / Academia / Industry / Army-internal".
+   */
+  categoryBreakdown: any[];
   leaderOptions: any[];
   chosenLeaderId: string | null;
   durationOptions: any[];
@@ -727,7 +775,10 @@ export function buildOptionQuestions(plan: any): OptionQuestion[] {
       choices: durations.map((d, i) => ({
         value: d.tier,
         label: `${cap(d.tier)} — ${d.days} day(s)`,
-        detail: `${d.stops?.length ?? 0} stop(s) · ROI ${d.roiScore}` + (d.overBudget ? ' · OVER BUDGET' : ''),
+        detail:
+          `${d.stops?.length ?? 0} stop(s) · ROI ${d.roiScore}` +
+          (d.overBudget ? ' · OVER BUDGET' : '') +
+          (d.categoryMix ? ` · ${d.categoryMix}` : ''),
         selected: i === 0,
         recommended: i === 0,
       })),
@@ -746,7 +797,8 @@ export function buildOptionQuestions(plan: any): OptionQuestion[] {
         detail:
           `${e.topicName ?? e.topicId ?? 'topic —'} · mROI ${e.marginalRoi}` +
           (e.overBudget ? ' · over budget' : '') +
-          ` · ${e.talkingPointsSource === 'approved-message' ? 'approved talking points' : 'coordinate points'}`,
+          ` · ${e.talkingPointsSource === 'approved-message' ? 'approved talking points' : 'coordinate points'}` +
+          (e.categoryLabel ? ` · ${e.categoryLabel}` : ''),
         selected: false,
       })),
     });
@@ -787,6 +839,7 @@ function emptyOptions(persona: string, question: string | null, window: { start:
     areaSurvey: [],
     staleContacts: [],
     areaEvents: [],
+    categoryBreakdown: [],
     leaderOptions: [],
     chosenLeaderId: null,
     durationOptions: [],
@@ -879,6 +932,7 @@ export async function planAreaOptions(req: AreaOptionsRequest): Promise<AreaOpti
         areaSurvey: plan.areaSurvey ?? [],
         staleContacts: plan.staleContacts ?? [],
         areaEvents: plan.areaEvents ?? [],
+        categoryBreakdown: plan.categoryBreakdown ?? [],
         leaderOptions,
         chosenLeaderId: plan.chosenLeaderId ?? null,
         absorbedEventIds: plan.absorbedEventIds ?? [],
@@ -902,6 +956,7 @@ export async function planAreaOptions(req: AreaOptionsRequest): Promise<AreaOpti
       areaSurvey: plan.areaSurvey ?? [],
       staleContacts: plan.staleContacts ?? [],
       areaEvents: plan.areaEvents ?? [],
+      categoryBreakdown: plan.categoryBreakdown ?? [],
       leaderOptions: plan.leaderOptions ?? [],
       chosenLeaderId: plan.chosenLeaderId ?? null,
       durationOptions: plan.durationOptions ?? [],
@@ -933,6 +988,8 @@ function extractItinerary(build: any): any | null {
     conflicts: build.conflicts,
     // Feature: surface other senior leaders at the same event/contact or nearby (from build_itinerary).
     nearbyLeaders: build.nearbyLeaders ?? [],
+    // Audience mix of the committed stops (Congressional / Academia / Industry / Army-internal).
+    categoryCoverage: build.categoryCoverage ?? null,
     extensionOptions: build.extensionOptions,
     notMatched: build.notMatched,
   };
@@ -1044,19 +1101,23 @@ export async function buildAreaItinerary(req: AreaBuildRequest): Promise<PlanRes
 
 // ════════════════════════════════════════════════════════════════════════════
 // STAGE 2 (options) — once the senior leader is chosen, present MULTIPLE fully-built itinerary
-// options of DIFFERENT LENGTHS for the EA/planner to compare and proceed with. Each option is a
-// distinct trip length (a short visit → a full regional tour): the fixed-duration filler packs the
-// best authorized meetings into `days × meetingsPerDay` slots, so every option is a complete trip —
-// route, trip-ROI, advisory conflicts, nearby senior leaders, and its own ui://trip-map.
+// options GROUPED BY ENGAGEMENT CATEGORY for the EA/planner to compare and proceed with. Each option
+// is a SINGLE-audience trip (Congressional-only, Academia-only, …) — we never blend audiences on one
+// itinerary, because which audience a leader would meet on a trip depends on their billet. The offered
+// categories are the intersection of the SELECTED LEADER's `engagementCategories` and the audiences
+// actually present in the area; each option packs that audience's authorized in-area meetings, so every
+// option is a complete trip — route, trip-ROI, advisory conflicts, nearby senior leaders, its own ui://trip-map.
 // ════════════════════════════════════════════════════════════════════════════
 
 /** One selectable, fully-costed itinerary the EA can proceed with. */
 export interface AreaItineraryOption {
-  /** Stable id the UI/CLI selects by — the trip length (e.g. "2d" | "5d" | "7d"). */
+  /** Stable id the UI/CLI selects by — the engagement category (e.g. "congressional" | "industry"). */
   id: string;
   /** Relative size bucket: 'short' | 'standard' | 'extended'. */
   tier: string;
   label: string;
+  /** The single engagement audience this itinerary reaches (e.g. "industry"); null on the legacy length path. */
+  category: EngagementCategory | null;
   /** One-line card summary (meetings · ROI · budget flag). */
   summary: string;
   days: number | null;
@@ -1071,6 +1132,10 @@ export interface AreaItineraryOption {
   itinerary: any | null;
   /** The ui://trip-map payload for this specific option. */
   tripMap: any | null;
+  /** This option's engagement-audience mix, e.g. "Industry×2" (single-audience by construction). */
+  categoryMix: string | null;
+  /** Raw per-audience counts backing {@link categoryMix}. */
+  categoryCounts: Record<string, number> | null;
   answer: string | null;
 }
 
@@ -1084,10 +1149,12 @@ export interface AreaItineraryOptionsResult {
   window: { start: string; end: string } | null;
   today: string | null;
   topicIds: string[];
-  /** The finished itineraries the EA chooses between — each a DIFFERENT trip length. */
+  /** The finished itineraries the EA chooses between — each a DIFFERENT engagement category (single-audience). */
   options: AreaItineraryOption[];
   /** Id of the recommended option (best in-budget ROI). */
   recommendedOptionId: string | null;
+  /** Area-wide engagement footprint across the four audiences (from the probe build). */
+  categoryBreakdown?: any[];
   redactedCount: number | null;
   rejected: boolean;
   /** The resolved anchor event, when the options are event-anchored (else null/absent). */
@@ -1135,11 +1202,154 @@ function lengthSize(index: number, total: number): 'short' | 'standard' | 'exten
 
 const roi2 = (n: unknown): string => (typeof n === 'number' && Number.isFinite(n) ? n.toFixed(2) : String(n ?? '—'));
 
+/** One engagement category to build a single-audience itinerary for, plus the stops that back it. */
+export interface CategoryTarget {
+  category: EngagementCategory;
+  label: string;
+  /** EVERY authorized in-area contact id for this audience (drives the single-audience `acceptedContactIds`). */
+  contactIds: string[];
+}
+
 /**
- * STAGE 2 (options) — for the CHOSEN leader, build one complete itinerary per DISTINCT trip length
- * (short visit → full regional tour) so the EA compares finished trips of different durations and
- * proceeds with one. Uses `build_itinerary`'s fixed-duration radius fill, anchored on the area, which
- * re-authorizes every stop server-side — so the persona trim holds for every option.
+ * Pure: pick which engagement CATEGORIES to offer the chosen leader as single-audience itineraries.
+ * We intersect the leader's `engagementCategories` (which audiences THIS billet would meet) with the
+ * audiences actually present in the area (`breakdown` entries with contacts), returning them in report
+ * order. When the leader has no authored categories, we fall back to EVERY audience present — so the
+ * flow still yields category-grouped options. Guarantees single-audience, leader-appropriate options.
+ */
+export function leaderCategoryTargets(opts: {
+  leaderCategories?: readonly string[] | null;
+  breakdown: { category?: string; total?: number; contactIds?: string[] }[];
+}): CategoryTarget[] {
+  const present = new Map<string, string[]>();
+  for (const b of opts.breakdown ?? []) {
+    const ids = b.contactIds ?? [];
+    if (b.category && ids.length > 0) present.set(b.category, ids);
+  }
+  const allow = opts.leaderCategories && opts.leaderCategories.length ? new Set(opts.leaderCategories) : null;
+  const out: CategoryTarget[] = [];
+  for (const cat of ENGAGEMENT_CATEGORY_ORDER) {
+    if (allow && !allow.has(cat)) continue;
+    const ids = present.get(cat);
+    if (!ids) continue;
+    out.push({ category: cat, label: CATEGORY_LABEL[cat], contactIds: ids });
+  }
+  return out;
+}
+
+/** One ranked "who should go" candidate for a chosen engagement category (category-first flow). */
+export interface LeaderPick {
+  leaderId: string;
+  name?: string | null;
+  role?: string | null;
+  /** The capability's composite fit score (topic SME + proximity + availability + …). */
+  score?: string | number | null;
+  distanceMi?: number | null;
+  availableInWindow?: boolean | null;
+  /** One-line rationale ("SME fit 0.82 · 45 mi · free in window"). */
+  why: string;
+  /** The capability's algorithmic top pick for this audience. */
+  recommended: boolean;
+  /** Whether THIS plan was built for this leader (the human's pick, else the recommendation). */
+  selected?: boolean;
+}
+
+/** Compose a leader option's one-line "why send them" rationale from its fit factors. Pure. */
+function leaderWhy(o: any): string {
+  const parts: string[] = [];
+  const fit = o?.factors?.topicMatch ?? o?.score;
+  if (fit != null && fit !== '') parts.push(`SME fit ${fit}`);
+  if (typeof o?.distanceMi === 'number') parts.push(`${o.distanceMi} mi`);
+  parts.push(o?.availableInWindow === false ? 'not free in window' : 'free in window');
+  return parts.join(' · ');
+}
+
+/**
+ * STAGE 1 (category-first) — turn the area's per-audience breakdown into the "which engagement category
+ * should this trip focus on?" menu. Only audiences actually PRESENT in the area (with ≥1 engagement) are
+ * offered — `other` is never offered. The recommended default is the audience with the highest strategic
+ * weight (tie: most stale relationships to re-engage, then most engagements). Pure + deterministic.
+ */
+export function categoryClarifyQuestion(breakdown: any[]): OptionQuestion {
+  const present = (breakdown ?? []).filter((c) => (c?.total ?? 0) > 0 && c?.category && c.category !== 'other');
+  const ranked = [...present].sort(
+    (a, b) =>
+      (b?.strategicValueSum ?? 0) - (a?.strategicValueSum ?? 0) ||
+      (b?.staleCount ?? 0) - (a?.staleCount ?? 0) ||
+      (b?.total ?? 0) - (a?.total ?? 0),
+  );
+  const rec = ranked[0]?.category ?? null;
+  return {
+    id: 'category',
+    kind: 'single',
+    prompt: 'Which engagement category should this trip focus on?',
+    choices: present.map((c) => ({
+      value: c.category,
+      label: c.label ?? c.category,
+      detail: c.reason ?? `${c.total ?? 0} engagement(s)`,
+      selected: c.category === rec,
+      recommended: c.category === rec,
+    })),
+  };
+}
+
+/**
+ * STAGE 2 (category-first) — pure: from the area's ranked leader options, pick WHO should go for the
+ * CHOSEN engagement category. Keeps only leaders whose billet engages that audience (leaders.json
+ * `engagementCategories`), best composite-fit first (recommended), the rest as alternates. When NO
+ * leader in the roster engages the audience we fall back to the best-fit leader overall (`fellBack`),
+ * so the flow always yields a "who should go" recommendation. The leader is the OUTPUT, not an input.
+ */
+export function bestLeadersForCategory(opts: {
+  category: string;
+  leaderOptions: any[];
+  roster: { id: string; engagementCategories?: readonly string[] }[];
+}): { recommended: LeaderPick | null; alternates: LeaderPick[]; fellBack: boolean } {
+  const engages = new Set(
+    (opts.roster ?? []).filter((l) => (l.engagementCategories ?? []).includes(opts.category as any)).map((l) => l.id),
+  );
+  const availOf = (x: any) => (x?.availableInWindow === false ? 0 : 1);
+  const scoreOf = (x: any) => (Number.isFinite(Number(x?.score)) ? Number(x.score) : 0);
+  const ranked = [...(opts.leaderOptions ?? [])].sort(
+    (a, b) => scoreOf(b) - scoreOf(a) || availOf(b) - availOf(a) || (a?.distanceMi ?? 1e9) - (b?.distanceMi ?? 1e9),
+  );
+  const matching = ranked.filter((o) => engages.has(o.leaderId));
+  const fellBack = matching.length === 0;
+  const chosen = matching.length ? matching : ranked;
+  const picks: LeaderPick[] = chosen.map((o, i) => ({
+    leaderId: o.leaderId,
+    name: o.name ?? null,
+    role: o.role ?? null,
+    score: o.score ?? null,
+    distanceMi: typeof o.distanceMi === 'number' ? o.distanceMi : null,
+    availableInWindow: typeof o.availableInWindow === 'boolean' ? o.availableInWindow : null,
+    why: leaderWhy(o),
+    recommended: i === 0,
+  }));
+  return { recommended: picks[0] ?? null, alternates: picks.slice(1), fellBack };
+}
+
+/**
+ * Deterministically pull an engagement CATEGORY out of the question when the EA names one ("plan an
+ * industry trip to Boston", "congressional visit"). Returns null when none is named — the signal to
+ * SHOW the category menu and let the human pick. Conservative (won't guess from a bare area ask). Pure.
+ */
+export function categoryFromQuestion(question: string): EngagementCategory | null {
+  const q = ` ${(question ?? '').toLowerCase()} `;
+  if (/\b(congressional|congress|capitol|legislat\w*|hasc|sasc|appropriations)\b/.test(q)) return 'congressional';
+  if (/\b(academ\w*|universit\w*|professor|research lab\w*|stem)\b/.test(q)) return 'academia';
+  if (/\b(industry|industrial|commercial|vendors?|defense industr\w*|primes?)\b/.test(q)) return 'industry';
+  if (/\b(army[- ]internal|internal army|garrison|installation|unit visit)\b/.test(q)) return 'army-internal';
+  return null;
+}
+
+/**
+ * STAGE 2 (options) — for the CHOSEN leader, build one complete itinerary per ENGAGEMENT CATEGORY the
+ * leader engages (Congressional-only, Industry-only, …) so the EA compares finished SINGLE-AUDIENCE
+ * trips and proceeds with one. We never blend audiences on a trip: which audience a leader would meet
+ * depends on their billet, so the offered categories are the intersection of the leader's
+ * `engagementCategories` and the audiences present in the area. Each option forces its audience via
+ * `build_itinerary`'s `acceptedContactIds` (that category's in-area contacts), re-authorized server-side.
  */
 export async function buildAreaItineraryOptions(req: AreaBuildRequest): Promise<AreaItineraryOptionsResult> {
   const persona = req.persona || DEFAULT_PERSONA();
@@ -1184,14 +1394,16 @@ export async function buildAreaItineraryOptions(req: AreaBuildRequest): Promise<
     const maxDays = Math.max(1, Math.round(req.maxDays ?? 7));
 
     // A fixed-duration (radius) build_itinerary: fills `days × meetingsPerDay` best authorized stops
-    // in the area — NO event anchor, so `days` fully controls the trip length. Auto-fills (no
-    // acceptedContactIds), and re-authorizes every stop server-side under the persona trim.
-    const radiusBuild = (days: number) =>
+    // in the area — NO event anchor, so `days` fully controls the trip length. When `acceptedContactIds`
+    // is passed it routes EXACTLY that set (re-authorized server-side) — the seam that forces a
+    // single-audience itinerary. Auto-fills (capacity) when omitted (the probe). Persona trim always holds.
+    const radiusBuild = (days: number, acceptedContactIds?: string[]) =>
       client.callTool('build_itinerary', {
         leaderId: req.leaderId,
         ...anchorArgs,
         days,
         ...(typeof req.meetingsPerDay === 'number' ? { meetingsPerDay: req.meetingsPerDay } : {}),
+        ...(acceptedContactIds?.length ? { acceptedContactIds } : {}),
         window,
         ...(topicIds.length ? { topicIds } : {}),
         requireTopicMatch: false,
@@ -1212,34 +1424,49 @@ export async function buildAreaItineraryOptions(req: AreaBuildRequest): Promise<
       topicIds,
       leaderName: probe.leader?.name ?? null,
       redactedCount: probe.redactedCount ?? null,
+      categoryBreakdown: probe.categoryBreakdown ?? [],
     };
 
     const availableStops = probe.accepted?.length ?? 0;
     if (availableStops === 0) return { ...base, error: `No authorized stops in ${probe.area?.name ?? 'this area'} for ${req.leaderId}.` };
 
     const perDay = probe.meetingsPerDay ?? req.meetingsPerDay ?? 2;
-    const targets = itineraryLengthTargets({
-      availableStops,
-      meetingsPerDay: perDay,
-      count: req.optionCount ?? 3,
-      maxDays,
-      targetDays: req.targetDays,
-    });
+
+    // Which SINGLE-AUDIENCE itineraries to offer THIS leader: the audiences they engage
+    // (leaders.json `engagementCategories`) ∩ the audiences actually present in the area (probe
+    // breakdown). No leader categories authored → every audience present (still one trip per category).
+    const leaderCats = loadLeaders().find((l) => l.id === req.leaderId)?.engagementCategories ?? null;
+    const targets = leaderCategoryTargets({ leaderCategories: leaderCats, breakdown: base.categoryBreakdown });
+    if (targets.length === 0) {
+      return {
+        ...base,
+        error:
+          `No engagements in ${probe.area?.name ?? 'this area'} match ${base.leaderName ?? req.leaderId}'s ` +
+          `engagement categories (${leaderCats?.join(', ') ?? 'any'}).`,
+      };
+    }
 
     const options: AreaItineraryOption[] = [];
-    for (let i = 0; i < targets.length; i++) {
-      const days = targets[i];
-      // Reuse the probe when its length already matches a target (avoids a duplicate build).
-      const cap = days === maxDays ? probeCap : (await radiusBuild(days), lastCapture(client.captured, 'build_itinerary'));
+    for (const t of targets) {
+      // Force a single-audience trip: route EXACTLY this category's in-area contacts. `acceptedContactIds`
+      // ignores capacity, so `days` only drives the ROI/budget math — size it to hold every in-audience
+      // meeting (≈ ceil(stops / perDay)), capped at maxDays.
+      const days = Math.min(maxDays, Math.max(1, Math.ceil(t.contactIds.length / perDay)));
+      await radiusBuild(days, t.contactIds);
+      const cap = lastCapture(client.captured, 'build_itinerary');
       const build = cap?.result ?? {};
       const itinerary = extractItinerary(build);
       const stops: any[] = build.accepted ?? [];
+      if (stops.length === 0) continue; // this audience yielded no routable stop for the leader — skip it
       options.push({
-        id: `${days}d`,
-        tier: lengthSize(i, targets.length),
-        label: `${days}-day trip`,
-        summary: `${stops.length} meeting(s) · ROI ${roi2(build?.roi?.roiScore)}` + (build?.roi?.overBudget ? ' · OVER BUDGET' : ''),
-        days,
+        id: t.category,
+        tier: t.category,
+        label: `${t.label} engagements`,
+        category: t.category,
+        summary:
+          `${stops.length} ${t.label} meeting(s) · ${build?.days ?? days} day(s) · ROI ${roi2(build?.roi?.roiScore)}` +
+          (build?.roi?.overBudget ? ' · OVER BUDGET' : ''),
+        days: build?.days ?? days,
         stopCount: stops.length,
         roiScore: build?.roi?.roiScore ?? null,
         overBudget: !!build?.roi?.overBudget,
@@ -1248,15 +1475,21 @@ export async function buildAreaItineraryOptions(req: AreaBuildRequest): Promise<
         ok: itinerary != null,
         itinerary,
         tripMap: build?.tripMap ?? null,
+        categoryMix: build?.categoryCoverage?.summary ?? null,
+        categoryCounts: build?.categoryCoverage?.counts ?? null,
         answer: cap?.text ?? null,
       });
     }
 
-    // Recommend the best-value trip: highest ROI among in-budget options (fallback: highest ROI,
-    // then the shorter trip). Every option is a valid choice — this is just the pre-selected one.
+    if (options.length === 0) {
+      return { ...base, error: `No single-audience itinerary could be built in ${probe.area?.name ?? 'this area'} for ${req.leaderId}.` };
+    }
+
+    // Recommend the best-value AUDIENCE: highest ROI among in-budget options (fallback: highest ROI,
+    // then the most meetings). Every option is a valid choice — this is just the pre-selected one.
     const pickable = options.filter((o) => o.ok);
     const ranked = [...pickable].sort(
-      (a, b) => Number(a.overBudget) - Number(b.overBudget) || Number(b.roiScore) - Number(a.roiScore) || (a.days ?? 0) - (b.days ?? 0),
+      (a, b) => Number(a.overBudget) - Number(b.overBudget) || Number(b.roiScore) - Number(a.roiScore) || b.stopCount - a.stopCount,
     );
     const recommendedOptionId = ranked[0]?.id ?? options[0]?.id ?? null;
     for (const o of options) o.recommended = o.id === recommendedOptionId;
@@ -1380,9 +1613,11 @@ async function rankRosterForArea(
   areaSurvey: any[];
   staleContacts: any[];
   areaEvents: any[];
+  categoryBreakdown: any[];
+  redactedCount: number | null;
 }> {
   const roster = () => loadLeaders().map((l) => ({ leaderId: l.id, name: l.name, role: l.role }));
-  const emptyIntel = { today: null, topicIds, areaSurvey: [] as any[], staleContacts: [] as any[], areaEvents: [] as any[] };
+  const emptyIntel = { today: null, topicIds, areaSurvey: [] as any[], staleContacts: [] as any[], areaEvents: [] as any[], categoryBreakdown: [] as any[], redactedCount: null };
   try {
     await client.callTool('plan_options', {
       ...areaArgs(area),
@@ -1400,6 +1635,8 @@ async function rankRosterForArea(
       areaSurvey: res.areaSurvey ?? [],
       staleContacts: res.staleContacts ?? [],
       areaEvents: res.areaEvents ?? [],
+      categoryBreakdown: res.categoryBreakdown ?? [],
+      redactedCount: res.redactedCount ?? null,
     };
   } catch {
     return { leaders: roster(), area: null, ...emptyIntel };
@@ -1484,6 +1721,7 @@ async function buildEventOptions(
       id: typeof days === 'number' ? `${days}d` : `opt${options.length + 1}`,
       tier: 'standard',
       label: typeof days === 'number' ? `${days}-day trip — ${scope}` : scope,
+      category: null,
       summary: `${scope} · ${stops.length} meeting(s) · ROI ${roi2(build?.roi?.roiScore)}` + (build?.roi?.overBudget ? ' · OVER BUDGET' : ''),
       days,
       stopCount: stops.length,
@@ -1494,6 +1732,8 @@ async function buildEventOptions(
       ok: itinerary != null,
       itinerary,
       tripMap: build?.tripMap ?? null,
+      categoryMix: build?.categoryCoverage?.summary ?? null,
+      categoryCounts: build?.categoryCoverage?.counts ?? null,
       answer: cap?.text ?? null,
     };
     // Keep options strictly DIFFERENT in length: if a deeper swing didn't add a day, keep the richer one.
@@ -1561,9 +1801,14 @@ export async function buildEventItineraryOptions(req: EventBuildRequest): Promis
 export function optionsToPlanResult(base: PlanResult, opts: AreaItineraryOptionsResult, event: any | null): PlanResult {
   const rec = opts.options.find((o) => o.id === opts.recommendedOptionId) ?? opts.options[0] ?? null;
   const where = event ? `${event.name} (${event.city})` : opts.area?.name ?? 'the area';
+  // Area options are SINGLE-AUDIENCE (grouped by engagement category); event options vary by length.
+  const byCategory = opts.options.length > 0 && opts.options.every((o) => o.category);
+  const lede = byCategory
+    ? `${opts.leaderName ?? opts.leaderId} @ ${where} — ${opts.options.length} itinerary option(s), one per engagement category ` +
+      `${opts.leaderName ?? opts.leaderId} engages (each a single-audience trip; pick the audience for this visit):`
+    : `${opts.leaderName ?? opts.leaderId} @ ${where} — ${opts.options.length} itinerary option(s) of different lengths:`;
   const answer = opts.ok
-    ? `${opts.leaderName ?? opts.leaderId} @ ${where} — ${opts.options.length} itinerary option(s) of different lengths:\n` +
-      opts.options.map((o) => `  • ${o.label}: ${o.summary}${o.recommended ? '  ← recommended' : ''}`).join('\n')
+    ? `${lede}\n` + opts.options.map((o) => `  • ${o.label}: ${o.summary}${o.recommended ? '  ← recommended' : ''}`).join('\n')
     : opts.error ?? 'No itinerary options could be built.';
   return {
     ...base,
@@ -1580,9 +1825,200 @@ export function optionsToPlanResult(base: PlanResult, opts: AreaItineraryOptions
     itinerary: rec?.itinerary ?? null,
     tripMap: rec?.tripMap ?? null,
     menu: rec?.itinerary?.accepted ?? null,
+    categoryBreakdown: opts.categoryBreakdown ?? (base as any).categoryBreakdown ?? [],
     redactedCount: opts.redactedCount,
     rejected: opts.rejected,
     error: opts.error,
+  };
+}
+
+/** The finished single-audience CATEGORY plan (category-first flow): one itinerary + the "who should go" shortlist. */
+interface CategoryPlanResult {
+  ok: boolean;
+  category: EngagementCategory;
+  categoryLabel: string;
+  area: any | null;
+  today: string | null;
+  window: { start: string; end: string };
+  /** The leader the itinerary was built for (the recommended one). */
+  leaderId: string | null;
+  leaderName: string | null;
+  /** Ranked "who should go" — recommended first, then alternates. */
+  leaderShortlist: LeaderPick[];
+  /** True when no roster leader is authored for this audience (best-overall fit was used). */
+  fellBack: boolean;
+  days: number | null;
+  stopCount: number;
+  roiScore: number | null;
+  overBudget: boolean;
+  itinerary: any | null;
+  tripMap: any | null;
+  contactIds: string[];
+  categoryBreakdown: any[];
+  redactedCount: number | null;
+  rejected: boolean;
+  error?: string;
+}
+
+/**
+ * STAGE 2 (category-first) — build ONE single-audience itinerary for the chosen engagement category and
+ * recommend WHO should go. Reuses the open client + the intel already gathered by {@link rankRosterForArea}
+ * (ranked `leaderOptions` + the per-audience `categoryBreakdown`): route EXACTLY the chosen audience's
+ * in-area contacts (`acceptedContactIds`, re-authorized server-side → never blends audiences), then rank
+ * the best senior leader for that audience. The itinerary is the star; the leader is the OUTPUT.
+ */
+async function buildCategoryPlan(
+  client: ToolClient,
+  args: {
+    area: AreaInput;
+    category: EngagementCategory;
+    /** The human's explicit "who should go" override (they clicked an alternate); else the recommendation is used. */
+    leaderId?: string;
+    leaderOptions: any[];
+    categoryBreakdown: any[];
+    areaResolved: any | null;
+    today: string | null;
+    redactedCount: number | null;
+    topicIds: string[];
+    radiusMi?: number;
+    days?: number;
+    maxDays?: number;
+    meetingsPerDay?: number;
+    window?: { start: string; end: string };
+  },
+): Promise<CategoryPlanResult> {
+  const window = args.window || defaultWindow();
+  const label = CATEGORY_LABEL[args.category];
+  const target = (args.categoryBreakdown ?? []).find((c) => c?.category === args.category);
+  const contactIds: string[] = target?.contactIds ?? [];
+  const roster = loadLeaders();
+  const { recommended, alternates, fellBack } = bestLeadersForCategory({
+    category: args.category,
+    leaderOptions: args.leaderOptions,
+    roster,
+  });
+  // The ranked "who should go" shortlist. The human may OVERRIDE the top pick by selecting any leader in
+  // it (e.g. real-world availability the model can't see); we mark that leader `selected` and plan for
+  // them. `recommended` stays on the algorithmic best so the UI can still show "★ recommended".
+  const ranked = recommended ? [recommended, ...alternates] : [];
+  const pickedId = args.leaderId && ranked.some((l) => l.leaderId === args.leaderId) ? args.leaderId : recommended?.leaderId ?? null;
+  const shortlist = ranked.map((l) => ({ ...l, selected: l.leaderId === pickedId }));
+  const chosen = shortlist.find((l) => l.selected) ?? null;
+  const base: CategoryPlanResult = {
+    ok: false,
+    category: args.category,
+    categoryLabel: label,
+    area: args.areaResolved,
+    today: args.today,
+    window,
+    leaderId: chosen?.leaderId ?? recommended?.leaderId ?? null,
+    leaderName: chosen?.name ?? recommended?.name ?? null,
+    leaderShortlist: shortlist,
+    fellBack,
+    days: null,
+    stopCount: 0,
+    roiScore: null,
+    overBudget: false,
+    itinerary: null,
+    tripMap: null,
+    contactIds,
+    categoryBreakdown: args.categoryBreakdown ?? [],
+    redactedCount: args.redactedCount,
+    rejected: false,
+  };
+  if (contactIds.length === 0) {
+    return { ...base, error: `No ${label} engagements in ${args.areaResolved?.name ?? 'this area'} to build a trip around.` };
+  }
+
+  // The itinerary is single-audience regardless of leader (we force this audience's contacts), so any
+  // authorized leader routes the same stops; the leader only re-tunes ROI/availability (the "who should
+  // go" layer). We build for the SELECTED leader (the human's pick, else the recommendation).
+  const leaderId = chosen?.leaderId ?? args.leaderOptions[0]?.leaderId ?? resolveDefaultLeaderId();
+  const perDay = args.meetingsPerDay ?? 2;
+  const maxDays = Math.max(1, Math.round(args.maxDays ?? 7));
+  const days =
+    args.days != null ? Math.max(1, Math.round(args.days)) : Math.min(maxDays, Math.max(1, Math.ceil(contactIds.length / perDay)));
+
+  await client.callTool('build_itinerary', {
+    leaderId,
+    ...areaArgs(args.area, args.radiusMi),
+    days,
+    ...(typeof args.meetingsPerDay === 'number' ? { meetingsPerDay: args.meetingsPerDay } : {}),
+    acceptedContactIds: contactIds,
+    window,
+    ...(args.topicIds.length ? { topicIds: args.topicIds } : {}),
+    requireTopicMatch: false,
+  });
+  const cap = lastCapture(client.captured, 'build_itinerary');
+  const build = cap?.result ?? {};
+  if (isRejected(build)) return { ...base, rejected: true, error: 'Access rejected — no verified tenant claim.' };
+  if (build.error) return { ...base, error: build.error };
+  const itinerary = extractItinerary(build);
+  const stops: any[] = build.accepted ?? [];
+
+  return {
+    ...base,
+    ok: itinerary != null && stops.length > 0,
+    leaderId,
+    leaderName: build?.leader?.name ?? chosen?.name ?? null,
+    area: build?.area ?? args.areaResolved,
+    today: build?.today ?? args.today,
+    days: build?.days ?? days,
+    stopCount: stops.length,
+    roiScore: build?.roi?.roiScore ?? null,
+    overBudget: !!build?.roi?.overBudget,
+    itinerary,
+    tripMap: build?.tripMap ?? null,
+    contactIds: stops.map((s: any) => s.contactId),
+    redactedCount: build?.redactedCount ?? args.redactedCount,
+  };
+}
+
+/** Fold a single-audience category plan into the `/ask` PlanResult envelope (stage 'plan'; leader = the human's selection, defaulting to the recommendation). */
+export function categoryPlanToResult(base: PlanResult, plan: CategoryPlanResult): PlanResult {
+  const where = plan.area?.name ?? 'this area';
+  const rec = plan.leaderShortlist.find((l) => l.recommended) ?? null;
+  const sel = plan.leaderShortlist.find((l) => l.selected) ?? rec;
+  const overridden = !!sel && !!rec && sel.leaderId !== rec.leaderId;
+  const alts = plan.leaderShortlist.filter((l) => l.leaderId !== sel?.leaderId);
+  let answer: string;
+  if (!plan.ok) {
+    answer = plan.error ?? `No ${plan.categoryLabel} itinerary could be built for ${where}.`;
+  } else {
+    const lede =
+      `${plan.categoryLabel}-focused trip around ${where}: ${plan.stopCount} meeting(s) over ${plan.days} day(s) · ` +
+      `ROI ${roi2(plan.roiScore)}${plan.overBudget ? ' · OVER BUDGET' : ''}.`;
+    const who = sel
+      ? `\n${overridden ? 'Planning for' : 'Best senior leader to send:'} ${sel.leaderId}${sel.name ? ` — ${sel.name}` : ''}` +
+        `${sel.role ? ` (${sel.role})` : ''} · ${sel.why}.` +
+        (overridden && rec ? ` (Your pick; recommended was ${rec.leaderId}${rec.name ? ` — ${rec.name}` : ''}.)` : '') +
+        (!overridden && plan.fellBack ? ' (No roster leader is authored for this audience — best overall fit shown.)' : '')
+      : '';
+    const others = alts.length
+      ? `\nAlternates (pick one to re-plan for them): ${alts.map((a) => `${a.leaderId}${a.name ? ` (${a.name})` : ''}`).join(', ')}.`
+      : '';
+    answer = lede + who + others;
+  }
+  return {
+    ...base,
+    ok: plan.ok,
+    mode: 'deterministic',
+    stage: 'plan',
+    clarify: null,
+    category: plan.category,
+    answer,
+    leaderId: plan.leaderId,
+    leaderName: plan.leaderName,
+    leaderShortlist: plan.leaderShortlist,
+    itinerary: plan.itinerary,
+    tripMap: plan.tripMap,
+    menu: plan.itinerary?.accepted ?? null,
+    area: plan.area,
+    today: plan.today,
+    categoryBreakdown: plan.categoryBreakdown,
+    redactedCount: plan.redactedCount,
+    rejected: plan.rejected,
+    error: plan.error,
   };
 }
 
@@ -1636,6 +2072,7 @@ export interface RadiusOptionsResult {
   route: any | null;
   roi: any | null;
   conflicts: any[];
+  categoryBreakdown: any[];
   extensionOptions: any[];
   redactedCount: number | null;
   rejected: boolean;
@@ -1718,7 +2155,8 @@ export function buildRadiusQuestions(plan: any): OptionQuestion[] {
         detail:
           `${e.topicName ?? e.topicId ?? 'topic —'} · mROI ${e.marginalRoi}` +
           (e.overBudget ? ' · over budget' : '') +
-          ` · ${e.talkingPointsSource === 'approved-message' ? 'approved talking points' : 'coordinate points'}`,
+          ` · ${e.talkingPointsSource === 'approved-message' ? 'approved talking points' : 'coordinate points'}` +
+          (e.categoryLabel ? ` · ${e.categoryLabel}` : ''),
         selected: false,
       })),
     });
@@ -1756,6 +2194,7 @@ export async function planRadiusOptions(req: RadiusOptionsRequest): Promise<Radi
     route: null,
     roi: null,
     conflicts: [],
+    categoryBreakdown: [],
     extensionOptions: [],
     redactedCount: null,
     rejected: false,
@@ -1810,6 +2249,7 @@ export async function planRadiusOptions(req: RadiusOptionsRequest): Promise<Radi
       route: plan.route ?? null,
       roi: plan.roi ?? null,
       conflicts: plan.conflicts ?? [],
+      categoryBreakdown: plan.categoryBreakdown ?? [],
       extensionOptions: plan.extensionOptions ?? [],
       redactedCount: plan.redactedCount ?? null,
       rejected,

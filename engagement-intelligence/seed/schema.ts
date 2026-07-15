@@ -31,10 +31,20 @@ export type Level = 'L1' | 'L2' | 'L3' | 'L4';
 export type Sector =
   | 'industry' // defense primes, startups, commercial vendors
   | 'academic' // universities, labs, FFRDCs, think tanks
-  | 'political' // legislative / policy / elected offices & staff
+  | 'congressional' // Congress: member offices + HASC/SASC & appropriations committee staff
+  | 'political' // other legislative / policy / elected offices & staff
+  | 'army-internal' // internal Army: HQDA staff, ACOMs, PEOs, installations, RDECs/labs
   | 'government' // other federal / state / local government
   | 'nonprofit' // associations, NGOs, foundations
   | 'international'; // foreign government / multinational / allied partners
+
+/**
+ * Coarse engagement CATEGORY — the four strategic stakeholder audiences a trip's options are reported
+ * across (Congressional / Academia / Industry / Army-internal), plus a catch-all `other`. Derived from
+ * {@link Sector}; the canonical mapping + `categoryForSector()` live in
+ * `@greenhouse-resume-builder/shared` (engagements.ts), which is what runtime code imports.
+ */
+export type EngagementCategory = 'congressional' | 'academia' | 'industry' | 'army-internal' | 'other';
 
 /** Pre-geocoded point. `lat/lng` are populated at ETL time by the Azure Maps geocoder. */
 export interface GeoPoint {
@@ -103,6 +113,13 @@ export interface Leader extends BaseEntity {
   homeBase: GeoPoint;
   availability: DateRange[];
   daysAwayBudget: number; // max travel-days in the planning window
+  /**
+   * The strategic audiences THIS leader engages — the planner offers ONE single-audience itinerary
+   * per category here (never a blended trip), because which audience a leader would meet on a trip
+   * depends on their billet. Authored per leader (an ASA(ALT) principal works Industry + Congress; a
+   * USAREC leader works Academia). Omitted → the planner falls back to every audience present in the area.
+   */
+  engagementCategories?: EngagementCategory[];
 }
 
 /**

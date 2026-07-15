@@ -23,13 +23,23 @@ question ──▶ orchestrator ──(MCP tools/call, x-demo-persona)──▶ 
                 └─ suggest_candidates ──▶ build_itinerary ──▶ menu + itinerary + trip-map
 ```
 
-- **Event-anchored `/ask` (leader-first, deterministic):** when the ask resolves to an event
-  (e.g. *"a trip to AUSA…"*), `/ask` runs the **same leader-first flow as `/plan-options`** — it
-  first **asks which senior leader** you're planning for (a ranked roster, top pick recommended),
-  then returns **multiple full itinerary options of different lengths** (conference footprint → a
-  regional swing → a full regional tour), one recommended. This runs **before** the LLM, so it never
-  silently infers a leader and never collapses to a single itinerary. If the ask already names a
-  leader (`leaderId` or a surname in the text), it skips straight to the options.
+- **Area `/ask` (category-first, deterministic — the default chat flow):** when the ask resolves to a
+  known **region** (e.g. *"Plan a trip to Boston — who should go, how long, and what's worth doing
+  there?"*), `/ask` runs **category-first**: it first shows the area briefing (hot topics, stale
+  contacts, events, four-audience coverage) and **asks which engagement category** to anchor on —
+  Congressional / Academia / Industry / Army-internal — hottest recommended. Once you pick (re-send the
+  same question with `category`), it builds **one single-audience itinerary** for that audience and then
+  **recommends the best senior leader to send** (`leaderShortlist`, ranked by billet fit + score). The
+  **leader is the output, not the opening question**, and audiences are never blended into one trip.
+  Runs before the LLM (offline-safe); if the ask already names a category ("*industry* trip") Stage 1 is
+  skipped.
+- **Event-anchored `/ask` (leader-first, deterministic):** when the ask resolves to an **event that is
+  not a region** (e.g. *"a trip to AUSA…"*), `/ask` runs the **same leader-first flow as
+  `/plan-options`** — it first **asks which senior leader** you're planning for (a ranked roster, top
+  pick recommended), then returns **multiple full itinerary options of different lengths** (conference
+  footprint → a regional swing → a full regional tour), one recommended. This runs **before** the LLM,
+  so it never silently infers a leader and never collapses to a single itinerary. If the ask already
+  names a leader (`leaderId` or a surname in the text), it skips straight to the options.
 - **Free-form `/ask` (LLM path):** for non-event asks an Azure OpenAI tool-calling loop
   (`runAgentLoop` from `mcp-core`) picks the leader, maps the topic phrase to `topicIds`, resolves
   the anchor, and composes `suggest_candidates → build_itinerary`.
@@ -66,6 +76,14 @@ npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagem
 ```bash
 npm run ask --workspace @greenhouse-resume-builder/cap-engagements-agent -- \
   "I'm planning a trip to AUSA, who should I meet on the UAS/drone topic?" --persona EA_G8
+
+# Category-first area ask (the default chat flow): pick the audience, THEN get the recommended leader.
+npm run ask --workspace @greenhouse-resume-builder/cap-engagements-agent -- \
+  "Plan a trip to Boston — who should go, how long, and what's worth doing there?" --persona EA_G8
+#   → stage=clarify: the area briefing + a category menu (Academia / Industry / …), hottest recommended
+npm run ask --workspace @greenhouse-resume-builder/cap-engagements-agent -- \
+  "Plan a trip to Boston…" --persona EA_G8 --category industry
+#   → stage=plan: one single-audience itinerary + "Best senior leader to send: L1 …" (leader = output)
 ```
 
 Add `ENGAGEMENTS_AGENT_JSON=1` to print the full `PlanResult` (incl. `tripMap`).
@@ -74,10 +92,22 @@ Add `ENGAGEMENTS_AGENT_JSON=1` to print the full `PlanResult` (incl. `tripMap`).
 
 ```bash
 npm run serve --workspace @greenhouse-resume-builder/cap-engagements-agent
-# POST /ask { question, persona?, leaderId?, topN? }  on http://localhost:3020
+# POST /ask { question, persona?, leaderId?, category?, days?, radiusMi?, topN? }  on http://localhost:3020
+
+# Known-region asks are CATEGORY-first: with no `category` this returns the area briefing +
+# a category menu (the leader is the OUTPUT, asked LAST):
+curl -s localhost:3020/ask -H 'content-type: application/json' \
+  -d '{"question":"Plan a trip to Boston — who should go, how long, and what'\''s worth doing there?","persona":"EA_G8"}' | jq
+#   { stage:"clarify", clarify:"category", categoryBreakdown:[…], questions:[{ id:"category", choices:[…audiences present…] }] }
+# Re-send the SAME question with the chosen category → single-audience plan + recommended leader:
+curl -s localhost:3020/ask -H 'content-type: application/json' \
+  -d '{"question":"Plan a trip to Boston…","persona":"EA_G8","category":"industry"}' | jq
+# → { stage:"plan", category:"industry", menu:[…single-audience stops…], tripMap,
+#     leaderShortlist:[{ leaderId, name, why, recommended }, …] }   ← who should go (leader = output)
+
+# Event-anchored asks (an event that is NOT a region) stay leader-first: with no `leaderId` this returns
 curl -s localhost:3020/ask -H 'content-type: application/json' \
   -d '{"question":"who should I meet at AUSA on UAS/drone?","persona":"EA_G8"}' | jq
-# Event-anchored asks are leader-first: with no `leaderId` this returns
 #   { stage:"clarify", clarify:"leader", questions:[{ id:"leader", choices:[…ranked roster…] }] }
 # Re-send the SAME question with the chosen leader to get the different-length options:
 curl -s localhost:3020/ask -H 'content-type: application/json' \

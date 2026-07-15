@@ -45,6 +45,9 @@ export const {
   talkingPointsFor,
   planOptions,
   radiusPlan,
+  categoryBreakdown,
+  categoryCountsForStops,
+  summarizeCategoryCounts,
   DEFAULT_MEETINGS_PER_DAY,
   haversineMi,
   demoToday,
@@ -117,6 +120,7 @@ export type {
   PlanOptionsResult,
 } from './planner/plan.js';
 export type { RadiusPlanInput, RadiusPlanResult } from './planner/radius.js';
+export type { CategoryCoverage, CategoryContactRef } from './planner/categories.js';
 export type { Dataset } from './planner/seed-loader.js';
 export type { PlannerWeights } from './planner/weights.js';
 
@@ -150,4 +154,12 @@ export type {
   Preferences,
   GeoPoint,
   DateRange,
+  EngagementCategory,
+} from '@greenhouse-resume-builder/shared';
+
+// ── Engagement-category taxonomy (values) — audience roll-up used by the tools ──
+export {
+  categoryForSector,
+  CATEGORY_LABEL,
+  ENGAGEMENT_CATEGORIES,
 } from '@greenhouse-resume-builder/shared';

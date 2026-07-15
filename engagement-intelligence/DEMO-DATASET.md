@@ -81,6 +81,19 @@ exhibitors are net-new intros — all three pools coexist on one trip._
 | L5  | LTG A. Cole      | Senior principal   | non-technical | strategy, international      | L4  | Washington, DC (38.907,-77.037) | 6–20    | 12 d   | High-value host; **drift** source (§6) |
 | L6  | Mr. T. Nguyen    | Army Software Fac. | technical     | software, data, AI           | L2  | Boston, MA (42.360,-71.059)     | 13–19   | 6 d    | **Opportunity-cost beat** (sent cross-country alone) |
 
+**Engagement categories per leader** (`Leader.engagementCategories`) — the strategic audiences each
+billet actually engages. The Stage-2 area planner offers **one single-audience itinerary per category
+here** (never a blended trip), so the SAME area yields a DIFFERENT menu per leader (see §5.2 / design §G):
+
+| Leader | `engagementCategories` | Rationale |
+| --- | --- | --- |
+| L1 MG Whitfield (ASA(ALT)) | `industry`, `congressional` | acquisition → defense industry + Congressional oversight/appropriations |
+| L2 Ms. Anand (USAREC)      | `academia`, `army-internal` | STEM/recruiting → universities + internal recruiting command |
+| L3 Dr. Bell (Army Cyber)   | `industry`, `army-internal` | cyber vendors + Army Cyber Command |
+| L4 COL Reyes (SMDC/Space)  | `industry`, `army-internal` | space primes + SMDC internal |
+| L5 LTG Cole (principal)    | `congressional`, `academia` | strategy/international → the Hill + think-tanks/policy academia |
+| L6 Mr. Nguyen (Sw Factory) | `industry`, `academia`, `army-internal` | software startups + university labs + internal software factory |
+
 ---
 
 ## 5. Contacts (Pool B) — 20
@@ -131,6 +144,34 @@ path), not staleness. All exhibiting at **E-AUSA**.
 **Why P1/P2 surface, P3 doesn't:** P1/P2 match the AUSA trip's **T1/T3** purpose → **initiate**
 suggestions ("3 new companies exhibiting — want intros?"); P3 is **T2** (AI/cyber) → low
 topic-relevance on this trip, so it's the prospect contrast that stays quiet.
+
+### 5.2 Engagement-audience coverage (the four-audience identification)
+
+Beyond topic and staleness, each contact carries a **`sector`** that rolls up (via `categoryForSector`,
+`shared/src/engagements.ts`) into one of four strategic **audiences** an Army leader balances on a
+single trip — **Congressional, Academia, Industry, Army-internal** (+ a catch-all `other`). The planner
+reports every area's footprint across all four (always emitting the targets, so a **coverage gap** is
+explicit) and flags which audiences the trip's options actually reach.
+
+To make the near-DC audience picture demonstrable, the seed adds representative NCR engagements outside
+the AUSA on-site roster (all T1, active, stale, >1 mi from the NCR centroid so the topic/stale tripwires
+hold):
+
+| ID  | Name (org)                    | City, ST         | `sector`        | Audience        | Role in demo                                  |
+| --- | ----------------------------- | ---------------- | --------------- | --------------- | --------------------------------------------- |
+| C18 | APG Test Directorate          | Aberdeen, MD     | `army-internal` | Army-internal   | Retagged `government`→`army-internal` (Army test org) |
+| C31 | HASC Professional Staff       | Washington, DC   | `congressional` | Congressional   | House Armed Services Committee staff — the Congressional audience |
+| C32 | Senate Approps (Defense) Staff| Washington, DC   | `congressional` | Congressional   | Senate Appropriations defense staff — budget-cycle engagement |
+| C33 | AFC NCR Liaison               | Arlington, VA    | `army-internal` | Army-internal   | Army Futures Command NCR liaison — internal-Army coordination |
+| C34 | PEO Ground Combat Systems     | Alexandria, VA   | `army-internal` | Army-internal   | Program Executive Office — internal-Army acquisition |
+
+Together with the existing near-DC **Industry** (C1, C3, …) and **Academia** (C2 CSIS/think-tank) rows,
+the NCR now spans all four audiences — so "identify engagements across Congressional / Academia /
+Industry / Army-internal" returns a real, non-trivial breakdown, and dropping any one audience from a
+trip's options is surfaced as a gap. Because the NCR holds all four audiences, it also demonstrates the
+**per-leader single-audience grouping** (§4): the Stage-2 planner offers L1 a {Congressional, Industry}
+menu, L5 a {Congressional, Academia} menu, L3 a {Industry, Army-internal} menu — the same area, filtered
+to each leader's `engagementCategories`, one itinerary per category (never blended).
 
 ---
 

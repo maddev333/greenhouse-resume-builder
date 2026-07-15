@@ -27,6 +27,10 @@ import {
   nearbyLeaders,
   planOptions,
   radiusPlan,
+  categoryBreakdown,
+  categoryCountsForStops,
+  summarizeCategoryCounts,
+  CATEGORY_LABEL,
   DEFAULT_MEETINGS_PER_DAY,
   estimateDuration,
   haversineMi,
@@ -50,6 +54,8 @@ import {
   type NearbyLeader,
   type DurationOption,
   type ExtensionOption,
+  type CategoryCoverage,
+  type EngagementCategory,
   type Conflict,
   type RouteResult,
   type RouteStop,
@@ -245,8 +251,44 @@ function durationOptionView(d: DurationOption) {
     stops: d.stops.map((c) => ({ contactId: c.contactId, name: c.name, city: c.location.city, placement: c.placement, score: fixed(c.score) })),
     roiScore: fixed(d.roi.roiScore),
     overBudget: d.overBudget,
+    categoryCounts: d.categoryCounts,
+    categoryMix: summarizeCategoryCounts(d.categoryCounts),
     conflicts: d.conflicts.map(conflictView),
   };
+}
+
+/** Serialize per-audience coverage (the "identification across Congressional / Academia / Industry / Army-internal" outcome). */
+function categoryCoverageView(c: CategoryCoverage) {
+  return {
+    category: c.category,
+    label: c.label,
+    total: c.total,
+    activeCount: c.activeCount,
+    prospectCount: c.prospectCount,
+    staleCount: c.staleCount,
+    strategicValueSum: c.strategicValueSum,
+    onItineraryCount: c.onItineraryCount,
+    covered: c.covered,
+    reason: c.reason,
+    contactIds: c.contactIds,
+    contacts: c.contacts.map((r) => ({
+      contactId: r.contactId,
+      name: r.name,
+      org: r.org,
+      sector: r.sector,
+      city: r.city,
+      distanceMi: r.distanceMi,
+      strategicValue: r.strategicValue,
+      status: r.status,
+      isStale: r.isStale,
+      onItinerary: r.onItinerary,
+    })),
+  };
+}
+
+/** One "Congressional: 2 (1 on itinerary) · …" line per audience for a tool's text output. */
+function categoryCoverageLines(coverage: CategoryCoverage[]): string[] {
+  return coverage.map((c) => `  • ${c.label}: ${c.reason}`);
 }
 
 function extensionOptionView(e: ExtensionOption) {
@@ -254,6 +296,8 @@ function extensionOptionView(e: ExtensionOption) {
     contactId: e.contactId,
     name: e.name,
     sector: e.sector,
+    category: e.category,
+    categoryLabel: CATEGORY_LABEL[e.category],
     topicId: e.topicId,
     topicName: e.topicName,
     placement: e.placement,
@@ -864,7 +908,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       const rm = getReadModel();
       const contacts = await rm.searchContacts({ ctx });
       if (isRejected(contacts.filter)) {
-        const structuredContent = { caller: label, rejected: true, today: rm.today, area: null, areaSurvey: [], leaderOptions: [], durationOptions: [], extensionOptions: [], redactedCount: 0, filter: contacts.filter };
+        const structuredContent = { caller: label, rejected: true, today: rm.today, area: null, areaSurvey: [], leaderOptions: [], categoryBreakdown: [], durationOptions: [], extensionOptions: [], redactedCount: 0, filter: contacts.filter };
         return { content: [{ type: 'text', text: 'Access rejected — no verified tenant claim.' }], structuredContent };
       }
       const events = await rm.searchEvents({ ctx });
@@ -896,6 +940,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         areaSurvey: plan.areaSurvey.map(topicInAreaView),
         staleContacts: plan.staleContacts.map(staleContactView),
         areaEvents: plan.areaEvents.map(areaEventView),
+        categoryBreakdown: plan.categoryBreakdown.map(categoryCoverageView),
         chosenLeaderId: plan.chosenLeaderId,
         leaderOptions: plan.leaderOptions.map(leaderOptionView),
         onSiteDays: plan.onSiteDays,
@@ -914,8 +959,9 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       const staleLines = plan.staleContacts.slice(0, 5).map((c) => `  • ${c.contactId} ${c.name}${c.org ? ` (${c.org})` : ''}, ${c.city ?? '?'} — ${c.reason}`);
       const evtLines = plan.areaEvents.slice(0, 5).map((e) => `  • ${e.eventId} ${e.name}, ${e.city ?? '?'} [${e.status}] — ${e.reason}`);
       const durLines = plan.durationOptions.map(
-        (d) => `  • ${d.tier}: ${d.days} day(s), ${d.stops.length} stop(s), ROI ${fixed(d.roi.roiScore)}${d.overBudget ? ' (OVER BUDGET)' : ''}`,
+        (d) => `  • ${d.tier}: ${d.days} day(s), ${d.stops.length} stop(s), ROI ${fixed(d.roi.roiScore)}${d.overBudget ? ' (OVER BUDGET)' : ''}${summarizeCategoryCounts(d.categoryCounts) ? ` — ${summarizeCategoryCounts(d.categoryCounts)}` : ''}`,
       );
+      const catLines = categoryCoverageLines(plan.categoryBreakdown);
       const extLines = plan.extensionOptions.slice(0, 5).map((e) => {
         const pts = e.talkingPoints.slice(0, 3).map((p) => `“${p}”`).join('; ');
         return `  • +${e.extraDays}d → ${e.contactId} ${e.name}${e.sector ? ` (${e.sector})` : ''} on ${e.topicId ?? '—'}, mROI ${fixed(e.marginalRoi)} · ${e.talkingPointsSource}: ${pts}`;
@@ -928,6 +974,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
             text: [
               header,
               ...section('hot topics here (why):', hotLines),
+              ...section('engagement coverage by audience (Congressional / Academia / Industry / Army-internal):', catLines),
               ...section('stale — re-engage while you’re there (why):', staleLines),
               ...section('events here (why):', evtLines),
               'duration:',
@@ -1028,6 +1075,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
           areaSurvey: areaSurvey.map(topicInAreaView),
           chosenLeaderId: null,
           leaderOptions: leaderOptions.map(leaderOptionView),
+          categoryBreakdown: categoryBreakdown({ centroid: area.centroid, radiusMi: area.radiusMi, contacts: contacts.items }).map(categoryCoverageView),
           stops: [],
           extensionOptions: [],
           redactedCount: contacts.redactedCount,
@@ -1051,6 +1099,11 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         requireTopicMatch,
       });
 
+      const radiusContactsById = new Map(contacts.items.map((c) => [c.id, c]));
+      const radiusItineraryIds = new Set<string>([...plan.stops.map((s) => s.contactId), ...plan.extensionOptions.map((e) => e.contactId)]);
+      const radiusCatBreakdown = categoryBreakdown({ centroid: area.centroid, radiusMi: area.radiusMi, contacts: contacts.items, itineraryContactIds: radiusItineraryIds });
+      const radiusCatCounts = categoryCountsForStops(plan.stops, radiusContactsById);
+
       const structuredContent = {
         caller: label,
         rejected: false,
@@ -1065,6 +1118,8 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         areaSurvey: areaSurvey.map(topicInAreaView),
         chosenLeaderId: chosen.id,
         leaderOptions: leaderOptions.map(leaderOptionView),
+        categoryBreakdown: radiusCatBreakdown.map(categoryCoverageView),
+        categoryCoverage: { counts: radiusCatCounts, summary: summarizeCategoryCounts(radiusCatCounts) },
         stops: plan.stops.map(candidateView),
         route: routeView(plan.route),
         duration: { days: plan.duration.days, onSiteDays: plan.duration.onSiteDays, offSiteStops: plan.duration.offSiteStops, travelMins: round(plan.duration.travelMins), dwellMins: plan.duration.dwellMins },
@@ -1083,12 +1138,13 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
       const stopLines = plan.stops.map(
         (s, i) => `  ${i + 1}. ${s.contactId} ${s.name} — ${s.placement}, ${s.location.city}, val ${s.strategicValue}, score ${fixed(s.score)}`,
       );
+      const catLines = categoryCoverageLines(radiusCatBreakdown);
       const extLines = plan.extensionOptions.slice(0, 5).map((e) => {
         const pts = e.talkingPoints.slice(0, 2).map((p) => `“${p}”`).join('; ');
         return `  • +${e.extraDays}d → ${e.contactId} ${e.name}${e.sector ? ` (${e.sector})` : ''} on ${e.topicId ?? '—'}, mROI ${fixed(e.marginalRoi)} · ${e.talkingPointsSource}: ${pts}`;
       });
       return {
-        content: [{ type: 'text', text: [header, 'stops:', ...stopLines, 'extensions:', ...extLines, `filter: ${contacts.filter}`].join('\n') }],
+        content: [{ type: 'text', text: [header, 'stops:', ...stopLines, 'coverage by audience:', ...catLines, 'extensions:', ...extLines, `filter: ${contacts.filter}`].join('\n') }],
         structuredContent,
       };
     },
@@ -1292,6 +1348,10 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
           duration: { days: days2, onSiteDays: duration.onSiteDays, offSiteStops: duration.offSiteStops, travelMins: round(duration.travelMins), dwellMins: duration.dwellMins },
           roi,
           conflicts,
+          categoryCoverage: (() => {
+            const counts = categoryCountsForStops(accepted, r.contactsById);
+            return { counts, summary: summarizeCategoryCounts(counts) };
+          })(),
           nearbyLeaders: nearby.map(nearbyLeaderView),
           tripMap,
           filter: r.filter,
@@ -1381,6 +1441,16 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         roi: plan.roi,
         conflicts: plan.conflicts.map(conflictView),
         overflowCount: plan.overflowCount,
+        categoryBreakdown: categoryBreakdown({
+          centroid: area.centroid,
+          radiusMi: area.radiusMi,
+          contacts: contacts.items,
+          itineraryContactIds: plan.stops.map((s) => s.contactId),
+        }).map(categoryCoverageView),
+        categoryCoverage: (() => {
+          const counts = categoryCountsForStops(plan.stops, new Map(contacts.items.map((c) => [c.id, c])));
+          return { counts, summary: summarizeCategoryCounts(counts) };
+        })(),
         extensionOptions: plan.extensionOptions.map(extensionOptionView),
         nearbyLeaders: nearby.map(nearbyLeaderView),
         tripMap,

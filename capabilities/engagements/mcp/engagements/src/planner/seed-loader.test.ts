@@ -7,7 +7,7 @@ test('loadDataset: record counts match the staged seed', () => {
   assert.equal(ds.topics.length, 4);
   assert.equal(ds.messages.length, 3);
   assert.equal(ds.leaders.length, 6);
-  assert.equal(ds.contacts.length, 35); // 30 active + 5 prospects
+  assert.equal(ds.contacts.length, 39); // 34 active + 5 prospects
   assert.equal(ds.events.length, 6);
   assert.equal(ds.engagements.length, 3);
   assert.equal(ds.afteractions.length, 2);
@@ -26,9 +26,9 @@ test('loadDataset: the loader bakes the tenant/createdAt envelope onto every rec
   }
 });
 
-test('loadDataset: 30 active + 5 prospect contacts', () => {
+test('loadDataset: 34 active + 5 prospect contacts', () => {
   const ds = loadDataset();
-  assert.equal(ds.contacts.filter((c) => c.status === 'active').length, 30);
+  assert.equal(ds.contacts.filter((c) => c.status === 'active').length, 34);
   assert.equal(ds.contacts.filter((c) => c.status === 'prospect').length, 5);
 });
 

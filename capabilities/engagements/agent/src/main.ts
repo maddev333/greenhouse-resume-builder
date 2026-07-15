@@ -1,7 +1,7 @@
 /**
  * Entry point — two modes:
  *   CLI (default):   npm run ask -- "I'm planning a trip to AUSA, who should I meet on UAS/drone?" --persona EA_G8
- *   HTTP (--serve):  npm run serve   ->  POST /ask { question, persona?, leaderId?, topN? }
+ *   HTTP (--serve):  npm run serve   ->  POST /ask { question, persona?, leaderId?, topN?, category? }
  *
  * The HTTP surface is the seam the chat UI (M6) calls. Requires the engagements MCP server
  * running (default http://localhost:3010/mcp; override with ENGAGEMENTS_MCP_URL).
@@ -14,6 +14,7 @@ interface CliArgs {
   persona?: string;
   leader?: string;
   top?: number;
+  category?: string;
   options?: boolean;
   topics?: boolean;
   radius?: boolean;
@@ -40,6 +41,7 @@ function parseArgs(argv: string[]): CliArgs {
     if (a === '--persona') out.persona = argv[++i];
     else if (a === '--leader') out.leader = argv[++i];
     else if (a === '--top') out.top = Number(argv[++i]);
+    else if (a === '--category' || a === '--cat') out.category = argv[++i];
     else if (a === '--options') out.options = true;
     else if (a === '--topics') out.topics = true;
     else if (a === '--radius') out.radius = true;
@@ -93,15 +95,16 @@ async function options(argv: string[]): Promise<void> {
     console.log(`  to build: POST /build { leaderId, durationTier?, extensionContactIds?, region }`);
   }
   if (result.stage === 'clarify' && result.clarify === 'leader') {
-    console.log(`\n— pick a leader, then: POST /build-options { leaderId, region } — compare full itineraries of different lengths`);
+    console.log(`\n— pick a leader, then: POST /build-options { leaderId, region } — compare one single-audience itinerary per engagement category the leader engages`);
   }
   if (process.env.ENGAGEMENTS_AGENT_JSON) console.log(`\n${JSON.stringify(result, null, 2)}`);
 }
 
 /**
- * Interactive planner (STAGE 2, options) from the CLI: for a chosen leader, build MULTIPLE complete
- * itineraries of DIFFERENT LENGTHS (a short visit → a full regional tour) so the EA can compare
- * finished trips and pick one to proceed. Tune with --count / --max-days / --per-day / --target-days.
+ * Interactive planner (STAGE 2, options) from the CLI: for a chosen leader, build one complete
+ * SINGLE-AUDIENCE itinerary per engagement category the leader engages (Congressional-only,
+ * Industry-only, …) so the EA can compare finished trips grouped by category and pick one. The
+ * offered categories are the leader's `engagementCategories` ∩ the audiences present in the area.
  */
 async function itineraries(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
@@ -123,14 +126,14 @@ async function itineraries(argv: string[]): Promise<void> {
 
   console.log(`\n[persona ${result.persona}] itinerary options for ${result.leaderId}${result.leaderName ? ` (${result.leaderName})` : ''}${result.rejected ? '  ACCESS REJECTED' : ''}`);
   if (result.error) console.error(`\n! ${result.error}`);
-  console.log(`— area ${result.area?.name ?? '?'}; ${result.options.length} different-length option(s); redacted ${result.redactedCount ?? 0}`);
+  console.log(`— area ${result.area?.name ?? '?'}; ${result.options.length} single-audience option(s) by engagement category; redacted ${result.redactedCount ?? 0}`);
   for (const o of result.options) {
     const roi = o.itinerary?.roi?.roiScore ?? o.roiScore;
     const nearby = o.itinerary?.nearbyLeaders?.length ?? 0;
-    console.log(`\n${o.id === result.recommendedOptionId ? '★' : '·'} ${o.label} [${o.tier}] — ${o.summary}`);
+    console.log(`\n${o.id === result.recommendedOptionId ? '★' : '·'} ${o.label}${o.category ? ` [${o.category}]` : ''} — ${o.summary}`);
     console.log(`    ${o.days} day(s), ${o.stopCount} stop(s), ROI ${roi}${o.overBudget ? ' (OVER BUDGET)' : ''}; nearby leaders ${nearby}; map ${o.tripMap ? 'YES' : 'no'}`);
   }
-  console.log(`\n  each option above is already a complete itinerary (route + ROI + trip map) — pick one by its length id (e.g. ${result.recommendedOptionId ?? '5d'}).`);
+  console.log(`\n  each option above is a complete SINGLE-AUDIENCE itinerary (route + ROI + trip map) — pick one by its category id (e.g. ${result.recommendedOptionId ?? 'industry'}).`);
   if (process.env.ENGAGEMENTS_AGENT_JSON) console.log(`\n${JSON.stringify(result, null, 2)}`);
 }
 
@@ -186,24 +189,33 @@ async function topics(argv: string[]): Promise<void> {
 async function ask(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   if (!args.question) {
-    console.error('usage: npm run ask -- "<question>" [--persona EA_G8] [--leader L1] [--top 3]');
+    console.error('usage: npm run ask -- "<question>" [--persona EA_G8] [--category industry] [--leader L1] [--top 3]');
     console.error('   or: npm run ask -- --options "<ask>" [--region NCR] [--window 2025-10-06..2025-10-31] [--persona EA_G8]');
     console.error('   or: npm run ask -- --radius --company "Meridian Robotics" --days 3 [--radius-mi 40] [--lat --lng | --city] [--persona EA_G8]');
     console.error('   or: npm run ask -- --topics [--persona EA_G8]');
     process.exit(1);
   }
-  const result = await planTrip({ question: args.question, persona: args.persona, leaderId: args.leader, topN: args.top });
+  const result = await planTrip({
+    question: args.question,
+    persona: args.persona,
+    leaderId: args.leader,
+    topN: args.top,
+    category: args.category as any,
+    days: args.days,
+    radiusMi: args.radiusMi,
+  });
 
   console.log(`\n[persona ${result.persona}] mode=${result.mode}${result.stage ? ` stage=${result.stage}` : ''}${result.rejected ? '  ACCESS REJECTED' : ''}`);
   if (result.error) console.error(`\n! ${result.error}`);
   if (result.answer) console.log(`\n${result.answer}`);
 
-  // Leader-first: WHO to plan for (asked up front instead of defaulting a leader).
+  // Category-first: WHICH engagement audience to anchor on (asked up front, before a leader is chosen).
   if (result.stage === 'clarify' && result.questions?.length) {
     for (const c of result.questions[0].choices) {
       console.log(`   ${c.recommended ? '★' : '·'} ${c.label}${c.detail ? ` — ${c.detail}` : ''}`);
     }
-    console.log(`\n— re-run with the chosen leader: --leader <id>`);
+    const flag = result.clarify === 'category' ? '--category <id>' : '--leader <id>';
+    console.log(`\n— re-run with the chosen ${result.clarify ?? 'option'}: ${flag}`);
   }
   // Different-length itinerary options to compare.
   if (result.stage === 'options' && result.options?.length) {
@@ -244,13 +256,13 @@ async function serve(): Promise<void> {
   });
 
   app.post('/ask', async (req, res) => {
-    const { question, persona, leaderId, topN } = req.body ?? {};
+    const { question, persona, leaderId, topN, category, radiusMi, days } = req.body ?? {};
     if (!question || typeof question !== 'string') {
       res.status(400).json({ ok: false, error: 'body.question (string) is required' });
       return;
     }
     try {
-      res.json(await planTrip({ question, persona, leaderId, topN }));
+      res.json(await planTrip({ question, persona, leaderId, topN, category, radiusMi, days }));
     } catch (e: any) {
       res.status(500).json({ ok: false, error: e?.message || String(e) });
     }
@@ -339,7 +351,7 @@ async function serve(): Promise<void> {
   const port = Number(process.env.ENGAGEMENTS_AGENT_PORT || 3020);
   const server = app.listen(port, () => {
     console.log(`Engagements orchestrator on http://localhost:${port}`);
-    console.log(`  POST /ask           { question, persona?, leaderId?, topN? }            — one-shot / free-form plan`);
+    console.log(`  POST /ask           { question, persona?, leaderId?, topN?, category? }  — category-first plan / free-form`);
     console.log(`  GET  /topics        ?persona=EA_G8                                       — hot topics (topic-first entry)`);
     console.log(`  POST /plan-options  { question?|region?|city?, persona?, window? }       — interactive: survey + option menus`);
     console.log(`  POST /build         { leaderId, durationTier?, extensionContactIds?, region? } — build itinerary + trip map`);

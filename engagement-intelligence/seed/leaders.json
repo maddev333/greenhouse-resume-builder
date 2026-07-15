@@ -8,7 +8,8 @@
     "level": "L4",
     "homeBase": { "city": "Washington", "state": "DC", "lat": 38.9072, "lng": -77.0369 },
     "availability": [{ "start": "2025-10-06", "end": "2025-10-20" }],
-    "daysAwayBudget": 10
+    "daysAwayBudget": 10,
+    "engagementCategories": ["industry", "congressional"]
   },
   {
     "id": "L2",
@@ -19,7 +20,8 @@
     "level": "L4",
     "homeBase": { "city": "Fort Knox", "state": "KY", "lat": 37.891, "lng": -85.963 },
     "availability": [{ "start": "2025-10-08", "end": "2025-10-18" }],
-    "daysAwayBudget": 8
+    "daysAwayBudget": 8,
+    "engagementCategories": ["academia", "army-internal"]
   },
   {
     "id": "L3",
@@ -30,7 +32,8 @@
     "level": "L3",
     "homeBase": { "city": "Augusta", "state": "GA", "lat": 33.47, "lng": -82.011 },
     "availability": [{ "start": "2025-10-10", "end": "2025-10-17" }],
-    "daysAwayBudget": 6
+    "daysAwayBudget": 6,
+    "engagementCategories": ["industry", "army-internal"]
   },
   {
     "id": "L4",
@@ -41,7 +44,8 @@
     "level": "L3",
     "homeBase": { "city": "Colorado Springs", "state": "CO", "lat": 38.834, "lng": -104.821 },
     "availability": [{ "start": "2025-10-12", "end": "2025-10-16" }],
-    "daysAwayBudget": 5
+    "daysAwayBudget": 5,
+    "engagementCategories": ["industry", "army-internal"]
   },
   {
     "id": "L5",
@@ -52,7 +56,8 @@
     "level": "L4",
     "homeBase": { "city": "Washington", "state": "DC", "lat": 38.9072, "lng": -77.0369 },
     "availability": [{ "start": "2025-10-06", "end": "2025-10-20" }],
-    "daysAwayBudget": 12
+    "daysAwayBudget": 12,
+    "engagementCategories": ["congressional", "academia"]
   },
   {
     "id": "L6",
@@ -63,6 +68,7 @@
     "level": "L2",
     "homeBase": { "city": "Boston", "state": "MA", "lat": 42.36, "lng": -71.059 },
     "availability": [{ "start": "2025-10-13", "end": "2025-10-19" }],
-    "daysAwayBudget": 6
+    "daysAwayBudget": 6,
+    "engagementCategories": ["industry", "academia", "army-internal"]
   }
 ]

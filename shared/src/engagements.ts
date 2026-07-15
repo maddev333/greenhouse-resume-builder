@@ -30,10 +30,56 @@ export type Level = 'L1' | 'L2' | 'L3' | 'L4';
 export type Sector =
   | 'industry' // defense primes, startups, commercial vendors
   | 'academic' // universities, labs, FFRDCs, think tanks
-  | 'political' // legislative / policy / elected offices & staff
+  | 'congressional' // Congress: member offices + HASC/SASC & appropriations committee staff
+  | 'political' // other legislative / policy / elected offices & staff
+  | 'army-internal' // internal Army: HQDA staff, ACOMs, PEOs, installations, RDECs/labs
   | 'government' // other federal / state / local government
   | 'nonprofit' // associations, NGOs, foundations
   | 'international'; // foreign government / multinational / allied partners
+
+/**
+ * Coarse engagement CATEGORY — the four strategic stakeholder AUDIENCES an Army leader balances on a
+ * single trip (plus a catch-all `other`). This is the reporting/coverage layer over {@link Sector}:
+ * the planner uses it to IDENTIFY and report engagements across Congressional / Academia / Industry /
+ * Army-internal, so a trip's options aren't lopsided toward a single audience. Derived, never
+ * authored — see {@link categoryForSector}.
+ */
+export type EngagementCategory = 'congressional' | 'academia' | 'industry' | 'army-internal' | 'other';
+
+/** The four target audiences in report order, followed by the catch-all. */
+export const ENGAGEMENT_CATEGORIES: readonly EngagementCategory[] = [
+  'congressional',
+  'academia',
+  'industry',
+  'army-internal',
+  'other',
+] as const;
+
+/** Human-readable label per {@link EngagementCategory} (UI + narration). */
+export const CATEGORY_LABEL: Record<EngagementCategory, string> = {
+  congressional: 'Congressional',
+  academia: 'Academia',
+  industry: 'Industry',
+  'army-internal': 'Army internal',
+  other: 'Other',
+};
+
+/** How each {@link Sector} rolls up into an {@link EngagementCategory} (see the audience buckets above). */
+const SECTOR_TO_CATEGORY: Record<Sector, EngagementCategory> = {
+  congressional: 'congressional',
+  political: 'congressional', // the legislative / policy sphere rolls up with Congress
+  academic: 'academia',
+  industry: 'industry',
+  'army-internal': 'army-internal',
+  government: 'army-internal', // internal DoD / Army & government orgs
+  nonprofit: 'other',
+  international: 'other',
+};
+
+/** Map a contact's {@link Sector} (or `undefined`) to its {@link EngagementCategory}. Total + pure. */
+export function categoryForSector(sector?: Sector): EngagementCategory {
+  return sector ? SECTOR_TO_CATEGORY[sector] : 'other';
+}
 
 /** Pre-geocoded point. `lat/lng` are populated at ETL time by the Azure Maps geocoder. */
 export interface GeoPoint {
@@ -105,6 +151,13 @@ export interface Leader extends BaseEntity {
   homeBase: GeoPoint;
   availability: DateRange[];
   daysAwayBudget: number; // max travel-days in the planning window
+  /**
+   * The strategic audiences THIS leader engages — the planner offers ONE single-audience itinerary
+   * per category here (never a blended trip), because which audience a leader would meet on a trip
+   * depends on their billet. Authored per leader (an ASA(ALT) principal works Industry + Congress; a
+   * USAREC leader works Academia). Omitted → the planner falls back to every audience present in the area.
+   */
+  engagementCategories?: EngagementCategory[];
 }
 
 /**

@@ -12,6 +12,7 @@
 import type {
   Contact,
   DateRange,
+  EngagementCategory,
   EngagementEvent,
   GeoPoint,
   Leader,
@@ -20,6 +21,7 @@ import type {
   SuggestionPlacement,
   Topic,
 } from '@greenhouse-resume-builder/shared';
+import { categoryForSector } from '@greenhouse-resume-builder/shared';
 import { DEFAULT_WEIGHTS, PlannerWeights } from './weights';
 import { daysBetween, loadConfig, DemoConfig } from './clock';
 import { haversineMi } from './distance';
@@ -29,6 +31,7 @@ import { tripRoi } from './roi';
 import { detectAvailabilityBudget, detectFit, detectOpportunityCost } from './conflicts';
 import { topicsInArea, type TopicInArea } from './topics';
 import { staleContactsInArea, eventsInArea, type StaleContact, type AreaEvent } from './area-intel';
+import { categoryBreakdown, categoryCountsForStops, type CategoryCoverage } from './categories';
 import { suggestLeaders, type LeaderOption, type LeaderWeights } from './leaders';
 import type { ResolvedArea } from './area';
 import type { Anchor, Candidate, Conflict, RouteResult, RoiResult, RouteStop } from './types';
@@ -189,6 +192,8 @@ export interface DurationOption {
   roi: RoiResult;
   conflicts: Conflict[];
   overBudget: boolean;
+  /** Which audiences this option's stops reach (Congressional / Academia / Industry / Army-internal / other). */
+  categoryCounts: Partial<Record<EngagementCategory, number>>;
 }
 
 export interface DurationOptionsInput {
@@ -203,8 +208,17 @@ export interface DurationOptionsInput {
   weights?: PlannerWeights;
 }
 
-function toDurationOption(tier: DurationOption['tier'], c: CostedTrip): DurationOption {
-  return { tier, days: c.duration.days, duration: c.duration, stops: c.stops, roi: c.roi, conflicts: c.conflicts, overBudget: c.roi.overBudget };
+function toDurationOption(tier: DurationOption['tier'], c: CostedTrip, contactsById: Map<string, Contact>): DurationOption {
+  return {
+    tier,
+    days: c.duration.days,
+    duration: c.duration,
+    stops: c.stops,
+    roi: c.roi,
+    conflicts: c.conflicts,
+    overBudget: c.roi.overBudget,
+    categoryCounts: categoryCountsForStops(c.stops, contactsById),
+  };
 }
 
 /**
@@ -221,10 +235,10 @@ export function durationOptions(input: DurationOptionsInput): DurationOption[] {
   const extendedStops = [...onSite, ...offSite.slice(0, EXTENDED_OFFSITE_N)];
 
   const options: DurationOption[] = [
-    toDurationOption('core', costTrip(coreStops, input.centroid, input.leader, input.window, input.onSiteDays, input.contactsById, w)),
+    toDurationOption('core', costTrip(coreStops, input.centroid, input.leader, input.window, input.onSiteDays, input.contactsById, w), input.contactsById),
   ];
   if (extendedStops.length > coreStops.length) {
-    options.push(toDurationOption('extended', costTrip(extendedStops, input.centroid, input.leader, input.window, input.onSiteDays, input.contactsById, w)));
+    options.push(toDurationOption('extended', costTrip(extendedStops, input.centroid, input.leader, input.window, input.onSiteDays, input.contactsById, w), input.contactsById));
   }
   return options;
 }
@@ -235,6 +249,8 @@ export interface ExtensionOption {
   contactId: string;
   name: string;
   sector?: Sector;
+  /** Which audience this extra stop reaches (derived from {@link sector}) — powers the coverage story. */
+  category: EngagementCategory;
   topicId?: string;
   topicName?: string;
   placement: SuggestionPlacement;
@@ -307,6 +323,7 @@ export function extensionOptions(input: ExtensionOptionsInput): ExtensionOption[
       contactId: c.contactId,
       name: c.name,
       sector: ct?.sector,
+      category: categoryForSector(ct?.sector),
       topicId: topic?.id,
       topicName: topic?.name,
       placement: c.placement,
@@ -359,6 +376,12 @@ export interface PlanOptionsResult {
   staleContacts: StaleContact[];
   /** In-area events with a freshness verdict (lapsed follow-up / in-window / upcoming magnet). */
   areaEvents: AreaEvent[];
+  /**
+   * In-area engagements rolled up into the four target audiences (+ `other`), each with its footprint
+   * and how much of it the trip's options reach — the "identification across Congressional / Academia /
+   * Industry / Army-internal" outcome, with coverage gaps made explicit.
+   */
+  categoryBreakdown: CategoryCoverage[];
   leaderOptions: LeaderOption[];
   chosenLeaderId: string | null;
   onSiteDays: number;
@@ -391,7 +414,8 @@ export function planOptions(input: PlanOptionsInput): PlanOptionsResult {
       : undefined;
 
   if (!chosen) {
-    return { area: input.area, window: input.window, topicIds, areaSurvey, staleContacts, areaEvents, leaderOptions, chosenLeaderId: null, onSiteDays: 0, absorbedEventIds: [], durationOptions: [], extensionOptions: [] };
+    const catBreakdown = categoryBreakdown({ centroid, radiusMi, contacts: input.contacts, cfg: input.cfg });
+    return { area: input.area, window: input.window, topicIds, areaSurvey, staleContacts, areaEvents, categoryBreakdown: catBreakdown, leaderOptions, chosenLeaderId: null, onSiteDays: 0, absorbedEventIds: [], durationOptions: [], extensionOptions: [] };
   }
 
   const reachRadiusMi = Math.max(radiusMi, input.reachRadiusMi ?? Math.max(radiusMi, w.nearbyRadiusMi));
@@ -417,6 +441,12 @@ export function planOptions(input: PlanOptionsInput): PlanOptionsResult {
   const offered = gathered.candidates.filter((c) => c.placement === 'off-site' && !coreIds.has(c.contactId));
   const eOptions = extensionOptions({ base: coreStops, offered, centroid, leader: chosen, window: input.window, onSiteDays: gathered.onSiteDays, contactsById, topics: input.topics, messages: input.messages, topicIds, weights: w });
 
+  // Coverage across the four target audiences: which in-area engagements are reached by any option.
+  const itineraryContactIds = new Set<string>();
+  for (const d of dOptions) for (const s of d.stops) itineraryContactIds.add(s.contactId);
+  for (const e of eOptions) itineraryContactIds.add(e.contactId);
+  const catCoverage = categoryBreakdown({ centroid, radiusMi, contacts: input.contacts, itineraryContactIds, cfg: input.cfg });
+
   return {
     area: input.area,
     window: input.window,
@@ -424,6 +454,7 @@ export function planOptions(input: PlanOptionsInput): PlanOptionsResult {
     areaSurvey,
     staleContacts,
     areaEvents,
+    categoryBreakdown: catCoverage,
     leaderOptions,
     chosenLeaderId: chosen.id,
     onSiteDays: gathered.onSiteDays,

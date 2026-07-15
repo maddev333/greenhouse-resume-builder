@@ -117,11 +117,27 @@ interface ItineraryDetail {
   notMatched?: string[];
 }
 
+// One ranked "who should go" candidate for a chosen engagement category (category-first flow).
+interface LeaderPick {
+  leaderId: string;
+  name?: string | null;
+  role?: string | null;
+  score?: string | number | null;
+  distanceMi?: number | null;
+  availableInWindow?: boolean | null;
+  why?: string;
+  recommended?: boolean;
+  /** Whether the current plan was built for this leader (the human's pick, else the recommendation). */
+  selected?: boolean;
+}
+
 // One finished, different-length itinerary option from the leader-first `/ask` flow.
 interface AskOption {
   id: string;
   tier?: string;
   label?: string;
+  /** The single engagement audience this itinerary reaches (e.g. "industry"); null on length-based options. */
+  category?: string | null;
   summary?: string;
   days?: number | null;
   stopCount?: number;
@@ -132,6 +148,8 @@ interface AskOption {
   ok?: boolean;
   itinerary?: ItineraryDetail | null;
   tripMap?: unknown;
+  categoryMix?: string | null;
+  categoryCounts?: Record<string, number> | null;
   answer?: string | null;
 }
 
@@ -151,7 +169,11 @@ interface PlanResult {
 
   // Leader-first, multi-option `/ask` envelope (additive; absent on the legacy single-plan path).
   stage?: "clarify" | "options" | "plan";
-  clarify?: "leader" | null;
+  clarify?: "leader" | "category" | null;
+  /** The engagement category the plan is anchored on (category-first flow). */
+  category?: string | null;
+  /** Ranked "who should go" shortlist for the chosen category — recommended first (stage 'plan'). */
+  leaderShortlist?: LeaderPick[];
   questions?: OptionQuestion[];
   options?: AskOption[];
   recommendedOptionId?: string | null;
@@ -166,6 +188,7 @@ interface PlanResult {
   areaSurvey?: AreaSurveyTopic[];
   staleContacts?: StaleContactRef[];
   areaEvents?: AreaEventRef[];
+  categoryBreakdown?: CategoryCoverageRef[];
 }
 
 // ---- interactive planner (/plan-options + /build) -------------------------------------------
@@ -178,7 +201,7 @@ interface OptionChoice {
 }
 
 interface OptionQuestion {
-  id: "area" | "leader" | "duration" | "extensions";
+  id: "area" | "category" | "leader" | "duration" | "extensions";
   kind: "single" | "multi";
   prompt: string;
   choices: OptionChoice[];
@@ -220,6 +243,21 @@ interface AreaEventRef {
   reason?: string;
 }
 
+// Per-audience coverage — the "identification across Congressional / Academia / Industry / Army-internal"
+// outcome: how big each audience's in-area footprint is and how much of it the trip's options reach.
+interface CategoryCoverageRef {
+  category: string;
+  label?: string;
+  total?: number;
+  activeCount?: number;
+  prospectCount?: number;
+  staleCount?: number;
+  onItineraryCount?: number;
+  covered?: boolean;
+  reason?: string;
+  contacts?: { contactId: string; name?: string; org?: string; city?: string; onItinerary?: boolean }[];
+}
+
 // Loose mirror of the orchestrator's AreaOptionsResult.
 interface OptionsResult {
   ok?: boolean;
@@ -233,6 +271,7 @@ interface OptionsResult {
   areaSurvey?: AreaSurveyTopic[];
   staleContacts?: StaleContactRef[];
   areaEvents?: AreaEventRef[];
+  categoryBreakdown?: CategoryCoverageRef[];
   absorbedEventIds?: string[];
   redactedCount?: number | null;
   rejected?: boolean;
@@ -411,14 +450,41 @@ function AreaBriefing({
   survey,
   staleContacts,
   areaEvents,
+  categoryBreakdown = [],
 }: {
   survey: AreaSurveyTopic[];
   staleContacts: StaleContactRef[];
   areaEvents: AreaEventRef[];
+  categoryBreakdown?: CategoryCoverageRef[];
 }) {
-  if (survey.length === 0 && staleContacts.length === 0 && areaEvents.length === 0) return null;
+  if (survey.length === 0 && staleContacts.length === 0 && areaEvents.length === 0 && categoryBreakdown.length === 0)
+    return null;
   return (
     <>
+      {categoryBreakdown.length > 0 && (
+        <div className="opt-intel opt-intel-categories">
+          <div className="opt-intel-head">🎯 Engagement coverage — Congressional · Academia · Industry · Army-internal</div>
+          <ul className="opt-intel-list">
+            {categoryBreakdown.map((c) => {
+              const total = c.total ?? 0;
+              const state = total === 0 ? "empty" : c.covered ? "covered" : "gap";
+              return (
+                <li key={c.category} className="opt-intel-row">
+                  <span className="opt-intel-name">
+                    {c.label ?? c.category}
+                    <span className={`opt-cat-badge opt-cat-${state}`}>
+                      {total}
+                      {typeof c.onItineraryCount === "number" && total > 0 ? ` · ${c.onItineraryCount} on trip` : ""}
+                    </span>
+                  </span>
+                  <span className="opt-intel-why muted">{c.reason ?? ""}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       {survey.length > 0 && (
         <div className="opt-intel">
           <div className="opt-intel-head">🔥 Hot topics here — why go now</div>
@@ -571,6 +637,7 @@ function OptionsBubble({
   const survey = options.areaSurvey ?? [];
   const staleContacts = options.staleContacts ?? [];
   const areaEvents = options.areaEvents ?? [];
+  const categoryBreakdown = options.categoryBreakdown ?? [];
 
   return (
     <div className="bubble assistant">
@@ -596,7 +663,12 @@ function OptionsBubble({
         </div>
       )}
 
-      <AreaBriefing survey={survey} staleContacts={staleContacts} areaEvents={areaEvents} />
+      <AreaBriefing
+        survey={survey}
+        staleContacts={staleContacts}
+        areaEvents={areaEvents}
+        categoryBreakdown={categoryBreakdown}
+      />
 
       {rejected ? (
         <div className="answer error">Access rejected — no records are visible for this persona.</div>
@@ -830,7 +902,7 @@ function AssistantBubble({
 }: {
   msg: ChatMessage;
   config: HostConfig;
-  onAsk: (question: string, leaderId?: string, userEcho?: string) => void;
+  onAsk: (question: string, leaderId?: string, userEcho?: string, category?: string) => void;
 }) {
   const r = msg.result;
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
@@ -841,8 +913,10 @@ function AssistantBubble({
   const menu = r.menu ?? [];
   const tools = r.toolCalls?.map((t) => t.name) ?? [];
   const leaderQ = r.questions?.find((q) => q.id === "leader");
-  const isClarify = r.stage === "clarify" && !!leaderQ;
+  const categoryQ = r.questions?.find((q) => q.id === "category");
+  const isClarify = r.stage === "clarify" && (!!leaderQ || !!categoryQ);
   const isOptions = r.stage === "options" && (r.options?.length ?? 0) > 0;
+  const shortlist = r.leaderShortlist ?? [];
 
   return (
     <div className="bubble assistant">
@@ -870,9 +944,28 @@ function AssistantBubble({
         survey={r.areaSurvey ?? []}
         staleContacts={r.staleContacts ?? []}
         areaEvents={r.areaEvents ?? []}
+        categoryBreakdown={r.categoryBreakdown ?? []}
       />
 
-      {/* Leader-first: ASK which senior leader (ranked roster) before shaping options. */}
+      {/* Category-first: ASK which engagement audience to anchor the trip on (the DEFAULT area flow). */}
+      {isClarify && categoryQ && (
+        <div className="opt-chips">
+          {categoryQ.choices.map((c) => (
+            <button
+              key={c.value}
+              className={`opt-chip opt-chip-cat opt-cat-${c.value}`}
+              disabled={!r.question}
+              onClick={() => r.question && onAsk(r.question, undefined, `Focus on ${c.label} engagements`, c.value)}
+            >
+              {c.recommended ? "★ " : ""}
+              {c.label}
+              {c.detail && <span className="muted"> · {c.detail}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Leader-first (event-anchored): ASK which senior leader (ranked roster) before shaping options. */}
       {isClarify && leaderQ && (
         <div className="opt-chips">
           {leaderQ.choices.map((c) => (
@@ -887,6 +980,45 @@ function AssistantBubble({
               {c.detail && <span className="muted"> · {c.detail}</span>}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* Category-first PLAN: the senior leader to send + ranked alternates (leader = OUTPUT you can override). */}
+      {r.stage === "plan" && shortlist.length > 0 && (
+        <div className="opt-leaders opt-leaders-rec">
+          <div className="opt-intel-head">
+            🎖️ Who should go — pick a senior leader to plan for
+            {r.category ? <span className="chip chip-cat"> {String(r.category).replace("-", " ")}</span> : null}
+          </div>
+          <ul className="opt-leader-list">
+            {shortlist.map((l) => {
+              const isSel = l.selected ?? l.recommended;
+              return (
+                <li key={l.leaderId} className={`opt-leader${isSel ? " opt-leader-rec" : ""}`}>
+                  <button
+                    type="button"
+                    className="opt-leader-pick"
+                    disabled={!r.question || isSel}
+                    title={isSel ? "Currently planning for this leader" : `Re-plan this trip for ${l.name ?? l.leaderId}`}
+                    onClick={() =>
+                      r.question && onAsk(r.question, l.leaderId, `Plan for ${l.name ?? l.leaderId}`, r.category ?? undefined)
+                    }
+                  >
+                    <span className="opt-leader-name">
+                      {l.recommended ? "★ " : ""}
+                      <b>{l.name ?? l.leaderId}</b>
+                      <span className="muted"> · {l.leaderId}</span>
+                      {l.role ? <span className="muted"> · {l.role}</span> : null}
+                      {isSel ? <span className="chip chip-mode">planning for</span> : <span className="chip chip-pick">pick</span>}
+                      {l.recommended && !l.selected ? <span className="chip chip-mode">recommended</span> : null}
+                      {l.availableInWindow === false ? <span className="chip chip-reject">not free</span> : null}
+                    </span>
+                    {l.why ? <span className="opt-intel-why muted">{l.why}</span> : null}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
 
@@ -906,11 +1038,17 @@ function AssistantBubble({
                   onClick={() => setSelectedOptionId(selected ? null : o.id)}
                 >
                   <strong>{o.label ?? o.id}</strong>
+                  {o.category && <span className="chip chip-cat">{o.category.replace("-", " ")}</span>}
                   {o.recommended && <span className="chip chip-mode">recommended</span>}
                   {o.overBudget && <span className="chip chip-reject">over budget</span>}
                   <span className="opt-card-toggle muted">{selected ? "▾ details" : "▸ details"}</span>
                 </button>
                 {o.summary && <div className="muted opt-card-summary">{o.summary}</div>}
+                {o.categoryMix && (
+                  <div className="opt-card-cats" title="Engagement audiences this itinerary reaches">
+                    🎯 {o.categoryMix}
+                  </div>
+                )}
                 {selected && <OptionDetail option={o} config={config} persona={persona} />}
               </div>
             );
@@ -978,8 +1116,9 @@ function App() {
 
   // Free-form ask — the primary interaction. `qOverride` lets a chip fire a starter question
   // without clearing whatever the user has typed. `leaderId` re-asks the SAME question once the EA
-  // picks a senior leader from the clarify step; `userEcho` overrides the echoed user-bubble text.
-  async function ask(qOverride?: string, leaderId?: string, userEcho?: string) {
+  // picks a senior leader (event-anchored flow); `category` re-asks it once the EA picks an engagement
+  // category (category-first flow → build + recommend a leader); `userEcho` overrides the echoed bubble.
+  async function ask(qOverride?: string, leaderId?: string, userEcho?: string, category?: string) {
     const question = (qOverride ?? input).trim();
     if (!question || busy || !config) return;
     const usedPersona = persona;
@@ -990,7 +1129,7 @@ function App() {
       const res = await fetch(`${config.orchestratorUrl}/ask`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question, persona: usedPersona, ...(leaderId ? { leaderId } : {}) }),
+        body: JSON.stringify({ question, persona: usedPersona, ...(leaderId ? { leaderId } : {}), ...(category ? { category } : {}) }),
       });
       const result = (await res.json()) as PlanResult;
       setMessages((m) => [...m, { id: nextId++, role: "assistant", persona: usedPersona, result }]);

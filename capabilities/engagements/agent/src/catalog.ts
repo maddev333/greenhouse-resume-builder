@@ -11,6 +11,29 @@ import { resolve } from 'node:path';
 
 const SEED_DIR = resolve(import.meta.dirname, '..', '..', '..', '..', 'engagement-intelligence', 'seed');
 
+/**
+ * The four strategic stakeholder AUDIENCES an Army leader balances (plus a catch-all `other`), in
+ * report order. Mirrors `@greenhouse-resume-builder/shared`'s `EngagementCategory`/`ENGAGEMENT_CATEGORIES`;
+ * re-declared here (like {@link Leader}) so the agent stays decoupled from the shared package.
+ */
+export type EngagementCategory = 'congressional' | 'academia' | 'industry' | 'army-internal' | 'other';
+
+export const ENGAGEMENT_CATEGORY_ORDER: readonly EngagementCategory[] = [
+  'congressional',
+  'academia',
+  'industry',
+  'army-internal',
+  'other',
+] as const;
+
+export const CATEGORY_LABEL: Record<EngagementCategory, string> = {
+  congressional: 'Congressional',
+  academia: 'Academia',
+  industry: 'Industry',
+  'army-internal': 'Army internal',
+  other: 'Other',
+};
+
 export interface Leader {
   id: string;
   name: string;
@@ -18,6 +41,8 @@ export interface Leader {
   domain: string;
   smeAreas: string[];
   homeBase: { city: string; state: string };
+  /** The strategic audiences this leader engages — drives the per-category itinerary options. */
+  engagementCategories?: EngagementCategory[];
 }
 
 export interface Topic {
