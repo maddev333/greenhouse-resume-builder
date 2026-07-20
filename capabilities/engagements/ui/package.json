@@ -9,6 +9,7 @@
     "watch": "concurrently \"cross-env INPUT=index.html vite build --watch\" \"cross-env INPUT=sandbox.html vite build --watch\"",
     "serve": "tsx serve.ts",
     "start": "cross-env NODE_ENV=production npm run build && npm run serve",
+    "predemo": "npm run build -w @greenhouse-resume-builder/shared -w @greenhouse-resume-builder/mcp-core",
     "demo": "npm run build && concurrently -k -n mcp,orchestrator,chat -c green,cyan,magenta \"cross-env ENGAGEMENTS_MCP_PORT=3010 npm run serve -w @greenhouse-resume-builder/cap-engagements-mcp-engagements\" \"npm run serve -w @greenhouse-resume-builder/cap-engagements-agent\" \"npm run serve\"",
     "dev": "cross-env NODE_ENV=development concurrently \"npm run watch\" \"tsx watch serve.ts\"",
     "typecheck": "tsc --noEmit"

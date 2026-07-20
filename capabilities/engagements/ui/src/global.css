@@ -45,7 +45,12 @@ body,
 }
 
 body {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
   background: var(--bg);
   color: var(--text);
 }
@@ -243,6 +248,12 @@ body {
 
 .chip-mode.chip-llm {
   color: #1d4ed8;
+}
+
+/* "why deterministic" explainer chip — hover (title) for the full reason. */
+.chip-why {
+  border-style: dashed;
+  cursor: help;
 }
 
 .chip-reject {

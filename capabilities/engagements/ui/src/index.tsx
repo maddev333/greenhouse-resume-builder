@@ -6,7 +6,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
-import { connectToServer, getUiResource, renderTripMapApp, log } from "./implementation";
+import {
+  connectToServer,
+  getUiResource,
+  renderTripMapApp,
+  log,
+} from "./implementation";
 import { loadConfig, type HostConfig } from "./config";
 import { getTheme, toggleTheme, onThemeChange, type Theme } from "./theme";
 import "./global.css";
@@ -23,14 +28,31 @@ interface Persona {
 // EA_G8 sees the G8-scoped contact (C4) that EA_BASIC does not; NO_TENANT is fail-closed;
 // CROSS_TENANT is isolated (empty).
 const PERSONAS: Persona[] = [
-  { id: "EA_G8", label: "EA · G8 staff", hint: "Full G8 trim — sees the extra financial-liaison contact" },
-  { id: "EA_BASIC", label: "EA · basic", hint: "Baseline EA — one more contact redacted" },
+  {
+    id: "EA_G8",
+    label: "EA · G8 staff",
+    hint: "Full G8 trim — sees the extra financial-liaison contact",
+  },
+  {
+    id: "EA_BASIC",
+    label: "EA · basic",
+    hint: "Baseline EA — one more contact redacted",
+  },
   { id: "ADMIN", label: "Admin", hint: "Elevated — widest visibility" },
-  { id: "CROSS_TENANT", label: "Cross-tenant", hint: "Different tenant — isolation returns nothing" },
-  { id: "NO_TENANT", label: "No tenant", hint: "Missing tenant claim — access is rejected (fail-closed)" },
+  {
+    id: "CROSS_TENANT",
+    label: "Cross-tenant",
+    hint: "Different tenant — isolation returns nothing",
+  },
+  {
+    id: "NO_TENANT",
+    label: "No tenant",
+    hint: "Missing tenant claim — access is rejected (fail-closed)",
+  },
 ];
 
-const SAMPLE_QUESTION = "I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?";
+const SAMPLE_QUESTION =
+  "I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?";
 
 // Region quick-picks for the interactive planner (the known seed regions). Clicking one anchors
 // the area and asks the orchestrator for the who/how-long/extensions option menus.
@@ -107,8 +129,20 @@ interface NearbyLeaderRef {
 }
 
 interface ItineraryDetail {
-  leader?: { id?: string; name?: string; role?: string; daysAwayBudget?: number };
-  event?: { id?: string; name?: string; city?: string; state?: string; start?: string; end?: string };
+  leader?: {
+    id?: string;
+    name?: string;
+    role?: string;
+    daysAwayBudget?: number;
+  };
+  event?: {
+    id?: string;
+    name?: string;
+    city?: string;
+    state?: string;
+    start?: string;
+    end?: string;
+  };
   accepted?: MenuItem[];
   route?: ItineraryRoute;
   roi?: ItineraryRoi;
@@ -156,6 +190,8 @@ interface AskOption {
 interface PlanResult {
   ok?: boolean;
   mode?: string;
+  /** When mode === 'deterministic', WHY the LLM path wasn't used (surfaced as a hoverable "why" chip). */
+  deterministicReason?: string | null;
   persona?: string;
   question?: string;
   answer?: string;
@@ -179,10 +215,23 @@ interface PlanResult {
   recommendedOptionId?: string | null;
   leaderId?: string | null;
   leaderName?: string | null;
-  event?: { id?: string; name?: string; city?: string; state?: string; start?: string; end?: string } | null;
+  event?: {
+    id?: string;
+    name?: string;
+    city?: string;
+    state?: string;
+    start?: string;
+    end?: string;
+  } | null;
 
   // Area intel for the clarify/options briefing ("what's worth doing there", before a leader is picked).
-  area?: { id?: string; name?: string; city?: string; state?: string; radiusMi?: number } | null;
+  area?: {
+    id?: string;
+    name?: string;
+    city?: string;
+    state?: string;
+    radiusMi?: number;
+  } | null;
   today?: string | null;
   topicIds?: string[];
   areaSurvey?: AreaSurveyTopic[];
@@ -190,6 +239,37 @@ interface PlanResult {
   areaEvents?: AreaEventRef[];
   categoryBreakdown?: CategoryCoverageRef[];
 }
+
+// Human-readable "why this turn was deterministic" (mode !== llm) — hover the chip for the full reason.
+// Keys mirror the orchestrator's DeterministicReason union.
+const DETERMINISTIC_REASON: Record<string, { short: string; detail: string }> =
+  {
+    "area-anchored": {
+      short: "area-anchored",
+      detail:
+        "Your ask named a known region, so the deterministic area/category planner handled it (LLM-free by design). The model runs on free-form asks that name no known region or event.",
+    },
+    "event-anchored": {
+      short: "event-anchored",
+      detail:
+        "The event router matched this ask to a known event, so the deterministic leader-first planner handled it (LLM-free by design). The model runs when no known area or event is matched.",
+    },
+    "mcp-unavailable": {
+      short: "planner unavailable",
+      detail:
+        "The engagements MCP capability server couldn't be reached, so no planner or model turn was possible. Check that the MCP server is running.",
+    },
+    "model-not-configured": {
+      short: "model not configured",
+      detail:
+        "Azure OpenAI isn't configured (AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_DEPLOYMENT), so the deterministic router answered.",
+    },
+    "model-unavailable": {
+      short: "model unavailable",
+      detail:
+        "Azure OpenAI is configured but the call failed or returned nothing, so the deterministic router answered. Check the orchestrator logs for [agent-loop] warnings.",
+    },
+  };
 
 // ---- interactive planner (/plan-options + /build) -------------------------------------------
 interface OptionChoice {
@@ -255,7 +335,13 @@ interface CategoryCoverageRef {
   onItineraryCount?: number;
   covered?: boolean;
   reason?: string;
-  contacts?: { contactId: string; name?: string; org?: string; city?: string; onItinerary?: boolean }[];
+  contacts?: {
+    contactId: string;
+    name?: string;
+    org?: string;
+    city?: string;
+    onItinerary?: boolean;
+  }[];
 }
 
 // Loose mirror of the orchestrator's AreaOptionsResult.
@@ -264,7 +350,13 @@ interface OptionsResult {
   stage?: "clarify" | "options";
   persona?: string;
   answer?: string | null;
-  area?: { id?: string; name?: string; city?: string; state?: string; radiusMi?: number } | null;
+  area?: {
+    id?: string;
+    name?: string;
+    city?: string;
+    state?: string;
+    radiusMi?: number;
+  } | null;
   window?: { start: string; end: string } | null;
   today?: string | null;
   topicIds?: string[];
@@ -316,7 +408,9 @@ function TripMapHost({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const startedRef = useRef(false);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
   const [errMsg, setErrMsg] = useState<string>("");
 
   useEffect(() => {
@@ -330,7 +424,8 @@ function TripMapHost({
 
     const iframe = document.createElement("iframe");
     iframe.title = "Trip map";
-    iframe.style.cssText = "width:100%; height:440px; border:none; border-radius:8px; background:transparent;";
+    iframe.style.cssText =
+      "width:100%; height:440px; border:none; border-radius:8px; background:transparent;";
     container.appendChild(iframe);
 
     (async () => {
@@ -379,13 +474,20 @@ function TripMapHost({
       <div className="tripmap-head">
         <span className="tripmap-title">🗺️ Trip map · ui://trip-map</span>
         <span className={`chip chip-${status}`}>
-          {status === "loading" ? "loading sandboxed app…" : status === "ready" ? "MCP App" : "unavailable"}
+          {status === "loading"
+            ? "loading sandboxed app…"
+            : status === "ready"
+              ? "MCP App"
+              : "unavailable"}
         </span>
       </div>
       {status === "error" && (
         <div className="tripmap-error">
           Could not embed the trip-map app: {errMsg}
-          <div className="muted">Is the engagements MCP server running on :3010 and the sandbox proxy on :8081?</div>
+          <div className="muted">
+            Is the engagements MCP server running on :3010 and the sandbox proxy
+            on :8081?
+          </div>
         </div>
       )}
       <div ref={containerRef} className="tripmap-frame" />
@@ -404,7 +506,9 @@ function MenuCard({ item, index }: { item: MenuItem; index: number }) {
         <span className="card-rank">{index + 1}</span>
         <span className="card-name">{item.name}</span>
         {item.isStale && <span className="badge badge-stale">stale</span>}
-        {item.status && <span className={`badge badge-${item.status}`}>{item.status}</span>}
+        {item.status && (
+          <span className={`badge badge-${item.status}`}>{item.status}</span>
+        )}
       </div>
       <div className="card-sub">
         {where && <span>📍 {where}</span>}
@@ -412,9 +516,13 @@ function MenuCard({ item, index }: { item: MenuItem; index: number }) {
         {item.kind && <span>· {item.kind}</span>}
       </div>
       <div className="card-metrics">
-        {typeof item.strategicValue === "number" && <span>value {item.strategicValue}</span>}
+        {typeof item.strategicValue === "number" && (
+          <span>value {item.strategicValue}</span>
+        )}
         {typeof item.score === "number" && <span>score {item.score}</span>}
-        {typeof item.distanceMi === "number" && <span>{item.distanceMi} mi</span>}
+        {typeof item.distanceMi === "number" && (
+          <span>{item.distanceMi} mi</span>
+        )}
         {item.contactId && <span className="muted">{item.contactId}</span>}
       </div>
       {item.fitFlags && item.fitFlags.length > 0 && (
@@ -457,24 +565,35 @@ function AreaBriefing({
   areaEvents: AreaEventRef[];
   categoryBreakdown?: CategoryCoverageRef[];
 }) {
-  if (survey.length === 0 && staleContacts.length === 0 && areaEvents.length === 0 && categoryBreakdown.length === 0)
+  if (
+    survey.length === 0 &&
+    staleContacts.length === 0 &&
+    areaEvents.length === 0 &&
+    categoryBreakdown.length === 0
+  )
     return null;
   return (
     <>
       {categoryBreakdown.length > 0 && (
         <div className="opt-intel opt-intel-categories">
-          <div className="opt-intel-head">🎯 Engagement coverage — Congressional · Academia · Industry · Army-internal</div>
+          <div className="opt-intel-head">
+            🎯 Engagement coverage — Congressional · Academia · Industry ·
+            Army-internal
+          </div>
           <ul className="opt-intel-list">
             {categoryBreakdown.map((c) => {
               const total = c.total ?? 0;
-              const state = total === 0 ? "empty" : c.covered ? "covered" : "gap";
+              const state =
+                total === 0 ? "empty" : c.covered ? "covered" : "gap";
               return (
                 <li key={c.category} className="opt-intel-row">
                   <span className="opt-intel-name">
                     {c.label ?? c.category}
                     <span className={`opt-cat-badge opt-cat-${state}`}>
                       {total}
-                      {typeof c.onItineraryCount === "number" && total > 0 ? ` · ${c.onItineraryCount} on trip` : ""}
+                      {typeof c.onItineraryCount === "number" && total > 0
+                        ? ` · ${c.onItineraryCount} on trip`
+                        : ""}
                     </span>
                   </span>
                   <span className="opt-intel-why muted">{c.reason ?? ""}</span>
@@ -505,7 +624,9 @@ function AreaBriefing({
 
       {staleContacts.length > 0 && (
         <div className="opt-intel opt-intel-stale">
-          <div className="opt-intel-head">⏰ Stale — re-engage while you’re there</div>
+          <div className="opt-intel-head">
+            ⏰ Stale — re-engage while you’re there
+          </div>
           <ul className="opt-intel-list">
             {staleContacts.map((c) => (
               <li key={c.contactId} className="opt-intel-row">
@@ -523,14 +644,20 @@ function AreaBriefing({
 
       {areaEvents.length > 0 && (
         <div className="opt-intel opt-intel-events">
-          <div className="opt-intel-head">📅 Events here — timing &amp; why</div>
+          <div className="opt-intel-head">
+            📅 Events here — timing &amp; why
+          </div>
           <ul className="opt-intel-list">
             {areaEvents.map((e) => (
               <li key={e.eventId} className="opt-intel-row">
                 <span className="opt-intel-name">
                   {e.name ?? e.eventId}
                   {e.city ? ` · ${e.city}` : ""}
-                  {e.status ? <span className={`opt-evt-badge opt-evt-${e.status}`}>{e.status}</span> : null}
+                  {e.status ? (
+                    <span className={`opt-evt-badge opt-evt-${e.status}`}>
+                      {e.status}
+                    </span>
+                  ) : null}
                 </span>
                 <span className="opt-intel-why muted">{e.reason ?? ""}</span>
               </li>
@@ -559,10 +686,14 @@ function OptionsBubble({
   const areaKey = options.area?.id ?? "area";
 
   const [leaderId, setLeaderId] = useState<string>(
-    leaderQ?.choices.find((c) => c.selected)?.value ?? leaderQ?.choices[0]?.value ?? "",
+    leaderQ?.choices.find((c) => c.selected)?.value ??
+      leaderQ?.choices[0]?.value ??
+      "",
   );
   const [durationTier, setDurationTier] = useState<string>(
-    durationQ?.choices.find((c) => c.selected)?.value ?? durationQ?.choices[0]?.value ?? "core",
+    durationQ?.choices.find((c) => c.selected)?.value ??
+      durationQ?.choices[0]?.value ??
+      "core",
   );
   const [exts, setExts] = useState<Set<string>>(new Set());
   const [built, setBuilt] = useState<PlanResult | null>(null);
@@ -623,7 +754,11 @@ function OptionsBubble({
         {options.answer && <div className="answer">{options.answer}</div>}
         <div className="opt-chips">
           {(areaQ?.choices ?? []).map((c) => (
-            <button key={c.value} className="opt-chip" onClick={() => onPickRegion(c.value, c.label)}>
+            <button
+              key={c.value}
+              className="opt-chip"
+              onClick={() => onPickRegion(c.value, c.label)}
+            >
               {c.label}
               {c.detail && <span className="muted"> · {c.detail}</span>}
             </button>
@@ -645,15 +780,20 @@ function OptionsBubble({
         <span className="chip chip-persona">{persona}</span>
         <span className="chip chip-mode">options</span>
         {rejected && <span className="chip chip-reject">access rejected</span>}
-        {typeof options.redactedCount === "number" && options.redactedCount > 0 && (
-          <span className="chip chip-redact">🔒 {options.redactedCount} redacted</span>
-        )}
+        {typeof options.redactedCount === "number" &&
+          options.redactedCount > 0 && (
+            <span className="chip chip-redact">
+              🔒 {options.redactedCount} redacted
+            </span>
+          )}
       </div>
 
       {options.area && (
         <div className="opt-area">
           <strong>📍 {options.area.name}</strong>
-          {typeof options.area.radiusMi === "number" && <span className="muted"> · {options.area.radiusMi} mi</span>}
+          {typeof options.area.radiusMi === "number" && (
+            <span className="muted"> · {options.area.radiusMi} mi</span>
+          )}
           {options.window && (
             <span className="muted">
               {" "}
@@ -671,13 +811,18 @@ function OptionsBubble({
       />
 
       {rejected ? (
-        <div className="answer error">Access rejected — no records are visible for this persona.</div>
+        <div className="answer error">
+          Access rejected — no records are visible for this persona.
+        </div>
       ) : (
         <>
           {leaderQ && (
             <OptGroup q={leaderQ}>
               {leaderQ.choices.map((c) => (
-                <label key={c.value} className={`opt-row ${leaderId === c.value ? "opt-sel" : ""}`}>
+                <label
+                  key={c.value}
+                  className={`opt-row ${leaderId === c.value ? "opt-sel" : ""}`}
+                >
                   <input
                     type="radio"
                     name={`leader-${areaKey}`}
@@ -686,9 +831,13 @@ function OptionsBubble({
                   />
                   <span className="opt-label">
                     {c.label}
-                    {c.recommended && <span className="opt-badge">top pick</span>}
+                    {c.recommended && (
+                      <span className="opt-badge">top pick</span>
+                    )}
                   </span>
-                  {c.detail && <span className="opt-detail muted">{c.detail}</span>}
+                  {c.detail && (
+                    <span className="opt-detail muted">{c.detail}</span>
+                  )}
                 </label>
               ))}
             </OptGroup>
@@ -697,7 +846,10 @@ function OptionsBubble({
           {durationQ && (
             <OptGroup q={durationQ}>
               {durationQ.choices.map((c) => (
-                <label key={c.value} className={`opt-row ${durationTier === c.value ? "opt-sel" : ""}`}>
+                <label
+                  key={c.value}
+                  className={`opt-row ${durationTier === c.value ? "opt-sel" : ""}`}
+                >
                   <input
                     type="radio"
                     name={`dur-${areaKey}`}
@@ -706,9 +858,13 @@ function OptionsBubble({
                   />
                   <span className="opt-label">
                     {c.label}
-                    {c.recommended && <span className="opt-badge">suggested</span>}
+                    {c.recommended && (
+                      <span className="opt-badge">suggested</span>
+                    )}
                   </span>
-                  {c.detail && <span className="opt-detail muted">{c.detail}</span>}
+                  {c.detail && (
+                    <span className="opt-detail muted">{c.detail}</span>
+                  )}
                 </label>
               ))}
             </OptGroup>
@@ -717,16 +873,29 @@ function OptionsBubble({
           {extQ && (
             <OptGroup q={extQ}>
               {extQ.choices.map((c) => (
-                <label key={c.value} className={`opt-row ${exts.has(c.value) ? "opt-sel" : ""}`}>
-                  <input type="checkbox" checked={exts.has(c.value)} onChange={() => toggleExt(c.value)} />
+                <label
+                  key={c.value}
+                  className={`opt-row ${exts.has(c.value) ? "opt-sel" : ""}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={exts.has(c.value)}
+                    onChange={() => toggleExt(c.value)}
+                  />
                   <span className="opt-label">{c.label}</span>
-                  {c.detail && <span className="opt-detail muted">{c.detail}</span>}
+                  {c.detail && (
+                    <span className="opt-detail muted">{c.detail}</span>
+                  )}
                 </label>
               ))}
             </OptGroup>
           )}
 
-          <button className="opt-build" onClick={build} disabled={building || !leaderId}>
+          <button
+            className="opt-build"
+            onClick={build}
+            disabled={building || !leaderId}
+          >
             {building ? "Building…" : "Build itinerary ▸"}
           </button>
         </>
@@ -742,7 +911,12 @@ function OptionsBubble({
         </div>
       )}
       {built?.tripMap != null && (
-        <TripMapHost config={config} persona={persona} tripMap={built.tripMap} answer={built.answer} />
+        <TripMapHost
+          config={config}
+          persona={persona}
+          tripMap={built.tripMap}
+          answer={built.answer}
+        />
       )}
     </div>
   );
@@ -768,8 +942,11 @@ function OptionDetail({
   const conflicts = it?.conflicts ?? [];
   const nearby = it?.nearbyLeaders ?? [];
   const routeLine =
-    route?.order && route.order.length > 0 ? route.order.map((s) => s.city || s.id).join(" → ") : "";
-  const num = (n: number | undefined | null, digits = 2) => (typeof n === "number" ? n.toFixed(digits) : "");
+    route?.order && route.order.length > 0
+      ? route.order.map((s) => s.city || s.id).join(" → ")
+      : "";
+  const num = (n: number | undefined | null, digits = 2) =>
+    typeof n === "number" ? n.toFixed(digits) : "";
 
   return (
     <div className="opt-detail-panel">
@@ -800,7 +977,9 @@ function OptionDetail({
             <b>{Math.round(route.totalTravelMins / 60)}</b> h travel
           </span>
         )}
-        {option.overBudget && <span className="chip chip-reject">over budget</span>}
+        {option.overBudget && (
+          <span className="chip chip-reject">over budget</span>
+        )}
       </div>
 
       {routeLine && (
@@ -826,11 +1005,21 @@ function OptionDetail({
         <div className="opt-detail-section">
           <div className="opt-detail-label">Trip ROI</div>
           <div className="opt-roi muted">
-            {typeof roi.breakdown.grossValue === "number" && <span>gross value {num(roi.breakdown.grossValue)}</span>}
-            {typeof roi.breakdown.totalCost === "number" && <span>· cost {num(roi.breakdown.totalCost)}</span>}
-            {typeof roi.breakdown.airfare === "number" && <span>· airfare {num(roi.breakdown.airfare)}</span>}
-            {typeof roi.breakdown.perDiem === "number" && <span>· per-diem {num(roi.breakdown.perDiem)}</span>}
-            {typeof roi.breakdown.timePenalty === "number" && <span>· time {num(roi.breakdown.timePenalty)}</span>}
+            {typeof roi.breakdown.grossValue === "number" && (
+              <span>gross value {num(roi.breakdown.grossValue)}</span>
+            )}
+            {typeof roi.breakdown.totalCost === "number" && (
+              <span>· cost {num(roi.breakdown.totalCost)}</span>
+            )}
+            {typeof roi.breakdown.airfare === "number" && (
+              <span>· airfare {num(roi.breakdown.airfare)}</span>
+            )}
+            {typeof roi.breakdown.perDiem === "number" && (
+              <span>· per-diem {num(roi.breakdown.perDiem)}</span>
+            )}
+            {typeof roi.breakdown.timePenalty === "number" && (
+              <span>· time {num(roi.breakdown.timePenalty)}</span>
+            )}
           </div>
         </div>
       )}
@@ -841,13 +1030,18 @@ function OptionDetail({
           <div className="opt-detail-label">Advisories</div>
           <ul className="opt-advisories">
             {conflicts.map((c, i) => (
-              <li key={i} className={`opt-advisory sev-${c.severity ?? "soft"}`}>
+              <li
+                key={i}
+                className={`opt-advisory sev-${c.severity ?? "soft"}`}
+              >
                 <b>
                   {c.severity ?? ""}
                   {c.type ? ` / ${c.type}` : ""}
                 </b>{" "}
                 {c.message}
-                {c.recommendation && <div className="muted">{c.recommendation}</div>}
+                {c.recommendation && (
+                  <div className="muted">{c.recommendation}</div>
+                )}
               </li>
             ))}
           </ul>
@@ -863,14 +1057,18 @@ function OptionDetail({
               <li key={l.leaderId} className="opt-leader">
                 <b>{l.name ?? l.leaderId}</b>
                 {l.role && <span className="muted"> · {l.role}</span>}
-                {l.primaryReason && <span className="chip chip-mode">{l.primaryReason}</span>}
+                {l.primaryReason && (
+                  <span className="chip chip-mode">{l.primaryReason}</span>
+                )}
                 {l.homeBaseCity && typeof l.homeBaseDistanceMi === "number" && (
                   <span className="muted">
                     {" "}
                     · {l.homeBaseCity} ({l.homeBaseDistanceMi} mi)
                   </span>
                 )}
-                {l.availableInWindow && <span className="muted"> · available</span>}
+                {l.availableInWindow && (
+                  <span className="muted"> · available</span>
+                )}
               </li>
             ))}
           </ul>
@@ -880,11 +1078,20 @@ function OptionDetail({
       {/* the map (heavy sandboxed iframe — lazy behind a toggle) */}
       {option.tripMap != null && (
         <div className="opt-detail-section">
-          <button className="opt-chip" aria-expanded={showMap} onClick={() => setShowMap((v) => !v)}>
+          <button
+            className="opt-chip"
+            aria-expanded={showMap}
+            onClick={() => setShowMap((v) => !v)}
+          >
             {showMap ? "Hide map" : "Show map"}
           </button>
           {showMap && (
-            <TripMapHost config={config} persona={persona} tripMap={option.tripMap} answer={option.answer ?? undefined} />
+            <TripMapHost
+              config={config}
+              persona={persona}
+              tripMap={option.tripMap}
+              answer={option.answer ?? undefined}
+            />
           )}
         </div>
       )}
@@ -902,12 +1109,21 @@ function AssistantBubble({
 }: {
   msg: ChatMessage;
   config: HostConfig;
-  onAsk: (question: string, leaderId?: string, userEcho?: string, category?: string) => void;
+  onAsk: (
+    question: string,
+    leaderId?: string,
+    userEcho?: string,
+    category?: string,
+  ) => void;
 }) {
   const r = msg.result;
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   if (!r) {
-    return <div className="bubble assistant error">⚠️ {msg.error || "No response."}</div>;
+    return (
+      <div className="bubble assistant error">
+        ⚠️ {msg.error || "No response."}
+      </div>
+    );
   }
   const persona = msg.persona || r.persona || "";
   const menu = r.menu ?? [];
@@ -922,11 +1138,36 @@ function AssistantBubble({
     <div className="bubble assistant">
       <div className="meta-row">
         <span className="chip chip-persona">{persona}</span>
-        {r.mode && <span className={`chip chip-mode chip-${r.mode}`}>{r.mode === "llm" ? "LLM" : r.mode}</span>}
+        {r.mode && (
+          <span
+            className={`chip chip-mode chip-${r.mode}`}
+            title={
+              r.mode === "deterministic" && r.deterministicReason
+                ? DETERMINISTIC_REASON[r.deterministicReason]?.detail
+                : undefined
+            }
+          >
+            {r.mode === "llm" ? "LLM" : r.mode}
+          </span>
+        )}
+        {r.mode === "deterministic" &&
+          r.deterministicReason &&
+          DETERMINISTIC_REASON[r.deterministicReason] && (
+            <span
+              className="chip chip-why"
+              title={DETERMINISTIC_REASON[r.deterministicReason].detail}
+            >
+              why: {DETERMINISTIC_REASON[r.deterministicReason].short}
+            </span>
+          )}
         {r.stage && <span className="chip chip-mode">{r.stage}</span>}
-        {r.rejected && <span className="chip chip-reject">access rejected</span>}
+        {r.rejected && (
+          <span className="chip chip-reject">access rejected</span>
+        )}
         {typeof r.redactedCount === "number" && r.redactedCount > 0 && (
-          <span className="chip chip-redact">🔒 {r.redactedCount} redacted</span>
+          <span className="chip chip-redact">
+            🔒 {r.redactedCount} redacted
+          </span>
         )}
       </div>
 
@@ -937,7 +1178,9 @@ function AssistantBubble({
       {r.area && (
         <div className="opt-area">
           <strong>📍 {r.area.name}</strong>
-          {typeof r.area.radiusMi === "number" && <span className="muted"> · {r.area.radiusMi} mi</span>}
+          {typeof r.area.radiusMi === "number" && (
+            <span className="muted"> · {r.area.radiusMi} mi</span>
+          )}
         </div>
       )}
       <AreaBriefing
@@ -955,7 +1198,15 @@ function AssistantBubble({
               key={c.value}
               className={`opt-chip opt-chip-cat opt-cat-${c.value}`}
               disabled={!r.question}
-              onClick={() => r.question && onAsk(r.question, undefined, `Focus on ${c.label} engagements`, c.value)}
+              onClick={() =>
+                r.question &&
+                onAsk(
+                  r.question,
+                  undefined,
+                  `Focus on ${c.label} engagements`,
+                  c.value,
+                )
+              }
             >
               {c.recommended ? "★ " : ""}
               {c.label}
@@ -973,7 +1224,9 @@ function AssistantBubble({
               key={c.value}
               className="opt-chip"
               disabled={!r.question}
-              onClick={() => r.question && onAsk(r.question, c.value, `Plan for ${c.label}`)}
+              onClick={() =>
+                r.question && onAsk(r.question, c.value, `Plan for ${c.label}`)
+              }
             >
               {c.recommended ? "★ " : ""}
               {c.label}
@@ -988,32 +1241,62 @@ function AssistantBubble({
         <div className="opt-leaders opt-leaders-rec">
           <div className="opt-intel-head">
             🎖️ Who should go — pick a senior leader to plan for
-            {r.category ? <span className="chip chip-cat"> {String(r.category).replace("-", " ")}</span> : null}
+            {r.category ? (
+              <span className="chip chip-cat">
+                {" "}
+                {String(r.category).replace("-", " ")}
+              </span>
+            ) : null}
           </div>
           <ul className="opt-leader-list">
             {shortlist.map((l) => {
               const isSel = l.selected ?? l.recommended;
               return (
-                <li key={l.leaderId} className={`opt-leader${isSel ? " opt-leader-rec" : ""}`}>
+                <li
+                  key={l.leaderId}
+                  className={`opt-leader${isSel ? " opt-leader-rec" : ""}`}
+                >
                   <button
                     type="button"
                     className="opt-leader-pick"
                     disabled={!r.question || isSel}
-                    title={isSel ? "Currently planning for this leader" : `Re-plan this trip for ${l.name ?? l.leaderId}`}
+                    title={
+                      isSel
+                        ? "Currently planning for this leader"
+                        : `Re-plan this trip for ${l.name ?? l.leaderId}`
+                    }
                     onClick={() =>
-                      r.question && onAsk(r.question, l.leaderId, `Plan for ${l.name ?? l.leaderId}`, r.category ?? undefined)
+                      r.question &&
+                      onAsk(
+                        r.question,
+                        l.leaderId,
+                        `Plan for ${l.name ?? l.leaderId}`,
+                        r.category ?? undefined,
+                      )
                     }
                   >
                     <span className="opt-leader-name">
                       {l.recommended ? "★ " : ""}
                       <b>{l.name ?? l.leaderId}</b>
                       <span className="muted"> · {l.leaderId}</span>
-                      {l.role ? <span className="muted"> · {l.role}</span> : null}
-                      {isSel ? <span className="chip chip-mode">planning for</span> : <span className="chip chip-pick">pick</span>}
-                      {l.recommended && !l.selected ? <span className="chip chip-mode">recommended</span> : null}
-                      {l.availableInWindow === false ? <span className="chip chip-reject">not free</span> : null}
+                      {l.role ? (
+                        <span className="muted"> · {l.role}</span>
+                      ) : null}
+                      {isSel ? (
+                        <span className="chip chip-mode">planning for</span>
+                      ) : (
+                        <span className="chip chip-pick">pick</span>
+                      )}
+                      {l.recommended && !l.selected ? (
+                        <span className="chip chip-mode">recommended</span>
+                      ) : null}
+                      {l.availableInWindow === false ? (
+                        <span className="chip chip-reject">not free</span>
+                      ) : null}
                     </span>
-                    {l.why ? <span className="opt-intel-why muted">{l.why}</span> : null}
+                    {l.why ? (
+                      <span className="opt-intel-why muted">{l.why}</span>
+                    ) : null}
                   </button>
                 </li>
               );
@@ -1038,18 +1321,35 @@ function AssistantBubble({
                   onClick={() => setSelectedOptionId(selected ? null : o.id)}
                 >
                   <strong>{o.label ?? o.id}</strong>
-                  {o.category && <span className="chip chip-cat">{o.category.replace("-", " ")}</span>}
-                  {o.recommended && <span className="chip chip-mode">recommended</span>}
-                  {o.overBudget && <span className="chip chip-reject">over budget</span>}
-                  <span className="opt-card-toggle muted">{selected ? "▾ details" : "▸ details"}</span>
+                  {o.category && (
+                    <span className="chip chip-cat">
+                      {o.category.replace("-", " ")}
+                    </span>
+                  )}
+                  {o.recommended && (
+                    <span className="chip chip-mode">recommended</span>
+                  )}
+                  {o.overBudget && (
+                    <span className="chip chip-reject">over budget</span>
+                  )}
+                  <span className="opt-card-toggle muted">
+                    {selected ? "▾ details" : "▸ details"}
+                  </span>
                 </button>
-                {o.summary && <div className="muted opt-card-summary">{o.summary}</div>}
+                {o.summary && (
+                  <div className="muted opt-card-summary">{o.summary}</div>
+                )}
                 {o.categoryMix && (
-                  <div className="opt-card-cats" title="Engagement audiences this itinerary reaches">
+                  <div
+                    className="opt-card-cats"
+                    title="Engagement audiences this itinerary reaches"
+                  >
                     🎯 {o.categoryMix}
                   </div>
                 )}
-                {selected && <OptionDetail option={o} config={config} persona={persona} />}
+                {selected && (
+                  <OptionDetail option={o} config={config} persona={persona} />
+                )}
               </div>
             );
           })}
@@ -1066,10 +1366,17 @@ function AssistantBubble({
       )}
 
       {!isOptions && r.tripMap != null && (
-        <TripMapHost config={config} persona={persona} tripMap={r.tripMap} answer={r.answer} />
+        <TripMapHost
+          config={config}
+          persona={persona}
+          tripMap={r.tripMap}
+          answer={r.answer}
+        />
       )}
 
-      {tools.length > 0 && <div className="tools muted">tools: {tools.join(" → ")}</div>}
+      {tools.length > 0 && (
+        <div className="tools muted">tools: {tools.join(" → ")}</div>
+      )}
     </div>
   );
 }
@@ -1093,7 +1400,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+    listRef.current?.scrollTo({
+      top: listRef.current.scrollHeight,
+      behavior: "smooth",
+    });
   }, [messages, busy]);
 
   // Hot topics are persona-trimmed, so refetch whenever the caller (persona) changes. A rejected
@@ -1101,7 +1411,9 @@ function App() {
   useEffect(() => {
     if (!config) return;
     let cancelled = false;
-    fetch(`${config.orchestratorUrl}/topics?persona=${encodeURIComponent(persona)}`)
+    fetch(
+      `${config.orchestratorUrl}/topics?persona=${encodeURIComponent(persona)}`,
+    )
       .then((r) => r.json())
       .then((d) => {
         if (!cancelled) setHotTopics(d?.rejected ? [] : (d?.topics ?? []));
@@ -1118,25 +1430,51 @@ function App() {
   // without clearing whatever the user has typed. `leaderId` re-asks the SAME question once the EA
   // picks a senior leader (event-anchored flow); `category` re-asks it once the EA picks an engagement
   // category (category-first flow → build + recommend a leader); `userEcho` overrides the echoed bubble.
-  async function ask(qOverride?: string, leaderId?: string, userEcho?: string, category?: string) {
+  async function ask(
+    qOverride?: string,
+    leaderId?: string,
+    userEcho?: string,
+    category?: string,
+  ) {
     const question = (qOverride ?? input).trim();
     if (!question || busy || !config) return;
     const usedPersona = persona;
-    setMessages((m) => [...m, { id: nextId++, role: "user", text: userEcho ?? question, persona: usedPersona }]);
+    setMessages((m) => [
+      ...m,
+      {
+        id: nextId++,
+        role: "user",
+        text: userEcho ?? question,
+        persona: usedPersona,
+      },
+    ]);
     if (qOverride === undefined) setInput("");
     setBusy(true);
     try {
       const res = await fetch(`${config.orchestratorUrl}/ask`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question, persona: usedPersona, ...(leaderId ? { leaderId } : {}), ...(category ? { category } : {}) }),
+        body: JSON.stringify({
+          question,
+          persona: usedPersona,
+          ...(leaderId ? { leaderId } : {}),
+          ...(category ? { category } : {}),
+        }),
       });
       const result = (await res.json()) as PlanResult;
-      setMessages((m) => [...m, { id: nextId++, role: "assistant", persona: usedPersona, result }]);
+      setMessages((m) => [
+        ...m,
+        { id: nextId++, role: "assistant", persona: usedPersona, result },
+      ]);
     } catch (e) {
       setMessages((m) => [
         ...m,
-        { id: nextId++, role: "assistant", persona: usedPersona, error: e instanceof Error ? e.message : String(e) },
+        {
+          id: nextId++,
+          role: "assistant",
+          persona: usedPersona,
+          error: e instanceof Error ? e.message : String(e),
+        },
       ]);
     } finally {
       setBusy(false);
@@ -1145,37 +1483,61 @@ function App() {
 
   // Interactive planner — ask the orchestrator for the who/how-long/extensions option menus (or the
   // "which area?" clarify). `regionId` anchors an area directly; otherwise the free-text is parsed.
-  async function planOptions(opts: { question?: string; regionId?: string; label?: string }) {
+  async function planOptions(opts: {
+    question?: string;
+    regionId?: string;
+    label?: string;
+  }) {
     if (busy || !config) return;
     const usedPersona = persona;
-    const userText = opts.label ? `Plan a trip · ${opts.label}` : opts.question || "Plan a trip";
-    setMessages((m) => [...m, { id: nextId++, role: "user", text: userText, persona: usedPersona }]);
+    const userText = opts.label
+      ? `Plan a trip · ${opts.label}`
+      : opts.question || "Plan a trip";
+    setMessages((m) => [
+      ...m,
+      { id: nextId++, role: "user", text: userText, persona: usedPersona },
+    ]);
     if (opts.question !== undefined) setInput("");
     setBusy(true);
     try {
       const res = await fetch(`${config.orchestratorUrl}/plan-options`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question: opts.question, regionId: opts.regionId, persona: usedPersona }),
+        body: JSON.stringify({
+          question: opts.question,
+          regionId: opts.regionId,
+          persona: usedPersona,
+        }),
       });
       const options = (await res.json()) as OptionsResult;
-      setMessages((m) => [...m, { id: nextId++, role: "assistant", persona: usedPersona, options }]);
+      setMessages((m) => [
+        ...m,
+        { id: nextId++, role: "assistant", persona: usedPersona, options },
+      ]);
     } catch (e) {
       setMessages((m) => [
         ...m,
-        { id: nextId++, role: "assistant", persona: usedPersona, error: e instanceof Error ? e.message : String(e) },
+        {
+          id: nextId++,
+          role: "assistant",
+          persona: usedPersona,
+          error: e instanceof Error ? e.message : String(e),
+        },
       ]);
     } finally {
       setBusy(false);
     }
   }
 
-  const onPickRegion = (regionId: string, label: string) => planOptions({ regionId, label });
+  const onPickRegion = (regionId: string, label: string) =>
+    planOptions({ regionId, label });
 
   // Quick-start chips just KICK OFF a free-form search (never lock into the guided wizard):
   // a region/topic chip fires a natural-language question the agent then plans from.
   const onPickRegionFreeform = (label: string) =>
-    ask(`Plan a trip to ${label} — who should go, how long, and what's worth doing there?`);
+    ask(
+      `Plan a trip to ${label} — who should go, how long, and what's worth doing there?`,
+    );
 
   const activePersona = PERSONAS.find((p) => p.id === persona);
 
@@ -1185,14 +1547,22 @@ function App() {
         <div className="brand">
           <span className="brand-mark">◆</span>
           <div>
-            <div className="brand-title">Strategic Engagements — Trip Planner</div>
-            <div className="brand-sub muted">chat host · MCP Apps · persona-trimmed retrieval</div>
+            <div className="brand-title">
+              Strategic Engagements — Trip Planner
+            </div>
+            <div className="brand-sub muted">
+              chat host · MCP Apps · persona-trimmed retrieval
+            </div>
           </div>
         </div>
         <div className="controls">
           <label className="persona-select">
             <span className="muted">persona</span>
-            <select value={persona} onChange={(e) => setPersona(e.target.value)} disabled={busy}>
+            <select
+              value={persona}
+              onChange={(e) => setPersona(e.target.value)}
+              disabled={busy}
+            >
               {PERSONAS.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.label}
@@ -1200,21 +1570,28 @@ function App() {
               ))}
             </select>
           </label>
-          <button className="icon-btn" onClick={() => setThemeState(toggleTheme())} title="Toggle theme">
+          <button
+            className="icon-btn"
+            onClick={() => setThemeState(toggleTheme())}
+            title="Toggle theme"
+          >
             {theme === "dark" ? "☀️" : "🌙"}
           </button>
         </div>
       </header>
 
-      {activePersona && <div className="persona-hint muted">{activePersona.hint}</div>}
+      {activePersona && (
+        <div className="persona-hint muted">{activePersona.hint}</div>
+      )}
 
       <div className="messages" ref={listRef}>
         {messages.length === 0 && (
           <div className="empty">
             <p>
-              Type anything and the agent plans it — who to meet, where, and for how long. Or start from a hot topic
-              or an area below; you can always steer from there, or use <strong>Plan a trip</strong> for the guided
-              area planner.
+              Type anything and the agent plans it — who to meet, where, and for
+              how long. Or start from a hot topic or an area below; you can
+              always steer from there, or use <strong>Plan a trip</strong> for
+              the guided area planner.
             </p>
             {hotTopics.length > 0 && (
               <div className="empty-group">
@@ -1238,13 +1615,21 @@ function App() {
               <span className="empty-label">📍 Areas</span>
               <div className="empty-picks">
                 {REGION_QUICKPICKS.map((r) => (
-                  <button key={r.regionId} className="sample" disabled={busy || !config} onClick={() => onPickRegionFreeform(r.label)}>
+                  <button
+                    key={r.regionId}
+                    className="sample"
+                    disabled={busy || !config}
+                    onClick={() => onPickRegionFreeform(r.label)}
+                  >
                     {r.label}
                   </button>
                 ))}
               </div>
             </div>
-            <button className="sample sample-example" onClick={() => setInput(SAMPLE_QUESTION)}>
+            <button
+              className="sample sample-example"
+              onClick={() => setInput(SAMPLE_QUESTION)}
+            >
               {SAMPLE_QUESTION}
             </button>
           </div>
@@ -1286,7 +1671,13 @@ function App() {
           <>
             <span className="muted">🔥 Hot topics:</span>
             {hotTopics.map((t) => (
-              <button key={t.topicId} className="qp qp-topic" disabled={busy || !config} title={t.reason} onClick={() => ask(t.question)}>
+              <button
+                key={t.topicId}
+                className="qp qp-topic"
+                disabled={busy || !config}
+                title={t.reason}
+                onClick={() => ask(t.question)}
+              >
                 {t.name}
               </button>
             ))}
@@ -1294,7 +1685,12 @@ function App() {
         )}
         <span className="muted">📍 Areas:</span>
         {REGION_QUICKPICKS.map((r) => (
-          <button key={r.regionId} className="qp" disabled={busy || !config} onClick={() => onPickRegionFreeform(r.label)}>
+          <button
+            key={r.regionId}
+            className="qp"
+            disabled={busy || !config}
+            onClick={() => onPickRegionFreeform(r.label)}
+          >
             {r.label}
           </button>
         ))}
