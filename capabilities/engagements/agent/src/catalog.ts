@@ -121,14 +121,19 @@ export function rosterForPrompt(): string {
   return loadLeaders()
     .map(
       (l) =>
-        `  ${l.id}: ${l.name} — ${l.role} [${l.domain}], home ${l.homeBase.city}, ${l.homeBase.state}; SME ${l.smeAreas.join('/')}`,
+        `  ${l.id}: ${l.name} — ${l.role} [${l.domain}], home ${l.homeBase.city}, ${l.homeBase.state}; ` +
+        `SME ${l.smeAreas.join('/')}; audiences ${(l.engagementCategories ?? []).join('/') || 'unspecified'}`,
     )
     .join('\n');
 }
 
 export function topicsForPrompt(): string {
   return loadTopics()
-    .map((t) => `  ${t.id}: ${t.name} (${t.smeAreas.join(', ')})`)
+    .map(
+      (t) =>
+        `  ${t.id}: ${t.name} (${t.smeAreas.join(', ')}); owner ${t.ownerOrg ?? 'unassigned'}; ` +
+        `approved message ${t.approvedMessageId ? 'yes' : 'no'}`,
+    )
     .join('\n');
 }
 

@@ -1,13 +1,15 @@
 /**
  * Entry point — two modes:
  *   CLI (default):   npm run ask -- "I'm planning a trip to AUSA, who should I meet on UAS/drone?" --persona EA_G8
- *   HTTP (--serve):  npm run serve   ->  POST /ask { question, persona?, leaderId?, topN?, category? }
+ *   HTTP (--serve):  npm run serve   ->  POST /ask { question, persona?, leaderId?, topN?, category?, context?, history? }
  *
  * The HTTP surface is the seam the chat UI (M6) calls. Requires the engagements MCP server
  * running (default http://localhost:3010/mcp; override with ENGAGEMENTS_MCP_URL).
  */
 import './load-env.js';
+import type { Response } from 'express';
 import { buildAreaItinerary, buildAreaItineraryOptions, buildRadiusItinerary, hotTopics, planAreaOptions, planRadiusOptions, planTrip } from './orchestrator.js';
+import { PythonRuntimeRequestError } from './python-runtime.js';
 
 interface CliArgs {
   question?: string;
@@ -68,6 +70,17 @@ function parseArgs(argv: string[]): CliArgs {
 function parseWindow(w?: string): { start: string; end: string } | undefined {
   const m = w?.match(/^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/);
   return m ? { start: m[1], end: m[2] } : undefined;
+}
+
+function sendRequestError(res: Response, error: unknown): void {
+  const status =
+    error instanceof PythonRuntimeRequestError
+      ? error.status
+      : 500;
+  res.status(status).json({
+    ok: false,
+    error: error instanceof Error ? error.message : String(error),
+  });
 }
 
 /** Interactive planner (STAGE 1) from the CLI: survey an area and print the ranked option menus. */
@@ -241,7 +254,12 @@ async function serve(): Promise<void> {
   app.use(express.json());
 
   app.get('/health', (_req, res) => {
-    res.json({ ok: true, service: 'engagements-orchestrator', mcp: process.env.ENGAGEMENTS_MCP_URL || 'http://localhost:3010/mcp' });
+    res.json({
+      ok: true,
+      service: 'engagements-orchestrator',
+      mcp: process.env.ENGAGEMENTS_MCP_URL || 'http://localhost:3010/mcp',
+      pythonAgent: process.env.ENGAGEMENTS_PYTHON_AGENT_URL || 'http://127.0.0.1:3030',
+    });
   });
 
   // Hot topics — a topic-first entry point for the UI. Persona-trimmed; picking one just seeds a
@@ -251,20 +269,20 @@ async function serve(): Promise<void> {
     try {
       res.json(await hotTopics({ persona }));
     } catch (e: any) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      sendRequestError(res, e);
     }
   });
 
   app.post('/ask', async (req, res) => {
-    const { question, persona, leaderId, topN, category, radiusMi, days } = req.body ?? {};
+    const { question, persona, leaderId, topN, category, radiusMi, days, context, history } = req.body ?? {};
     if (!question || typeof question !== 'string') {
       res.status(400).json({ ok: false, error: 'body.question (string) is required' });
       return;
     }
     try {
-      res.json(await planTrip({ question, persona, leaderId, topN, category, radiusMi, days }));
+      res.json(await planTrip({ question, persona, leaderId, topN, category, radiusMi, days, context, history }));
     } catch (e: any) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      sendRequestError(res, e);
     }
   });
 
@@ -275,7 +293,7 @@ async function serve(): Promise<void> {
     try {
       res.json(await planAreaOptions({ question, persona, regionId, region, city, state, radiusMi, window, leaderId, topicIds, requireTopicMatch }));
     } catch (e: any) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      sendRequestError(res, e);
     }
   });
 
@@ -291,7 +309,7 @@ async function serve(): Promise<void> {
         await buildAreaItinerary({ persona, regionId, region, city, state, radiusMi, window, leaderId, durationTier, extensionContactIds, acceptedContactIds, anchorEventId, topicIds }),
       );
     } catch (e: any) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      sendRequestError(res, e);
     }
   });
 
@@ -307,7 +325,7 @@ async function serve(): Promise<void> {
     try {
       res.json(await buildAreaItineraryOptions({ persona, regionId, region, city, state, radiusMi, window, leaderId, topicIds, optionCount, maxDays, targetDays, meetingsPerDay }));
     } catch (e: any) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      sendRequestError(res, e);
     }
   });
 
@@ -324,7 +342,7 @@ async function serve(): Promise<void> {
         await planRadiusOptions({ question, persona, anchorContactId, company, lat, lng, city, state, region, regionId, radiusMi, days, meetingsPerDay, window, leaderId, topicIds, requireTopicMatch }),
       );
     } catch (e: any) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      sendRequestError(res, e);
     }
   });
 
@@ -344,14 +362,14 @@ async function serve(): Promise<void> {
         await buildRadiusItinerary({ persona, anchorContactId, company, lat, lng, city, state, region, regionId, radiusMi, days, meetingsPerDay, window, leaderId, acceptedContactIds, extensionContactIds, topicIds }),
       );
     } catch (e: any) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      sendRequestError(res, e);
     }
   });
 
   const port = Number(process.env.ENGAGEMENTS_AGENT_PORT || 3020);
   const server = app.listen(port, () => {
     console.log(`Engagements orchestrator on http://localhost:${port}`);
-    console.log(`  POST /ask           { question, persona?, leaderId?, topN?, category? }  — category-first plan / free-form`);
+    console.log(`  POST /ask           { question, persona?, leaderId?, topN?, category?, context?, history? } — conversational planning`);
     console.log(`  GET  /topics        ?persona=EA_G8                                       — hot topics (topic-first entry)`);
     console.log(`  POST /plan-options  { question?|region?|city?, persona?, window? }       — interactive: survey + option menus`);
     console.log(`  POST /build         { leaderId, durationTier?, extensionContactIds?, region? } — build itinerary + trip map`);
@@ -359,7 +377,8 @@ async function serve(): Promise<void> {
     console.log(`  POST /plan-radius   { days, company?|anchorContactId?|lat+lng?|city?, radiusMi?, persona? } — fixed-radius: fill + menus`);
     console.log(`  POST /build-radius  { leaderId, days, company?|anchorContactId?|lat+lng?|city?, acceptedContactIds? } — event-less itinerary + map`);
     console.log(`  -> engagements MCP: ${process.env.ENGAGEMENTS_MCP_URL || 'http://localhost:3010/mcp'}`);
-    console.log(`  -> model: ${process.env.AZURE_OPENAI_DEPLOYMENT ? `Azure OpenAI (${process.env.AZURE_OPENAI_DEPLOYMENT})` : 'not configured — deterministic fallback'}`);
+    console.log(`  -> Python MAF + AGT: ${process.env.ENGAGEMENTS_PYTHON_AGENT_URL || 'http://127.0.0.1:3030'}`);
+    console.log(`  -> model: ${process.env.AZURE_OPENAI_DEPLOYMENT ? `Azure OpenAI (${process.env.AZURE_OPENAI_DEPLOYMENT}) via Microsoft Agent Framework` : 'not configured — governed deterministic fallback'}`);
   });
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {

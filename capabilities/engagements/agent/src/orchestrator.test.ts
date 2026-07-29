@@ -5,10 +5,11 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 
 import { loadLeaders, loadRegions, loadTopics, defaultWindow, regionChoices, resolveAreaInput, resolveDefaultLeaderId, rosterForPrompt, topicIdsFromText, topicsForPrompt } from './catalog.js';
-import { AGENT_TOOLS } from './tools.js';
-import { anchorGuess, areaAskAnchor, areaClarifyQuestion, bestLeadersForCategory, buildOptionQuestions, buildRadiusQuestions, buildSystemPrompt, categoryClarifyQuestion, categoryFromQuestion, itineraryLengthTargets, leaderCategoryTargets, hotTopicQuestion, leaderClarifyQuestion, leaderFromQuestion, optionsToPlanResult, parseRadiusAsk, rankHotTopics, selectedContactIds } from './orchestrator.js';
+import { AGENT_TOOL_NAMES } from './tools.js';
+import { agentDecisionToPlanResult, anchorGuess, areaAskAnchor, areaClarifyQuestion, bestLeadersForCategory, buildOptionQuestions, buildRadiusQuestions, buildSystemPrompt, categoryClarifyQuestion, categoryFromQuestion, contextualEventQuestionKind, isContextualFollowUpQuestion, isDayByDayFollowUp, isTopicLandscapeQuestion, itineraryLengthTargets, leaderCategoryTargets, hotTopicQuestion, leaderClarifyQuestion, leaderFromQuestion, normalizeConversationHistory, normalizeEventPlanContext, optionsToPlanResult, parseDayScheduleEdit, parseRadiusAsk, planTrip, rankHotTopics, renderEventDayByDay, requiresPriorGroundedContext, selectedContactIds } from './orchestrator.js';
 
 test('topicIdsFromText maps UAS/drone to T3', () => {
   assert.deepEqual(topicIdsFromText('who should I meet on UAS/drone?'), ['T3']);
@@ -37,18 +38,21 @@ test('resolveDefaultLeaderId resolves to a real leader', () => {
   assert.ok(loadLeaders().some((l) => l.id === resolveDefaultLeaderId()));
 });
 
-test('AGENT_TOOLS expose the 5 engagements tools with required fields', () => {
+test('the Python agent contract exposes the full planning tool surface', () => {
   assert.deepEqual(
-    AGENT_TOOLS.map((t) => t.name),
-    ['search_contacts', 'search_events', 'suggest_candidates', 'plan_radius', 'build_itinerary'],
+    AGENT_TOOL_NAMES,
+    [
+      'search_contacts',
+      'search_events',
+      'survey_area',
+      'suggest_leaders',
+      'nearby_leaders',
+      'plan_options',
+      'plan_radius',
+      'suggest_candidates',
+      'build_itinerary',
+    ],
   );
-  const suggest = AGENT_TOOLS.find((t) => t.name === 'suggest_candidates')!;
-  assert.deepEqual((suggest.parameters as any).required, ['leaderId']);
-  const radius = AGENT_TOOLS.find((t) => t.name === 'plan_radius')!;
-  assert.deepEqual((radius.parameters as any).required, ['days']);
-  const build = AGENT_TOOLS.find((t) => t.name === 'build_itinerary')!;
-  // build_itinerary now serves BOTH event and radius modes, so only the leader is universally required.
-  assert.deepEqual((build.parameters as any).required, ['leaderId']);
 });
 
 test('anchorGuess extracts the AUSA acronym from the canonical demo question', () => {
@@ -57,6 +61,322 @@ test('anchorGuess extracts the AUSA acronym from the canonical demo question', (
 
 test('anchorGuess falls back to the phrase after a preposition', () => {
   assert.equal(anchorGuess('planning a visit to Fort Bragg next week'), 'Fort Bragg');
+});
+
+test('day-by-day follow-up detection does not reinterpret the phrase as an event anchor', () => {
+  assert.equal(isDayByDayFollowUp('give me a day by day break down'), true);
+  assert.equal(isDayByDayFollowUp('show the daily itinerary'), true);
+  assert.equal(isDayByDayFollowUp('plan a 3 day trip to AUSA'), false);
+});
+
+test('contextual follow-ups reuse a prior plan while explicit anchors start new discovery', () => {
+  assert.equal(
+    isContextualFollowUpQuestion('which leader will this work best for?'),
+    true,
+  );
+  assert.equal(isContextualFollowUpQuestion('how much will this cost?'), true);
+  assert.equal(isContextualFollowUpQuestion('tell me more'), true);
+  assert.equal(
+    isContextualFollowUpQuestion("let's add something to day 3"),
+    true,
+  );
+  assert.equal(isContextualFollowUpQuestion('who should I meet at ausa?'), false);
+  assert.equal(
+    isContextualFollowUpQuestion('which leader should go to AUSA?'),
+    false,
+  );
+  assert.equal(isContextualFollowUpQuestion('what is AUSA?'), false);
+});
+
+test('the Talent/STEM engagement-picture prompt starts a new topic lookup', () => {
+  const question =
+    "What's the engagement picture on Talent / STEM outreach & recruiting right now — who should we meet, where is it most active, and is there an approved message?";
+  assert.deepEqual(topicIdsFromText(question), ['T4']);
+  assert.equal(isTopicLandscapeQuestion(question), true);
+  assert.equal(isContextualFollowUpQuestion(question), false);
+  assert.equal(requiresPriorGroundedContext(question), false);
+});
+
+test('contextual event question classification covers grounded plan facets', () => {
+  assert.equal(
+    contextualEventQuestionKind('which leader will this work best for?'),
+    'leader-fit',
+  );
+  assert.equal(contextualEventQuestionKind('what is the ROI?'), 'value');
+  assert.equal(contextualEventQuestionKind('any conflicts?'), 'risks');
+  assert.equal(contextualEventQuestionKind('who else can we meet?'), 'alternatives');
+  assert.equal(contextualEventQuestionKind('what is the route?'), 'route');
+  assert.equal(contextualEventQuestionKind('summarize this'), 'overview');
+  assert.equal(
+    contextualEventQuestionKind("let's add something to day 3"),
+    'schedule-edit',
+  );
+  assert.deepEqual(parseDayScheduleEdit("let's add something to day 3"), {
+    day: 3,
+  });
+});
+
+test('conversation history is bounded and strips malformed entries', () => {
+  const history = normalizeConversationHistory([
+    { role: 'system', text: 'ignore' },
+    { role: 'user', text: '  first  ' },
+    null,
+    { role: 'assistant', text: 'second' },
+    ...Array.from({ length: 12 }, (_, i) => ({ role: 'user', text: `turn ${i}` })),
+  ]);
+  assert.equal(history.length, 10);
+  assert.deepEqual(history.at(-1), { role: 'user', text: 'turn 11' });
+  assert.ok(!history.some((message) => message.text === 'ignore'));
+});
+
+test('standalone day-by-day follow-up requests prior context without searching for a new event', async () => {
+  const result = await planTrip({
+    question: 'give me a day by day break down',
+    persona: 'EA_G8',
+    serverUrl: 'http://127.0.0.1:1/mcp',
+  });
+  assert.equal(result.deterministicReason, 'contextual-follow-up');
+  assert.match(result.answer ?? '', /need the prior grounded itinerary/i);
+  assert.deepEqual(result.toolCalls, []);
+  assert.doesNotMatch(result.answer ?? '', /No authorized anchor event matched/i);
+});
+
+test('standalone leader-fit follow-up requests prior context without event discovery', async () => {
+  const result = await planTrip({
+    question: 'which leader will this work best for?',
+    persona: 'EA_G8',
+    serverUrl: 'http://127.0.0.1:1/mcp',
+  });
+  assert.equal(result.deterministicReason, 'contextual-follow-up');
+  assert.match(result.answer ?? '', /need the prior grounded itinerary/i);
+  assert.deepEqual(result.toolCalls, []);
+  assert.doesNotMatch(result.answer ?? '', /No authorized anchor event matched/i);
+});
+
+test('Talent/STEM landscape falls back to governed topic tools with no or stale trip context', { concurrency: false }, async () => {
+  const requests: { path: string; body: any }[] = [];
+  const runtime = createServer((request, response) => {
+    let raw = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => {
+      raw += chunk;
+    });
+    request.on('end', () => {
+      const body = raw ? JSON.parse(raw) : {};
+      const path = request.url ?? '';
+      requests.push({ path, body });
+      response.setHeader('content-type', 'application/json');
+      if (path === '/run') {
+        response.statusCode = 503;
+        response.end(JSON.stringify({ detail: 'model unavailable' }));
+        return;
+      }
+      if (path === '/tools/list') {
+        response.end(
+          JSON.stringify({ tools: AGENT_TOOL_NAMES.map((name) => ({ name })) }),
+        );
+        return;
+      }
+      const modelResult =
+        body.name === 'search_contacts'
+          ? {
+              rejected: false,
+              redactedCount: 1,
+              contacts: [
+                {
+                  id: 'C-STEM-1',
+                  name: 'Dr. Ada Lovelace',
+                  org: 'STEM Alliance',
+                  city: 'Boston',
+                  state: 'MA',
+                  topicIds: ['T4'],
+                  strategicValue: 5,
+                  status: 'active',
+                },
+                {
+                  id: 'C-STEM-2',
+                  name: 'Ms. Grace Hopper',
+                  org: 'Talent Lab',
+                  city: 'Austin',
+                  state: 'TX',
+                  topicIds: ['T4'],
+                  strategicValue: 4,
+                  status: 'prospect',
+                },
+              ],
+            }
+          : {
+              rejected: false,
+              redactedCount: 2,
+              events: [
+                {
+                  id: 'E-STEM',
+                  name: 'STEM Partnership Forum',
+                  city: 'Boston',
+                  state: 'MA',
+                  start: '2025-10-16',
+                  end: '2025-10-17',
+                  topicIds: ['T4'],
+                },
+              ],
+            };
+      response.end(
+        JSON.stringify({
+          name: body.name,
+          args: body.args,
+          result: modelResult,
+          text: `${body.name} result`,
+          modelResult,
+        }),
+      );
+    });
+  });
+  await new Promise<void>((resolve) =>
+    runtime.listen(0, '127.0.0.1', resolve),
+  );
+  const address = runtime.address();
+  assert.ok(address && typeof address !== 'string');
+  const priorRuntimeUrl = process.env.ENGAGEMENTS_PYTHON_AGENT_URL;
+  const priorEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+  const priorDeployment = process.env.AZURE_OPENAI_DEPLOYMENT;
+  process.env.ENGAGEMENTS_PYTHON_AGENT_URL =
+    `http://127.0.0.1:${address.port}`;
+  process.env.AZURE_OPENAI_ENDPOINT = 'https://model.invalid';
+  process.env.AZURE_OPENAI_DEPLOYMENT = 'unavailable';
+
+  const question =
+    "What's the engagement picture on Talent / STEM outreach & recruiting right now — who should we meet, where is it most active, and is there an approved message?";
+  const staleContext = {
+    version: 1 as const,
+    kind: 'event' as const,
+    persona: 'EA_G8',
+    leaderId: 'L5',
+    eventId: 'E-AUSA',
+    contactIds: ['P2', 'C4'],
+    topicIds: ['T3'],
+  };
+  try {
+    for (const context of [undefined, staleContext]) {
+      const result = await planTrip({
+        question,
+        persona: 'EA_G8',
+        serverUrl: 'http://mcp.invalid/mcp',
+        context,
+      });
+      assert.equal(result.ok, true);
+      assert.equal(result.deterministicReason, 'topic-landscape');
+      assert.equal(result.stage, 'answer');
+      assert.deepEqual(result.topicIds, ['T4']);
+      assert.deepEqual(
+        result.toolCalls.map((call) => call.name),
+        ['search_contacts', 'search_events'],
+      );
+      assert.deepEqual(result.toolCalls[0].args, { topicIds: ['T4'] });
+      assert.match(result.answer ?? '', /Dr\. Ada Lovelace/);
+      assert.match(result.answer ?? '', /Boston, MA \(1 contact, 1 event\)/);
+      assert.match(result.answer ?? '', /approved message is cataloged/i);
+      assert.match(result.answer ?? '', /3 results were redacted/i);
+      assert.doesNotMatch(result.answer ?? '', /prior grounded itinerary/i);
+    }
+    const runs = requests.filter((request) => request.path === '/run');
+    assert.equal(runs.length, 2);
+    assert.match(runs[0].body.user, /^What's the engagement picture/m);
+    assert.doesNotMatch(runs[0].body.user, /Prior grounded plan references/);
+    assert.match(runs[1].body.user, /Prior grounded plan references/);
+    assert.match(runs[1].body.user, /"eventId":"E-AUSA"/);
+  } finally {
+    if (priorRuntimeUrl === undefined)
+      delete process.env.ENGAGEMENTS_PYTHON_AGENT_URL;
+    else process.env.ENGAGEMENTS_PYTHON_AGENT_URL = priorRuntimeUrl;
+    if (priorEndpoint === undefined) delete process.env.AZURE_OPENAI_ENDPOINT;
+    else process.env.AZURE_OPENAI_ENDPOINT = priorEndpoint;
+    if (priorDeployment === undefined)
+      delete process.env.AZURE_OPENAI_DEPLOYMENT;
+    else process.env.AZURE_OPENAI_DEPLOYMENT = priorDeployment;
+    await new Promise<void>((resolve, reject) =>
+      runtime.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test('event follow-up context is persona-bound, deduplicated, and validated', () => {
+  const context = {
+    version: 1,
+    kind: 'event',
+    persona: 'EA_G8',
+    leaderId: 'L1',
+    eventId: 'E-AUSA',
+    contactIds: ['P2', 'C4', 'P2', ''],
+    topicIds: ['T3', 'T3'],
+    dayAssignments: { P2: 3, C4: 5, C3: 2, bad: 99 },
+  };
+  assert.deepEqual(normalizeEventPlanContext(context, 'EA_G8'), {
+    version: 1,
+    kind: 'event',
+    persona: 'EA_G8',
+    leaderId: 'L1',
+    eventId: 'E-AUSA',
+    contactIds: ['P2', 'C4'],
+    topicIds: ['T3'],
+    dayAssignments: { P2: 3, C4: 5 },
+  });
+  assert.equal(normalizeEventPlanContext(context, 'EA_BASIC'), null);
+  assert.equal(
+    normalizeEventPlanContext({ ...context, contactIds: [] }, 'EA_G8'),
+    null,
+  );
+});
+
+test('event day-by-day rendering uses event dates and route order without inventing meetings', () => {
+  const build = {
+    leader: { id: 'L1', name: 'MG D. Whitfield' },
+    event: {
+      id: 'E-AUSA',
+      name: 'AUSA',
+      start: '2025-10-12',
+      end: '2025-10-15',
+    },
+    accepted: [
+      { contactId: 'P2', name: 'Sentinel Drone Systems', city: 'San Diego', state: 'CA', placement: 'on-site' },
+      { contactId: 'C4', name: 'Capital Defense Angels', city: 'Alexandria', state: 'VA', placement: 'off-site' },
+      { contactId: 'C3', name: 'Meridian Robotics', city: 'Reston', state: 'VA', placement: 'off-site' },
+    ],
+    route: {
+      order: [
+        { id: 'P2', kind: 'on-site' },
+        { id: 'C4', kind: 'off-site' },
+        { id: 'C3', kind: 'off-site' },
+      ],
+      legs: [
+        { from: '__origin__', to: 'C4', estTravelMins: 30 },
+        { from: 'C4', to: 'C3', estTravelMins: 60 },
+      ],
+    },
+    duration: { days: 5, onSiteDays: 4 },
+  };
+  const answer = renderEventDayByDay(build);
+
+  assert.match(answer, /Day 1 — Sun, Oct 12, 2025: AUSA; on-site meeting with Sentinel Drone Systems/);
+  assert.match(answer, /Day 2 — Mon, Oct 13, 2025: AUSA anchor day; no specific contact meeting is assigned/);
+  assert.match(answer, /Day 5 — Thu, Oct 16, 2025: Off-site swing: Capital Defense Angels \(Alexandria, VA\) → Meridian Robotics \(Reston, VA\)/);
+  assert.match(answer, /Estimated route travel: 90 min/);
+  assert.match(answer, /Exact meeting times are not present/);
+  assert.doesNotMatch(answer, /Day 6/);
+
+  const revised = renderEventDayByDay(build, { C4: 3 });
+  assert.match(
+    revised,
+    /Day 3 — Tue, Oct 14, 2025: AUSA; off-site meeting with Capital Defense Angels \(Alexandria, VA\)/,
+  );
+  assert.match(revised, /Estimated route-leg travel: 30 min/);
+  assert.match(
+    revised,
+    /Day 5 — Thu, Oct 16, 2025: Off-site swing: Meridian Robotics \(Reston, VA\)/,
+  );
+  assert.doesNotMatch(
+    revised,
+    /Day 5[^\n]*Capital Defense Angels/,
+  );
 });
 
 // ── Leader-first `/ask`: name the senior leader, or ASK who ─────────────────
@@ -139,7 +459,224 @@ test('system prompt embeds the roster and the chosen default leader + topN', () 
   assert.ok(prompt.includes('L1:'));
   assert.ok(prompt.includes('"L1"'));
   assert.ok(prompt.includes('top 3'));
+  assert.ok(prompt.includes('You own intent classification'));
+  assert.ok(prompt.includes('Contextual follow-up'));
+  assert.ok(prompt.includes('PRIMARY router'));
+  assert.ok(prompt.includes('approved-message availability'));
+  assert.ok(prompt.includes('supplied eventId'));
   assert.ok(rosterForPrompt().length > 0 && topicsForPrompt().includes('T3'));
+  assert.match(topicsForPrompt(), /T4: .*approved message yes/);
+  assert.match(topicsForPrompt(), /T3: .*approved message no/);
+});
+
+test('agent decision projects grounded category clarification into the chat contract', () => {
+  const base = {
+    ok: false,
+    mode: 'deterministic',
+    persona: 'EA_G8',
+    question: 'Plan a trip to Boston',
+    answer: null,
+    toolCalls: [],
+    menu: null,
+    itinerary: null,
+    tripMap: null,
+    redactedCount: null,
+    rejected: false,
+    stage: 'plan',
+    clarify: null,
+  } as any;
+  const result = agentDecisionToPlanResult(
+    base,
+    {
+      intent: 'area',
+      stage: 'clarify',
+      clarify: 'category',
+      category: null,
+      leaderId: null,
+      recommendedOptionIndex: null,
+      answer: 'Which engagement category should this trip focus on?',
+    },
+    [{
+      name: 'plan_options',
+      args: { region: 'Boston' },
+      text: 'Area options',
+      result: {
+        area: { id: 'R-BOSTON', name: 'Boston' },
+        today: '2025-10-06',
+        topicIds: ['T2'],
+        areaSurvey: [{ topicId: 'T2' }],
+        staleContacts: [],
+        areaEvents: [],
+        categoryBreakdown: [{
+          category: 'industry',
+          label: 'Industry',
+          total: 2,
+          strategicValueSum: 8,
+          staleCount: 1,
+          reason: '2 industry engagements',
+        }],
+        redactedCount: 1,
+      },
+    }],
+  );
+
+  assert.equal(result.mode, 'llm');
+  assert.equal(result.stage, 'clarify');
+  assert.equal(result.clarify, 'category');
+  assert.equal(result.questions?.[0].choices[0].value, 'industry');
+  assert.equal(result.area?.name, 'Boston');
+  assert.equal(result.redactedCount, 1);
+});
+
+test('agent decision preserves lookup stage, topic scope, and aggregate redactions', () => {
+  const base = {
+    ok: false,
+    mode: 'deterministic',
+    persona: 'EA_G8',
+    question: "What's the engagement picture on Talent / STEM?",
+    answer: null,
+    toolCalls: [],
+    menu: null,
+    itinerary: null,
+    tripMap: null,
+    redactedCount: null,
+    rejected: false,
+    stage: 'plan',
+    clarify: null,
+  } as any;
+  const result = agentDecisionToPlanResult(
+    base,
+    {
+      intent: 'lookup',
+      stage: 'answer',
+      clarify: null,
+      category: null,
+      leaderId: null,
+      recommendedOptionIndex: null,
+      answer: 'Talent/STEM engagement picture.',
+    },
+    [
+      {
+        name: 'search_contacts',
+        args: { topicIds: ['T4'] },
+        text: 'contacts',
+        result: { contacts: [], redactedCount: 1, rejected: false },
+      },
+      {
+        name: 'search_events',
+        args: { topicIds: ['T4'] },
+        text: 'events',
+        result: { events: [], redactedCount: 2, rejected: false },
+      },
+    ],
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.stage, 'answer');
+  assert.deepEqual(result.topicIds, ['T4']);
+  assert.equal(result.redactedCount, 3);
+});
+
+test('agent decision projects a built itinerary without TypeScript routing', () => {
+  const base = {
+    ok: false,
+    mode: 'deterministic',
+    persona: 'EA_G8',
+    question: 'Plan AUSA for L1',
+    answer: null,
+    toolCalls: [],
+    menu: null,
+    itinerary: null,
+    tripMap: null,
+    redactedCount: null,
+    rejected: false,
+    stage: 'plan',
+    clarify: null,
+  } as any;
+  const result = agentDecisionToPlanResult(
+    base,
+    {
+      intent: 'event',
+      stage: 'plan',
+      clarify: null,
+      category: null,
+      leaderId: 'L1',
+      recommendedOptionIndex: null,
+      answer: 'AUSA itinerary ready.',
+    },
+    [{
+      name: 'build_itinerary',
+      args: { leaderId: 'L1', eventId: 'E-AUSA', acceptedContactIds: ['C1'] },
+      text: 'Built itinerary',
+      result: {
+        leader: { id: 'L1', name: 'MG D. Whitfield' },
+        event: { id: 'E-AUSA', name: 'AUSA' },
+        accepted: [{ contactId: 'C1', name: 'Contact One' }],
+        route: { order: [] },
+        roi: { roiScore: 1.2 },
+        conflicts: [],
+        tripMap: { title: 'AUSA' },
+        redactedCount: 0,
+      },
+    }],
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, 'llm');
+  assert.equal(result.leaderId, 'L1');
+  assert.equal(result.menu?.[0].contactId, 'C1');
+  assert.equal(result.tripMap?.title, 'AUSA');
+});
+
+test('agent decision projects multiple framework-built event options', () => {
+  const base = {
+    ok: false,
+    mode: 'deterministic',
+    persona: 'EA_G8',
+    question: 'Plan AUSA for L1',
+    answer: null,
+    toolCalls: [],
+    menu: null,
+    itinerary: null,
+    tripMap: null,
+    redactedCount: null,
+    rejected: false,
+    stage: 'plan',
+    clarify: null,
+  } as any;
+  const build = (days: number, ids: string[]) => ({
+    leader: { id: 'L1', name: 'MG D. Whitfield' },
+    event: { id: 'E-AUSA', name: 'AUSA' },
+    accepted: ids.map((contactId) => ({ contactId })),
+    route: { order: [] },
+    duration: { days },
+    roi: { roiScore: days, overBudget: false },
+    conflicts: [],
+    tripMap: { days },
+    redactedCount: 0,
+  });
+  const result = agentDecisionToPlanResult(
+    base,
+    {
+      intent: 'event',
+      stage: 'options',
+      clarify: null,
+      category: null,
+      leaderId: 'L1',
+      recommendedOptionIndex: 1,
+      answer: 'Two AUSA itinerary options are ready.',
+    },
+    [
+      { name: 'build_itinerary', args: {}, text: 'Short', result: build(2, ['C1']) },
+      { name: 'build_itinerary', args: {}, text: 'Expanded', result: build(4, ['C1', 'C2']) },
+    ],
+  );
+
+  assert.equal(result.stage, 'options');
+  assert.equal(result.options?.length, 2);
+  assert.equal(result.recommendedOptionId, 'agent-option-2');
+  assert.equal(result.menu?.length, 2);
+  assert.equal(result.tripMap?.days, 4);
 });
 
 // ── Phase 4 — interactive, area-first OPTIONED planning ─────────────────────
@@ -214,6 +751,7 @@ test('optionsToPlanResult renders an AREA options envelope (no event) — area n
   assert.equal(pr.clarify, null);
   assert.equal(pr.leaderId, 'L1');
   assert.equal(pr.event, null);
+  assert.deepEqual(pr.topicIds, ['T3']);
   assert.equal(pr.options?.length, 2);
   assert.equal(pr.recommendedOptionId, '5d');
   assert.match(pr.answer ?? '', /Central Texas/);

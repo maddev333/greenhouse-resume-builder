@@ -1,0 +1,29 @@
+from pathlib import Path
+
+from engagements_agent.config import (
+    DEFAULT_AZURE_OPENAI_API_VERSION,
+    REPO_ROOT,
+    Settings,
+)
+
+
+def test_relative_governance_paths_are_repo_relative(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGT_POLICY_PATH", "governance/policy.yaml")
+    monkeypatch.setenv("AGT_AUDIT_PATH", ".local/audit.jsonl")
+
+    settings = Settings.from_env()
+
+    assert settings.governance_policy_dir == REPO_ROOT / "governance"
+    assert settings.governance_audit_path == REPO_ROOT / ".local" / "audit.jsonl"
+
+
+def test_azure_openai_api_version_has_a_safe_default(monkeypatch) -> None:
+    monkeypatch.delenv("AZURE_OPENAI_API_VERSION", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.model_api_version == DEFAULT_AZURE_OPENAI_API_VERSION

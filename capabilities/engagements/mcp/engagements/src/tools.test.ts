@@ -120,6 +120,19 @@ test('search_events: AUSA resolves to E-AUSA for an authorized caller', async ()
   }
 });
 
+test('search_events: an event id resolves directly for grounded follow-ups', async () => {
+  const { client, close } = await connect('EA_BASIC');
+  try {
+    const res = await call(client, 'search_events', { query: 'E-AUSA' });
+    assert.deepEqual(
+      res.structuredContent.events.map((e: { id: string }) => e.id),
+      ['E-AUSA'],
+    );
+  } finally {
+    await close();
+  }
+});
+
 test('build_itinerary: EA_G8 accepts [P2, C4, C3] → routed stops, ROI and no over-budget', async () => {
   const { client, close } = await connect('EA_G8');
   try {

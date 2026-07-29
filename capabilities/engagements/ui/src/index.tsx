@@ -165,7 +165,7 @@ interface LeaderPick {
   selected?: boolean;
 }
 
-// One finished, different-length itinerary option from the leader-first `/ask` flow.
+// One finished itinerary scope from the leader-first `/ask` flow.
 interface AskOption {
   id: string;
   tier?: string;
@@ -197,14 +197,14 @@ interface PlanResult {
   answer?: string;
   toolCalls?: { name: string }[];
   menu?: MenuItem[] | null;
-  itinerary?: unknown;
+  itinerary?: ItineraryDetail | null;
   tripMap?: unknown;
   redactedCount?: number | null;
   rejected?: boolean;
   error?: string;
 
   // Leader-first, multi-option `/ask` envelope (additive; absent on the legacy single-plan path).
-  stage?: "clarify" | "options" | "plan";
+  stage?: "clarify" | "options" | "plan" | "answer";
   clarify?: "leader" | "category" | null;
   /** The engagement category the plan is anchored on (category-first flow). */
   category?: string | null;
@@ -238,6 +238,62 @@ interface PlanResult {
   staleContacts?: StaleContactRef[];
   areaEvents?: AreaEventRef[];
   categoryBreakdown?: CategoryCoverageRef[];
+  conversationContext?: EventPlanContext | null;
+}
+
+interface EventPlanContext {
+  version: 1;
+  kind: "event";
+  persona: string;
+  leaderId: string;
+  eventId: string;
+  contactIds: string[];
+  topicIds?: string[];
+  dayAssignments?: Record<string, number>;
+}
+
+interface ConversationHistoryMessage {
+  role: "user" | "assistant";
+  text: string;
+}
+
+/** Reduce the last rendered plan to ids only; the gateway re-authorizes every id before follow-up use. */
+function eventPlanContextFromResult(
+  result: PlanResult,
+  persona: string,
+  selectedOption?: AskOption,
+): EventPlanContext | null {
+  if (result.conversationContext?.persona === persona) {
+    return result.conversationContext;
+  }
+  const recommended =
+    selectedOption ??
+    result.options?.find((option) => option.id === result.recommendedOptionId) ??
+    result.options?.find((option) => option.recommended) ??
+    null;
+  const itinerary = recommended?.itinerary ?? result.itinerary ?? null;
+  const leaderId = result.leaderId ?? itinerary?.leader?.id;
+  const eventId = result.event?.id ?? itinerary?.event?.id;
+  const contactIds = [
+    ...new Set(
+      (
+        recommended?.contactIds ??
+        itinerary?.accepted?.map((contact) => contact.contactId) ??
+        result.menu?.map((contact) => contact.contactId) ??
+        []
+      ).filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  ];
+  if (!leaderId || !eventId || contactIds.length === 0) return null;
+  return {
+    version: 1,
+    kind: "event",
+    persona,
+    leaderId,
+    eventId,
+    contactIds,
+    ...(result.topicIds?.length ? { topicIds: result.topicIds } : {}),
+  };
 }
 
 // Human-readable "why this turn was deterministic" (mode !== llm) — hover the chip for the full reason.
@@ -247,12 +303,22 @@ const DETERMINISTIC_REASON: Record<string, { short: string; detail: string }> =
     "area-anchored": {
       short: "area-anchored",
       detail:
-        "Your ask named a known region, so the deterministic area/category planner handled it (LLM-free by design). The model runs on free-form asks that name no known region or event.",
+        "The model was unavailable, so the governed deterministic fallback used the named region's area/category planner.",
     },
     "event-anchored": {
       short: "event-anchored",
       detail:
-        "The event router matched this ask to a known event, so the deterministic leader-first planner handled it (LLM-free by design). The model runs when no known area or event is matched.",
+        "The model was unavailable, so the governed deterministic fallback used the matched event's leader-first planner.",
+    },
+    "contextual-follow-up": {
+      short: "grounded follow-up",
+      detail:
+        "This request elaborates the prior itinerary. The agent reused recent conversation for reference resolution, re-authorized the plan's ids through the tools, and retained any explicit day assignments before answering.",
+    },
+    "topic-landscape": {
+      short: "topic lookup",
+      detail:
+        "The model was unavailable, so the governed deterministic fallback searched authorized contacts and events for the requested topic and reported approved-message availability from the grounded catalog.",
     },
     "mcp-unavailable": {
       short: "planner unavailable",
@@ -1106,6 +1172,7 @@ function AssistantBubble({
   msg,
   config,
   onAsk,
+  onPlanContext,
 }: {
   msg: ChatMessage;
   config: HostConfig;
@@ -1115,6 +1182,7 @@ function AssistantBubble({
     userEcho?: string,
     category?: string,
   ) => void;
+  onPlanContext: (context: EventPlanContext) => void;
 }) {
   const r = msg.result;
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
@@ -1305,7 +1373,7 @@ function AssistantBubble({
         </div>
       )}
 
-      {/* Different-length itinerary options — pick one to drill into its full detail. */}
+      {/* Itinerary scope options — pick one to drill into its full detail. */}
       {isOptions && (
         <div className="ask-options">
           {(r.options ?? []).map((o) => {
@@ -1318,7 +1386,13 @@ function AssistantBubble({
                 <button
                   className="opt-card-head opt-card-select"
                   aria-expanded={selected}
-                  onClick={() => setSelectedOptionId(selected ? null : o.id)}
+                  onClick={() => {
+                    setSelectedOptionId(selected ? null : o.id);
+                    if (!selected) {
+                      const context = eventPlanContextFromResult(r, persona, o);
+                      if (context) onPlanContext(context);
+                    }
+                  }}
                 >
                   <strong>{o.label ?? o.id}</strong>
                   {o.category && (
@@ -1393,6 +1467,7 @@ function App() {
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [hotTopics, setHotTopics] = useState<HotTopic[]>([]);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const planContextRef = useRef<EventPlanContext | null>(null);
 
   useEffect(() => {
     loadConfig().then(setConfig);
@@ -1439,6 +1514,23 @@ function App() {
     const question = (qOverride ?? input).trim();
     if (!question || busy || !config) return;
     const usedPersona = persona;
+    const context =
+      qOverride === undefined && planContextRef.current?.persona === usedPersona
+        ? planContextRef.current
+        : undefined;
+    const history: ConversationHistoryMessage[] = messages
+      .filter((message) => message.persona === usedPersona)
+      .reduce<ConversationHistoryMessage[]>((items, message) => {
+        if (message.role === "user" && message.text) {
+          items.push({ role: "user", text: message.text });
+          return items;
+        }
+        const text =
+          message.result?.answer ?? message.options?.answer ?? message.error;
+        if (text) items.push({ role: "assistant", text });
+        return items;
+      }, [])
+      .slice(-10);
     setMessages((m) => [
       ...m,
       {
@@ -1459,9 +1551,13 @@ function App() {
           persona: usedPersona,
           ...(leaderId ? { leaderId } : {}),
           ...(category ? { category } : {}),
+          ...(context ? { context } : {}),
+          ...(history.length ? { history } : {}),
         }),
       });
       const result = (await res.json()) as PlanResult;
+      const nextContext = eventPlanContextFromResult(result, usedPersona);
+      if (nextContext) planContextRef.current = nextContext;
       setMessages((m) => [
         ...m,
         { id: nextId++, role: "assistant", persona: usedPersona, result },
@@ -1560,7 +1656,10 @@ function App() {
             <span className="muted">persona</span>
             <select
               value={persona}
-              onChange={(e) => setPersona(e.target.value)}
+              onChange={(e) => {
+                planContextRef.current = null;
+                setPersona(e.target.value);
+              }}
               disabled={busy}
             >
               {PERSONAS.map((p) => (
@@ -1650,7 +1749,14 @@ function App() {
                     onPickRegion={onPickRegion}
                   />
                 ) : (
-                  <AssistantBubble msg={m} config={config} onAsk={ask} />
+                  <AssistantBubble
+                    msg={m}
+                    config={config}
+                    onAsk={ask}
+                    onPlanContext={(context) => {
+                      planContextRef.current = context;
+                    }}
+                  />
                 ))}
             </div>
           ),

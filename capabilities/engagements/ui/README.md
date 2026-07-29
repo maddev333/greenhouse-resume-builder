@@ -8,15 +8,17 @@ _"a chat UI that supports MCP UI apps."_
 Browser (chat host page :8080)
   │  chat + persona selector
   │
-  ├─► free-form is the PRIMARY path — type anything (Enter / "Ask ▸") — POST :3020/ask { question, persona, leaderId?, category? }
+  ├─► free-form is the PRIMARY path — type anything (Enter / "Ask ▸") — POST :3020/ask { question, persona, leaderId?, category?, context?, history? }
   │      ⇒ { answer, menu[], itinerary, tripMap, redactedCount, rejected, mode }
   │      OR (known-region, CATEGORY-first) stage:"clarify" { clarify:"category", categoryBreakdown[], questions:[{ id:"category", choices[] }] }
   │         → pick a category → re-ask with category ⇒ stage:"plan" { category, menu[], tripMap, leaderShortlist:[{ …, why, recommended, selected }] }  ← leader = OUTPUT
   │            (recommended leader is overridable: click an alternate → re-ask with category + leaderId ⇒ re-plans for that leader, marks it selected)
   │      OR (event-anchored, leader-first) stage:"clarify" { questions:[{ id:"leader", choices[] }] }
-  │         → pick a leader → re-ask with leaderId ⇒ stage:"options" { options:[different-length itineraries], recommendedOptionId }
+  │         → pick a leader → re-ask with leaderId ⇒ stage:"options" { options:[different-scope itineraries], recommendedOptionId }
   │   render: assistant text + candidate cards (chat‑native); category chips → single-audience plan + recommended-leader panel;
-  │           leader chips → different-length option cards; select an option to drill into its full detail (meetings, trip-ROI, advisories, nearby leaders, map)
+  │           leader chips → option cards; select one to drill into its full detail (meetings, trip-ROI, advisories, nearby leaders, map)
+  │      typed follow-ups carry recent same-persona turns for reference resolution plus the prior
+  │      plan's ids as `context`; the agent re-authorizes those ids with tools before answering
   │
   ├─► quick-start chips just *seed* a free-form /ask (they never lock you into a flow):
   │     ├─ 🔥 hot topics — GET :3020/topics?persona
@@ -68,19 +70,20 @@ Maps tiles from `*.atlas.microsoft.com` are allowed).
 ```powershell
 # from the repo root, one time:
 npm install
+npm run setup:python --workspace @greenhouse-resume-builder/cap-engagements-agent
 az login          # optional (enables the LLM path)
 ```
 
 ## Quickstart — one command
 
-From the repo root, build the host bundles and start **all three** servers (engagements MCP,
-orchestrator, chat host) with colour‑labelled output in a single window:
+From the repo root, build the host bundles and start the MCP server, TypeScript gateway, Python
+MAF/AGT runtime, and chat host with colour-labelled output in a single window:
 
 ```powershell
 npm run demo --workspace @greenhouse-resume-builder/cap-engagements-ui
 ```
 
-Then open **http://localhost:8080**. Press `Ctrl+C` to stop all three.
+Then open **http://localhost:8080**. Press `Ctrl+C` to stop all processes.
 
 ## Run manually (three terminals)
 
@@ -91,7 +94,7 @@ Prefer separate terminals (e.g. to isolate one server's logs)? Run these from th
 $env:ENGAGEMENTS_MCP_PORT=3010
 npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements
 
-# 2) M5 orchestrator (the chat brain)
+# 2) M5 agent — starts the Python MAF/AGT runtime and TypeScript gateway together
 npm run serve --workspace @greenhouse-resume-builder/cap-engagements-agent
 
 # 3) this chat host (builds both bundles, then serves :8080 host + :8081 sandbox)
@@ -116,8 +119,17 @@ senior leaders ("which senior leader are you planning for?") as chips; pick one 
 **multiple different-length itinerary options** (conference footprint → regional swing → full regional
 tour, one recommended). **Select any option to drill into its full detail** — the meetings (candidate
 cards), route, trip-ROI breakdown, advisories, nearby senior leaders, and the live trip map. For any
-other ask it resolves the leader/topic/anchor itself and returns assistant text + candidate cards (and
-a live trip map when one applies):
+typed follow-up such as *"which leader will this work best for?"*, *"why these meetings?"*, or
+*"give me a day-by-day breakdown,"* the host carries recent same-persona turns and the prior event
+plan's ids forward. The agent re-authorizes the ids with its tools before answering; it does not
+reinterpret the follow-up sentence as a new event search. Explicit new topics override stale plan
+context, so a hot-topic question starts a fresh governed lookup even after an itinerary turn. For
+other asks it resolves the
+leader/topic/anchor itself and returns assistant text + candidate cards (and a live trip map when one
+applies):
+
+Numbered-day edits are stateful: *"add something to day 3"* moves the nearest existing authorized
+off-site meeting into Day 3, explains the move, and carries that assignment into subsequent turns.
 
 > _Plan a trip to Boston — who should go, how long, and what's worth doing there?_
 >

@@ -41,7 +41,7 @@ const contactHaystack = (c: Contact): string =>
     .toLowerCase();
 
 const eventHaystack = (e: EngagementEvent): string =>
-  [e.name, e.location.city, e.location.state ?? ''].join(' ').toLowerCase();
+  [e.id, e.name, e.location.city, e.location.state ?? ''].join(' ').toLowerCase();
 
 /** Preference narrowing — drops out-of-policy candidates. NEVER adds any (cannot widen the trim). */
 function narrowByPreferences<T extends { id: string; strategicValue: number }>(

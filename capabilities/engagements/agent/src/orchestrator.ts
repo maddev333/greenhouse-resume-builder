@@ -2,22 +2,27 @@
  * The orchestrator — the "chat brain" (MVP-PLAN M5).
  *
  * Turns a natural-language trip question into a security-trimmed engagement plan by composing
- * the engagements capability's MCP tools. Primary path is an Azure OpenAI tool-calling loop
- * (mcp-core `runAgentLoop`); when the model is not configured/reachable it falls back to a
- * deterministic router so the demo always works offline. Either way it returns the ranked
+ * the engagements capability's MCP tools. Primary path is Microsoft Agent Framework running
+ * in the governed Python service; when the model is not configured/reachable it falls back to
+ * a deterministic router so the demo always works offline. Either way it returns the ranked
  * option menu, the itinerary, and the `ui://trip-map` payload for the chat host to render.
  *
  * Auth boundary: the caller's persona is passed to the capability as `x-demo-persona`, which
  * stands in for verified Keycloak claims. The capability enforces the trim server-side; the
  * orchestrator only ever sees authorized rows.
  */
-import mcpCore from "@greenhouse-resume-builder/mcp-core";
 import {
-  AGENT_TOOLS,
   makeToolClient,
   type CapturedCall,
   type ToolClient,
 } from "./tools.js";
+import {
+  isGovernanceDenial,
+  isModelConfigured,
+  runPythonAgent,
+  type PythonAgentDecision,
+  type PythonAgentResult,
+} from "./python-runtime.js";
 import {
   type AreaInput,
   type EngagementCategory,
@@ -36,9 +41,11 @@ import {
   topicsForPrompt,
 } from "./catalog.js";
 
-// mcp-core ships as CJS; default-import + destructure is immune to the `export *` named-export
-// interop issue under NodeNext ESM.
-const { runAgentLoop, isModelConfigured } = mcpCore;
+function throwIfGovernanceDenied(error: unknown): void {
+  if (isGovernanceDenial(error)) {
+    throw error;
+  }
+}
 
 export interface PlanRequest {
   question: string;
@@ -57,8 +64,33 @@ export interface PlanRequest {
   radiusMi?: number;
   /** Trip length (days); defaults to a size that holds the chosen audience's in-area meetings. */
   days?: number;
+  /** Prior event plan supplied by the chat host for grounded conversational follow-ups. */
+  context?: EventPlanContext;
+  /** Recent same-persona transcript used only to resolve conversational references. */
+  history?: ConversationHistoryMessage[];
   /** Engagements MCP endpoint; defaults to ENGAGEMENTS_MCP_URL or http://localhost:3010/mcp. */
   serverUrl?: string;
+}
+
+export interface ConversationHistoryMessage {
+  role: "user" | "assistant";
+  text: string;
+}
+
+/**
+ * Minimal prior-plan state carried by the stateless HTTP chat host. Every id is re-authorized through
+ * the capability before use; the gateway never treats this client-supplied context as trusted data.
+ */
+export interface EventPlanContext {
+  version: 1;
+  kind: "event";
+  persona: string;
+  leaderId: string;
+  eventId: string;
+  contactIds: string[];
+  topicIds?: string[];
+  /** Optional host-managed placement of authorized contact ids onto 1-based itinerary days. */
+  dayAssignments?: Record<string, number>;
 }
 
 /**
@@ -66,6 +98,8 @@ export interface PlanRequest {
  * UI so the demo explains itself:
  *   - 'area-anchored'        the ask named a known REGION → deterministic area/category-first planner (LLM-free by design)
  *   - 'event-anchored'       the ask named a known EVENT → deterministic leader-first planner (LLM-free by design)
+ *   - 'contextual-follow-up' the ask elaborates a prior grounded plan → deterministic formatter
+ *   - 'topic-landscape'      the ask requests a topic footprint → deterministic governed lookup
  *   - 'mcp-unavailable'      the capability server could not be reached → no planner/model turn was possible
  *   - 'model-not-configured' Azure OpenAI is not configured → deterministic fallback
  *   - 'model-unavailable'    Azure OpenAI is configured but the call failed/returned null → deterministic fallback
@@ -73,6 +107,8 @@ export interface PlanRequest {
 export type DeterministicReason =
   | "area-anchored"
   | "event-anchored"
+  | "contextual-follow-up"
+  | "topic-landscape"
   | "mcp-unavailable"
   | "model-not-configured"
   | "model-unavailable";
@@ -98,8 +134,8 @@ export interface PlanResult {
   error?: string;
 
   // ── Leader-first, multi-option `/ask` envelope (additive; absent on the legacy single-plan path) ──
-  /** 'clarify' = ask a question first (WHICH audience); 'options' = multiple finished itineraries; 'plan' = one itinerary. */
-  stage?: "clarify" | "options" | "plan";
+  /** 'answer' = grounded lookup; 'clarify' = ask a question; 'options' = itineraries; 'plan' = one itinerary. */
+  stage?: "clarify" | "options" | "plan" | "answer";
   /**
    * What is being clarified when stage === 'clarify'. Category-first flow asks 'category' (which
    * audience to anchor the trip on); the event-anchored path still asks 'leader' (WHO to send).
@@ -136,6 +172,8 @@ export interface PlanResult {
   areaEvents?: any[];
   /** In-area engagements rolled up by audience (Congressional / Academia / Industry / Army-internal) + coverage. */
   categoryBreakdown?: any[];
+  /** Updated grounded context for the chat host to carry into the next turn. */
+  conversationContext?: EventPlanContext | null;
 }
 
 const DEFAULT_URL = (): string =>
@@ -151,40 +189,128 @@ export function buildSystemPrompt(
   defaultLeaderId: string,
   topN: number,
 ): string {
+  const window = defaultWindow();
   return [
     "You are the Strategic Engagements Orchestrator, the planning brain for a U.S. Army senior-leader",
-    "executive assistant (EA). Turn the EA's natural-language trip question into a concrete,",
-    "security-trimmed engagement plan using ONLY the provided tools.",
+    "executive assistant (EA). You own intent classification, workflow selection, tool choice, and the",
+    "decision to answer, ask a grounded clarification, or finish a plan. You are the PRIMARY router for",
+    "every user turn; classify the current request before considering prior conversation. Use ONLY the",
+    "provided tools and the grounded leader/topic catalogs in this prompt.",
     "",
-    'The "you\'re already going there" nudge: when a leader is already attending an anchor event,',
-    "batch the highest-value people they should meet — on-site attendees/prospects (~0 extra travel)",
-    "and nearby stale relationships worth re-engaging.",
+    `Default planning window: ${window.start} through ${window.end}.`,
+    `Emergency fallback leader: "${defaultLeaderId}" (do not silently use it when a material leader choice is missing).`,
     "",
-    "The fixed-radius entry point: when the leader must visit a SPECIFIC company (or place) for a fixed",
-    'number of days with NO anchor event ("go meet Meridian Robotics for 3 days", "2 days within 60 mi of',
-    'Reston"), use plan_radius to fill the trip around that anchor, then build_itinerary with the same anchor.',
-    "",
-    "Leaders (use the id):",
+    "Leader roster (always use an id; engagement categories constrain who is a credible recommendation):",
     rosterForPrompt(),
     "",
-    'Topics (map the user\'s phrasing to these ids — e.g. "UAS/drone" or "autonomy" -> T3):',
+    'Topic catalog (map natural language such as "UAS/drone" or "autonomy" to the grounded ids):',
     topicsForPrompt(),
     "",
-    "Rules:",
-    `1. Leader: use "${defaultLeaderId}" unless the user names another leader from the roster.`,
-    '2. Anchor event: if the user names one (e.g. "AUSA"), pass it as eventQuery to suggest_candidates.',
-    "3. Topic: map the ask to topicIds from the catalog and pass them to suggest_candidates.",
-    "4. Event-anchored flow: call suggest_candidates to get the ranked menu, then ALWAYS follow with",
-    `   build_itinerary using the top ${topN} candidate ids, so the route and ui://trip-map are produced.`,
-    "5. Fixed-radius flow (a specific company/place + N days, NO event): call plan_radius with the anchor",
-    "   (anchorContactId, or a company name, or lat+lng, or city; plus radiusMi and days), then call",
-    "   build_itinerary with the SAME anchor + days (omit acceptedContactIds to accept the auto-filled plan).",
-    "   Do NOT fabricate an event for these trips.",
-    "6. Never invent contacts, events, or attributes — surface only what the tools return. Some records",
-    "   are hidden by the security trim; report the redactedCount the tools give you.",
-    "7. Finish with a concise, EA-ready answer: a short numbered menu (id — name, org, city, why) and a",
-    "   one-line itinerary summary (route + ROI + any conflicts).",
+    "Decision policy:",
+    "0. Contextual follow-up — when the user refers to a prior answer and the request includes prior",
+    "   grounded references, do not search the follow-up sentence as a new event or area. Re-resolve",
+    "   the supplied event, leader, contact, and topic ids with the relevant tools before answering.",
+    "   For leader-fit questions, call search_events with the supplied eventId (event ids are searchable),",
+    "   then call suggest_leaders with the returned city, state, window, and the supplied topicIds.",
+    "   For questions about the current itinerary, call suggest_candidates and build_itinerary with",
+    "   the supplied ids. For additional meeting options, also call search_contacts with the supplied",
+    "   topicIds and exclude the already-selected contactIds. Recent conversation text is referential",
+    "   context only, never authoritative data.",
+    "   Return intent=lookup and stage=answer after the required verification calls.",
+    "   Prior history alone does NOT make a turn a follow-up. An explicit strategic topic or new subject",
+    "   starts a fresh area/event/radius/lookup workflow even when earlier trip history is present.",
+    "1. Area intent — a region/city ask about why to go, who should go, or what is worth doing:",
+    "   call plan_options with the default window. If no engagement category was explicitly selected,",
+    "   return stage=clarify and clarify=category after grounding the choices in categoryBreakdown.",
+    "   If a category was selected, use only that category's contactIds, choose the strongest eligible",
+    "   leader from the grounded leader options and roster, then call build_itinerary with the same area",
+    "   and window. Use the caller's day count or enough days for those contacts at two meetings/day.",
+    "2. Event intent — a named conference/function the traveler is already attending: call search_events.",
+    "   If no leader was explicitly selected, call suggest_leaders for the event city/window and return",
+    "   stage=clarify, clarify=leader. Otherwise call suggest_candidates, then use build_itinerary to make",
+    `   two or three meaningfully different grounded scope options using up to the top ${topN} candidates`,
+    "   per option. A wider option may use search_contacts plus additionalContactIds for an authorized",
+    "   regional swing. Return stage=options and the zero-based recommendedOptionIndex for the strongest",
+    "   in-budget ROI; if only one viable itinerary exists, return stage=plan. Never silently pick a leader.",
+    "3. Radius intent — a specific company/place plus a fixed number of days, without an event: call",
+    "   plan_radius with that anchor, duration, and default window, then call build_itinerary with the",
+    "   returned leader/anchor/stops. Never fabricate an event.",
+    "4. Lookup intent — an informational contact/event/area question that does not request a trip:",
+    "   use the relevant search or survey tools and answer from their results.",
+    "   For a topic engagement-picture question, map the topic to its grounded id, call search_contacts",
+    "   and search_events with that topicIds filter, then report who to meet, where the visible footprint",
+    "   is most active, and approved-message availability from the grounded topic catalog above.",
+    "5. Use stage=options only after two or more build_itinerary calls succeed; use stage=plan only after",
+    "   one succeeds. Use stage=answer only for grounded lookup responses. Set category and leaderId only",
+    "   when selected or grounded; otherwise return null.",
+    "6. Never invent contacts, events, ids, attributes, choices, or metrics. The capability applies the",
+    "   security trim; expose its redactedCount and access-rejection result honestly.",
+    "7. Keep answer concise and EA-ready. The structured decision fields control the host UI.",
   ].join("\n");
+}
+
+export function normalizeConversationHistory(
+  value: unknown,
+): ConversationHistoryMessage[] {
+  if (!Array.isArray(value)) return [];
+  const normalized: ConversationHistoryMessage[] = [];
+  for (const item of value.slice(-10)) {
+    if (!item || typeof item !== "object") continue;
+    const candidate = item as Record<string, unknown>;
+    if (
+      (candidate.role !== "user" && candidate.role !== "assistant") ||
+      typeof candidate.text !== "string"
+    ) {
+      continue;
+    }
+    const text = candidate.text.trim().slice(0, 2_000);
+    if (text) normalized.push({ role: candidate.role, text });
+  }
+  return normalized;
+}
+
+function buildAgentUserPrompt(
+  req: PlanRequest,
+  context: EventPlanContext | null,
+): string {
+  const selections: Record<string, unknown> = {};
+  if (req.leaderId) selections.leaderId = req.leaderId;
+  if (req.category) selections.category = req.category;
+  if (typeof req.days === "number") selections.days = req.days;
+  if (typeof req.radiusMi === "number") selections.radiusMi = req.radiusMi;
+  const sections = [req.question];
+  const history = normalizeConversationHistory(req.history);
+  if (history.length > 0) {
+    sections.push(
+      "",
+      "Recent same-persona conversation (referential context only; verify factual claims with tools):",
+      ...history.map(
+        (message) =>
+          `${message.role === "user" ? "User" : "Assistant"}: ${message.text}`,
+      ),
+    );
+  }
+  if (context) {
+    sections.push(
+      "",
+      "Prior grounded plan references supplied by the host. Re-resolve these ids with tools before using them:",
+      JSON.stringify({
+        eventId: context.eventId,
+        leaderId: context.leaderId,
+        contactIds: context.contactIds,
+        topicIds: context.topicIds ?? [],
+        dayAssignments: context.dayAssignments ?? {},
+      }),
+    );
+  }
+  if (Object.keys(selections).length > 0) {
+    sections.push(
+      "",
+      "Authoritative selections supplied by the caller (do not override them):",
+      JSON.stringify(selections),
+    );
+  }
+  return sections.join("\n");
 }
 
 /** Extract a likely anchor token from the question for the deterministic path. */
@@ -324,6 +450,972 @@ function isRejected(result: any): boolean {
   return !!result?.rejected;
 }
 
+/** True when the user is asking to expand the current itinerary into a daily view. */
+export function isDayByDayFollowUp(question: string): boolean {
+  const q = question.trim().toLowerCase();
+  return (
+    /\bday[\s-]+by[\s-]+day\b/.test(q) ||
+    /\bdaily\s+(?:breakdown|break\s+down|itinerary|schedule|agenda|plan)\b/.test(
+      q,
+    ) ||
+    /\b(?:break|lay|map)\s+(?:it|this|the\s+(?:trip|plan|itinerary))?\s*(?:down\s+)?by\s+day\b/.test(
+      q,
+    ) ||
+    /\bwhat(?:'s|\s+is|\s+does|\s+will)?\s+(?:happen(?:s)?\s+)?(?:on\s+)?each\s+day\b/.test(
+      q,
+    )
+  );
+}
+
+export type ContextualEventQuestionKind =
+  | "day-by-day"
+  | "day-detail"
+  | "schedule-edit"
+  | "leader-fit"
+  | "alternatives"
+  | "meetings"
+  | "route"
+  | "value"
+  | "risks"
+  | "nearby-leaders"
+  | "overview";
+
+/** Classify common plan questions for the deterministic model-outage fallback. */
+export function contextualEventQuestionKind(
+  question: string,
+): ContextualEventQuestionKind {
+  const q = question.trim().toLowerCase();
+  if (isDayByDayFollowUp(question)) return "day-by-day";
+  if (parseDayScheduleEdit(question)) return "schedule-edit";
+  if (/\bday\s*\d{1,2}\b/.test(q)) return "day-detail";
+  if (
+    /\b(?:nearby|other)\s+leaders?\b/.test(q) ||
+    /\bleaders?.{0,25}\b(?:nearby|there|attending|overlap)\b/.test(q)
+  ) {
+    return "nearby-leaders";
+  }
+  if (
+    /\b(?:which|what|best|right|ideal|recommended?)\b.{0,45}\bleaders?\b/.test(
+      q,
+    ) ||
+    /\bleaders?\b.{0,45}\b(?:best|fit|right|ideal|recommended?)\b/.test(q) ||
+    /\bwho\s+should\s+(?:go|attend|lead|staff)\b/.test(q) ||
+    (leaderFromQuestion(question) != null &&
+      /\b(?:fit|better|best|work|suit|should|could|can)\b/.test(q))
+  ) {
+    return "leader-fit";
+  }
+  if (
+    /\bwho\s+else\b/.test(q) ||
+    /\b(?:add|another|alternative|replace|swap)\b/.test(q)
+  ) {
+    return "alternatives";
+  }
+  if (/\b(?:risk|conflict|issue|problem|warning|concern|feasib)\w*\b/.test(q)) {
+    return "risks";
+  }
+  if (/\b(?:roi|return|cost|value|worth|budget|payoff)\b/.test(q)) {
+    return "value";
+  }
+  if (
+    /\b(?:route|travel|distance|drive|flight|order|sequence|where)\b/.test(q)
+  ) {
+    return "route";
+  }
+  if (
+    /\b(?:meet|meeting|contact|company|organization|engagement)\w*\b/.test(q) ||
+    /\bwhy\s+(?:these|them)\b/.test(q)
+  ) {
+    return "meetings";
+  }
+  return "overview";
+}
+
+/** Strong backward references that cannot be resolved safely without prior grounded plan state. */
+export function requiresPriorGroundedContext(question: string): boolean {
+  if (isTopicLandscapeQuestion(question)) return false;
+  const q = question.trim();
+  const lower = q.toLowerCase();
+  return (
+    isDayByDayFollowUp(q) ||
+    /\bday\s*\d{1,2}\b/i.test(q) ||
+    /\b(?:this|that|it|these|those|previous|prior|above)\b/.test(lower) ||
+    /\b(?:current|existing)\s+(?:plan|trip|itinerary|route|schedule)\b/.test(
+      lower,
+    ) ||
+    /\bthe\s+(?:plan|trip|itinerary|route|schedule|meetings?)\b/.test(lower)
+  );
+}
+
+/** A standalone topic-footprint question, including the text emitted by the hot-topic chips. */
+export function isTopicLandscapeQuestion(question: string): boolean {
+  if (topicIdsFromText(question).length === 0) return false;
+  const q = question.toLowerCase();
+  return (
+    /\bengagement\s+picture\b/.test(q) ||
+    /\bwhere\b.{0,35}\b(?:active|activity|hot|footprint)\b/.test(q) ||
+    /\bapproved\s+message\b/.test(q) ||
+    /\bwho\s+should\s+we\s+meet\b/.test(q) ||
+    /\bwhat(?:'s| is)\s+hot\b/.test(q)
+  );
+}
+
+/**
+ * A context-sensitive turn either explicitly points backward or asks about a plan facet without
+ * naming a new anchor. This keeps new "at AUSA" / "in Boston" asks on the normal discovery paths.
+ */
+export function isContextualFollowUpQuestion(question: string): boolean {
+  const q = question.trim();
+  const lower = q.toLowerCase();
+  if (requiresPriorGroundedContext(q)) return true;
+  // An explicit strategic topic starts a fresh lookup unless the user also points backward.
+  if (topicIdsFromText(q).length > 0) return false;
+  if (
+    /\bwhat(?:'s| is)\s+hot\b/.test(lower) ||
+    /\b(?:search|find|look\s+up)\b/.test(lower) ||
+    /^what(?:'s| is)\s+(?!this\b|that\b|it\b|the\b)(?:an?\s+)?[\w&.-]+(?:\s+[\w&.-]+){0,4}\??$/i.test(
+      q,
+    )
+  ) {
+    return false;
+  }
+  const explicitAnchor =
+    areaAskAnchor(q) != null ||
+    /\b(?:at|to|for|about|attending|visiting|in)\s+(?!(?:this|that|it|these|those)\b)(?!the\s+(?:plan|trip|event|itinerary)\b)[\w&.-]+(?:\s+[\w&.-]+){0,4}/i.test(
+      q,
+    );
+  if (explicitAnchor) return false;
+  if (contextualEventQuestionKind(q) !== "overview") return true;
+  return (
+    q.split(/\s+/).length <= 12 &&
+    /^(?:and|also|so|then|what|why|how|when|where|can|could|should|is|are|does|will|tell|compare)\b/i.test(
+      q,
+    )
+  );
+}
+
+/**
+ * Validate untrusted chat context and bind it to the current persona. The subsequent MCP calls
+ * independently re-authorize the event and every contact id.
+ */
+export function normalizeEventPlanContext(
+  value: unknown,
+  persona: string,
+): EventPlanContext | null {
+  if (!value || typeof value !== "object") return null;
+  const context = value as Record<string, unknown>;
+  if (
+    context.version !== 1 ||
+    context.kind !== "event" ||
+    context.persona !== persona ||
+    typeof context.leaderId !== "string" ||
+    !context.leaderId.trim() ||
+    typeof context.eventId !== "string" ||
+    !context.eventId.trim() ||
+    !Array.isArray(context.contactIds)
+  ) {
+    return null;
+  }
+
+  const contactIds = [
+    ...new Set(
+      context.contactIds.filter(
+        (id): id is string => typeof id === "string" && id.trim().length > 0,
+      ),
+    ),
+  ].slice(0, 50);
+  if (contactIds.length === 0) return null;
+
+  const topicIds = Array.isArray(context.topicIds)
+    ? [
+        ...new Set(
+          context.topicIds.filter(
+            (id): id is string =>
+              typeof id === "string" && id.trim().length > 0,
+          ),
+        ),
+      ].slice(0, 20)
+    : undefined;
+  const allowedContactIds = new Set(contactIds);
+  const dayAssignments =
+    context.dayAssignments &&
+    typeof context.dayAssignments === "object" &&
+    !Array.isArray(context.dayAssignments)
+      ? Object.fromEntries(
+          Object.entries(context.dayAssignments as Record<string, unknown>)
+            .filter(
+              ([contactId, day]) =>
+                allowedContactIds.has(contactId) &&
+                Number.isInteger(day) &&
+                Number(day) >= 1 &&
+                Number(day) <= 31,
+            )
+            .map(([contactId, day]) => [contactId, Number(day)]),
+        )
+      : {};
+
+  return {
+    version: 1,
+    kind: "event",
+    persona,
+    leaderId: context.leaderId.trim(),
+    eventId: context.eventId.trim(),
+    contactIds,
+    ...(topicIds?.length ? { topicIds } : {}),
+    ...(Object.keys(dayAssignments).length ? { dayAssignments } : {}),
+  };
+}
+
+export interface DayScheduleEdit {
+  day: number;
+}
+
+/** Parse an explicit request to place an item onto a numbered itinerary day. */
+export function parseDayScheduleEdit(
+  question: string,
+): DayScheduleEdit | null {
+  if (
+    !/\b(?:add|put|place|move|shift|schedule|book|slot|include)\b/i.test(
+      question,
+    )
+  ) {
+    return null;
+  }
+  const day = Number(question.match(/\bday\s*(\d{1,2})\b/i)?.[1]);
+  return Number.isInteger(day) && day > 0 ? { day } : null;
+}
+
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const FOLLOW_UP_WORKDAY_MINS = 8 * 60;
+const FOLLOW_UP_DWELL_MINS = 120;
+
+function addIsoDays(day: string, offset: number): string {
+  const time = Date.parse(`${day}T00:00:00Z`);
+  return Number.isFinite(time)
+    ? new Date(time + offset * DAY_MS).toISOString().slice(0, 10)
+    : day;
+}
+
+function inclusiveDays(start?: string, end?: string): number {
+  if (!start || !end || !ISO_DAY.test(start) || !ISO_DAY.test(end)) return 0;
+  const delta =
+    Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`);
+  return Number.isFinite(delta) && delta >= 0
+    ? Math.floor(delta / DAY_MS) + 1
+    : 0;
+}
+
+function displayDay(day: string): string {
+  if (!ISO_DAY.test(day)) return day;
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(`${day}T00:00:00Z`));
+}
+
+function contactWithLocation(contact: any): string {
+  const location = [contact?.city, contact?.state].filter(Boolean).join(", ");
+  return `${contact?.name ?? contact?.contactId ?? "Unnamed contact"}${
+    location ? ` (${location})` : ""
+  }`;
+}
+
+function contactName(contact: any): string {
+  return contact?.name ?? contact?.contactId ?? "Unnamed contact";
+}
+
+interface EventDaySlot {
+  date: string;
+  eventDay: boolean;
+  contacts: any[];
+  travelMins: number;
+}
+
+interface EventDaySchedule {
+  days: EventDaySlot[];
+  totalDays: number;
+  assignmentByContactId: Map<string, number>;
+  legsByDestination: Map<string, any>;
+}
+
+function buildEventDaySchedule(
+  build: any,
+  dayAssignments: Record<string, number> = {},
+): EventDaySchedule | null {
+  const event = build?.event;
+  const start = event?.start;
+  if (!event?.name || !start || !ISO_DAY.test(start)) return null;
+
+  const accepted: any[] = Array.isArray(build?.accepted)
+    ? build.accepted
+    : [];
+  const acceptedById = new Map<string, any>(
+    accepted
+      .filter((contact) => contact?.contactId)
+      .map((contact) => [contact.contactId, contact]),
+  );
+  const orderedIds: string[] = Array.isArray(build?.route?.order)
+    ? build.route.order
+        .map((stop: any) => stop?.id)
+        .filter((id: unknown): id is string => typeof id === "string")
+    : [];
+  const ordered = [
+    ...orderedIds
+      .map((id) => acceptedById.get(id))
+      .filter((contact): contact is any => !!contact),
+    ...accepted.filter(
+      (contact) => !orderedIds.includes(String(contact?.contactId ?? "")),
+    ),
+  ];
+  const onSiteDays = Math.max(
+    1,
+    Number(build?.duration?.onSiteDays) ||
+      inclusiveDays(event.start, event.end) ||
+      1,
+  );
+  const offSite = ordered.filter(
+    (contact) => contact?.placement !== "on-site",
+  );
+  const statedDays =
+    Number(build?.duration?.days) || Number(build?.days) || onSiteDays;
+  const assignmentMax = Math.max(
+    0,
+    ...Object.entries(dayAssignments)
+      .filter(([contactId]) => acceptedById.has(contactId))
+      .map(([, day]) => Number(day) || 0),
+  );
+  const totalDays = Math.max(
+    onSiteDays + (offSite.length > 0 ? 1 : 0),
+    statedDays,
+    assignmentMax,
+  );
+  const days: EventDaySlot[] = Array.from(
+    { length: totalDays },
+    (_, index) => ({
+      date: addIsoDays(start, index),
+      eventDay: index < onSiteDays,
+      contacts: [],
+      travelMins: 0,
+    }),
+  );
+  const legsByDestination = new Map<string, any>(
+    (Array.isArray(build?.route?.legs) ? build.route.legs : [])
+      .filter((leg: any) => typeof leg?.to === "string")
+      .map((leg: any) => [leg.to, leg]),
+  );
+  const assignmentByContactId = new Map<string, number>();
+  const place = (contact: any, dayNumber: number): void => {
+    const day = days[dayNumber - 1];
+    if (!day || !contact?.contactId) return;
+    day.contacts.push(contact);
+    assignmentByContactId.set(contact.contactId, dayNumber);
+    if (contact.placement !== "on-site") {
+      day.travelMins += Math.max(
+        0,
+        Number(legsByDestination.get(contact.contactId)?.estTravelMins) || 0,
+      );
+    }
+  };
+
+  for (const contact of ordered) {
+    const assignedDay = dayAssignments[contact.contactId];
+    if (
+      Number.isInteger(assignedDay) &&
+      assignedDay >= 1 &&
+      assignedDay <= totalDays
+    ) {
+      place(contact, assignedDay);
+    }
+  }
+
+  const unassignedOnSite = ordered.filter(
+    (contact) =>
+      contact?.placement === "on-site" &&
+      !assignmentByContactId.has(contact.contactId),
+  );
+  unassignedOnSite.forEach((contact, index) => {
+    place(contact, Math.min(index + 1, onSiteDays));
+  });
+
+  const unassignedOffSite = offSite.filter(
+    (contact) => !assignmentByContactId.has(contact.contactId),
+  );
+  const extraDays = Math.max(1, totalDays - onSiteDays);
+  let elapsedMins = 0;
+  for (const contact of unassignedOffSite) {
+    const travelMins = Math.max(
+      0,
+      Number(legsByDestination.get(contact.contactId)?.estTravelMins) || 0,
+    );
+    elapsedMins += travelMins + FOLLOW_UP_DWELL_MINS;
+    const extraDayIndex = Math.min(
+      extraDays - 1,
+      Math.max(0, Math.ceil(elapsedMins / FOLLOW_UP_WORKDAY_MINS) - 1),
+    );
+    place(contact, onSiteDays + extraDayIndex + 1);
+  }
+
+  return {
+    days,
+    totalDays,
+    assignmentByContactId,
+    legsByDestination,
+  };
+}
+
+/**
+ * Render the capability's event itinerary as a grounded daily sequence. It does not invent meeting
+ * times or activities: empty conference days are called out, and off-site stops follow route order.
+ */
+export function renderEventDayByDay(
+  build: any,
+  dayAssignments: Record<string, number> = {},
+): string {
+  const event = build?.event;
+  const schedule = buildEventDaySchedule(build, dayAssignments);
+  if (!schedule) {
+    return "The grounded itinerary does not include enough event-date detail for a day-by-day breakdown.";
+  }
+
+  const leader = build?.leader?.name ?? build?.leader?.id ?? "the selected leader";
+  const lines = schedule.days.map((day, index) => {
+    const prefix = `${index + 1}. Day ${index + 1} — ${displayDay(day.date)}:`;
+    if (day.eventDay) {
+      if (day.contacts.length === 0) {
+        return `${prefix} ${event.name} anchor day; no specific contact meeting is assigned in the current itinerary.`;
+      }
+      const onSite = day.contacts.filter(
+        (contact) => contact?.placement === "on-site",
+      );
+      const offSite = day.contacts.filter(
+        (contact) => contact?.placement !== "on-site",
+      );
+      const parts = [event.name];
+      if (onSite.length) {
+        parts.push(
+          `on-site ${onSite.length === 1 ? "meeting" : "meetings"} with ${onSite
+            .map(contactName)
+            .join(" → ")}`,
+        );
+      }
+      if (offSite.length) {
+        parts.push(
+          `off-site ${offSite.length === 1 ? "meeting" : "meetings"} with ${offSite
+            .map(contactWithLocation)
+            .join(" → ")}`,
+        );
+      }
+      const travel =
+        day.travelMins > 0
+          ? ` Estimated route-leg travel: ${Math.round(day.travelMins)} min.`
+          : "";
+      return `${prefix} ${parts.join("; ")}.${travel}`;
+    }
+    if (day.contacts.length > 0) {
+      const travel =
+        day.travelMins > 0
+          ? ` Estimated route travel: ${Math.round(day.travelMins)} min.`
+          : "";
+      return `${prefix} Off-site swing: ${day.contacts
+        .map(contactWithLocation)
+        .join(" → ")}.${travel}`;
+    }
+    return `${prefix} No specific contact meeting is assigned in the current itinerary.`;
+  });
+
+  return [
+    `Day-by-day for ${leader} at ${event.name} (${schedule.totalDays} days)`,
+    "",
+    ...lines,
+    "",
+    "Exact meeting times are not present in the grounded itinerary; this preserves only the authorized stops, event dates, route order, and travel estimates.",
+  ].join("\n");
+}
+
+function metric(value: unknown): string {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(2) : "—";
+}
+
+function renderLeaderFit(build: any, leaders: any[]): string {
+  const top = leaders[0];
+  if (!top) {
+    return "No authorized leader ranking is available for the current event and topic.";
+  }
+  const currentId = build?.leader?.id;
+  const current = leaders.find((leader) => leader?.leaderId === currentId);
+  const eventName = build?.event?.name ?? "the current event";
+  const why = [
+    `topic fit ${metric(top?.factors?.topicMatch)}`,
+    top.availableInWindow ? "available in the event window" : "not available in the event window",
+    typeof top.distanceMi === "number"
+      ? `${Math.round(top.distanceMi)} mi from the event area`
+      : null,
+    `budget headroom ${metric(top?.factors?.budgetHeadroom)}`,
+  ].filter(Boolean);
+  const comparison =
+    current && current.leaderId !== top.leaderId
+      ? `The current plan uses ${current.name} (${current.leaderId}), ranked ${leaders.indexOf(current) + 1} at ${metric(current.score)}.`
+      : `The current plan already uses the top-ranked leader.`;
+  const alternatives = leaders
+    .slice(1, 3)
+    .map(
+      (leader, index) =>
+        `${index + 2}. ${leader.name} (${leader.leaderId}) — fit ${metric(leader.score)}${
+          leader.availableInWindow ? "" : " · unavailable"
+        }`,
+    );
+  return [
+    `Best fit for ${eventName}: ${top.name} (${top.leaderId}) — composite fit ${metric(top.score)}.`,
+    `Why: ${why.join(" · ")}.`,
+    comparison,
+    ...(alternatives.length ? ["Next best:", ...alternatives] : []),
+  ].join("\n");
+}
+
+function renderMeetings(build: any, explain: boolean): string {
+  const accepted: any[] = build?.accepted ?? [];
+  if (accepted.length === 0) return "The current itinerary has no authorized meetings.";
+  const lines = accepted.map((contact, index) => {
+    const details = [
+      contact.placement,
+      contact.kind,
+      contact.status,
+      `value ${contact.strategicValue ?? "—"}`,
+      `score ${contact.score ?? "—"}`,
+    ].filter(Boolean);
+    if (explain && contact.factors) {
+      details.push(
+        `topic ${contact.factors.topic ?? "—"}`,
+        `relationship need ${contact.factors.staleness ?? "—"}`,
+      );
+    }
+    const name =
+      contact.placement === "on-site"
+        ? `${contactName(contact)} (on-site at the event)`
+        : contactWithLocation(contact);
+    return `${index + 1}. ${name} — ${details.join(" · ")}`;
+  });
+  return [
+    `${accepted.length} authorized meeting${accepted.length === 1 ? "" : "s"} in the current itinerary:`,
+    ...lines,
+  ].join("\n");
+}
+
+function renderAlternatives(
+  context: EventPlanContext,
+  suggest: any,
+  broaderContacts: any[],
+): string {
+  const selected = new Set(context.contactIds);
+  const localAlternatives = (suggest?.candidates ?? []).filter(
+    (candidate: any) => !selected.has(candidate?.contactId),
+  );
+  const localIds = new Set(
+    localAlternatives.map((candidate: any) => candidate?.contactId),
+  );
+  const regionalAlternatives = (broaderContacts ?? [])
+    .filter(
+      (contact: any) =>
+        !selected.has(contact?.id) && !localIds.has(contact?.id),
+    )
+    .sort(
+      (a: any, b: any) =>
+        Number(b?.strategicValue ?? 0) - Number(a?.strategicValue ?? 0),
+    );
+  const alternatives = [
+    ...localAlternatives.map((candidate: any) => ({
+      id: candidate.contactId,
+      name: candidate.name,
+      city: candidate.city,
+      state: candidate.state,
+      detail: `${candidate.placement} · ${candidate.kind} · score ${candidate.score ?? "—"}`,
+    })),
+    ...regionalAlternatives.map((contact: any) => ({
+      id: contact.id,
+      name: contact.name,
+      city: contact.city,
+      state: contact.state,
+      detail: `regional option · ${contact.status ?? "status unknown"} · value ${contact.strategicValue ?? "—"}`,
+    })),
+  ];
+  if (alternatives.length === 0) {
+    return "No additional authorized candidates are available for the current event and topic.";
+  }
+  return [
+    "Additional authorized candidates for this event:",
+    ...alternatives.slice(0, 5).map(
+      (candidate: any, index: number) =>
+        `${index + 1}. ${contactWithLocation(candidate)} — ${candidate.detail}`,
+    ),
+    "Adding one would require rebuilding the itinerary and rechecking duration, ROI, and conflicts.",
+  ].join("\n");
+}
+
+function renderRoute(build: any): string {
+  const accepted = new Map<string, any>(
+    (build?.accepted ?? []).map((contact: any) => [
+      contact.contactId,
+      contact,
+    ]),
+  );
+  const order: any[] = build?.route?.order ?? [];
+  const orderedNames = order.map((stop) => {
+    const contact = accepted.get(stop.id) ?? {
+      contactId: stop.id,
+      city: stop.city,
+    };
+    return contact?.placement === "on-site" || stop?.kind === "on-site"
+      ? `${contactName(contact)} (on-site at ${build?.event?.name ?? "the event"})`
+      : contactWithLocation(contact);
+  });
+  const legs: any[] = build?.route?.legs ?? [];
+  return [
+    `Route: ${orderedNames.length ? orderedNames.join(" → ") : "no routed stops"}.`,
+    `Total travel: ${Math.round(Number(build?.route?.totalMi) || 0)} mi · ${Math.round(Number(build?.route?.totalTravelMins) || 0)} min.`,
+    ...legs.map(
+      (leg, index) =>
+        `${index + 1}. ${leg.mode ?? "travel"} to ${contactName(accepted.get(leg.to) ?? { contactId: leg.to })}: ${Math.round(Number(leg.distanceMi) || 0)} mi · ${Math.round(Number(leg.estTravelMins) || 0)} min`,
+    ),
+  ].join("\n");
+}
+
+function renderValue(build: any): string {
+  const roi = build?.roi;
+  if (!roi) return "The current itinerary has no grounded ROI calculation.";
+  const breakdown = roi.breakdown ?? {};
+  return [
+    `Trip ROI: ${metric(roi.roiScore)}${roi.overBudget ? " · OVER BUDGET" : " · within budget"}.`,
+    `Gross value ${metric(breakdown.grossValue)} minus total cost ${metric(breakdown.totalCost)}.`,
+    `Cost detail: airfare ${metric(breakdown.airfare)} · per diem ${metric(breakdown.perDiem)} · time penalty ${metric(breakdown.timePenalty)}.`,
+  ].join("\n");
+}
+
+function renderRisks(build: any): string {
+  const conflicts: any[] = build?.conflicts ?? [];
+  if (conflicts.length === 0) {
+    return "No conflicts are flagged for the current authorized itinerary.";
+  }
+  return [
+    `${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"} flagged:`,
+    ...conflicts.map(
+      (conflict, index) =>
+        `${index + 1}. ${conflict.severity}/${conflict.type}: ${conflict.message}${
+          conflict.recommendation ? ` Recommendation: ${conflict.recommendation}` : ""
+        }`,
+    ),
+  ].join("\n");
+}
+
+function renderNearbyLeaders(build: any): string {
+  const leaders: any[] = build?.nearbyLeaders ?? [];
+  if (leaders.length === 0) {
+    return "No other senior leaders are flagged at or near the current itinerary.";
+  }
+  return [
+    "Other senior leaders at or near this itinerary:",
+    ...leaders.map(
+      (leader, index) =>
+        `${index + 1}. ${leader.name ?? leader.leaderId} (${leader.leaderId}) — ${leader.primaryReason ?? "nearby"}${
+          leader.availableInWindow === false ? " · unavailable" : ""
+        }`,
+    ),
+  ].join("\n");
+}
+
+function renderEventOverview(build: any): string {
+  const event = build?.event;
+  const accepted: any[] = build?.accepted ?? [];
+  return [
+    `${build?.leader?.name ?? "Selected leader"} at ${event?.name ?? "the current event"} (${event?.start ?? "?"}–${event?.end ?? "?"}).`,
+    `${accepted.length} meeting${accepted.length === 1 ? "" : "s"} · ${build?.duration?.days ?? "?"} days · ROI ${metric(build?.roi?.roiScore)}.`,
+    `Meetings: ${accepted.map(contactName).join(", ") || "none"}.`,
+    `Travel: ${Math.round(Number(build?.route?.totalMi) || 0)} mi / ${Math.round(Number(build?.route?.totalTravelMins) || 0)} min · conflicts: ${(build?.conflicts ?? []).length}.`,
+  ].join("\n");
+}
+
+function regexEscape(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function namedContactInQuestion(contacts: any[], question: string): any | null {
+  const lower = question.toLowerCase();
+  for (const contact of contacts) {
+    const id = String(contact?.contactId ?? "");
+    if (id && new RegExp(`\\b${regexEscape(id)}\\b`, "i").test(question)) {
+      return contact;
+    }
+    const name = String(contact?.name ?? "").trim();
+    if (name.length >= 3 && lower.includes(name.toLowerCase())) return contact;
+  }
+  return null;
+}
+
+function applyDayScheduleEdit(
+  build: any,
+  context: EventPlanContext,
+  question: string,
+): { answer: string; context: EventPlanContext } {
+  const edit = parseDayScheduleEdit(question);
+  const schedule = buildEventDaySchedule(
+    build,
+    context.dayAssignments ?? {},
+  );
+  if (!edit || !schedule) {
+    return {
+      answer:
+        "I could not resolve a valid itinerary day from that scheduling request.",
+      context,
+    };
+  }
+  if (edit.day > schedule.totalDays) {
+    return {
+      answer: `The current itinerary has ${schedule.totalDays} days, so Day ${edit.day} is outside the grounded plan.`,
+      context,
+    };
+  }
+
+  const accepted: any[] = build?.accepted ?? [];
+  const targetContactIds = new Set(
+    schedule.days[edit.day - 1]?.contacts
+      .map((contact) => contact?.contactId)
+      .filter(Boolean) ?? [],
+  );
+  const named = namedContactInQuestion(accepted, question);
+  const routeOrder: string[] = (build?.route?.order ?? [])
+    .map((stop: any) => stop?.id)
+    .filter((id: unknown): id is string => typeof id === "string");
+  const ordered = [...accepted].sort(
+    (a, b) =>
+      routeOrder.indexOf(a?.contactId) - routeOrder.indexOf(b?.contactId),
+  );
+  const selected =
+    named ??
+    ordered.find(
+      (contact) =>
+        contact?.placement !== "on-site" &&
+        !targetContactIds.has(contact?.contactId) &&
+        context.dayAssignments?.[contact?.contactId] == null,
+    ) ??
+    ordered.find(
+      (contact) =>
+        contact?.placement !== "on-site" &&
+        !targetContactIds.has(contact?.contactId),
+    ) ??
+    null;
+  if (!selected) {
+    return {
+      answer:
+        `Day ${edit.day} already contains every currently selected meeting that can be placed there. ` +
+        "Ask who else is available if you want to expand the authorized contact set.",
+      context,
+    };
+  }
+
+  const priorDay = schedule.assignmentByContactId.get(selected.contactId);
+  if (priorDay === edit.day) {
+    return {
+      answer: `${contactName(selected)} is already assigned to Day ${edit.day}.\n\n${renderEventDayByDay(
+        build,
+        context.dayAssignments,
+      )}`,
+      context,
+    };
+  }
+
+  const dayAssignments = {
+    ...(context.dayAssignments ?? {}),
+    [selected.contactId]: edit.day,
+  };
+  const updatedContext: EventPlanContext = {
+    ...context,
+    dayAssignments,
+  };
+  const leg = schedule.legsByDestination.get(selected.contactId);
+  const travel =
+    selected.placement !== "on-site" && leg
+      ? ` The route leg is ${Math.round(Number(leg.distanceMi) || 0)} mi / ${Math.round(
+          Number(leg.estTravelMins) || 0,
+        )} min.`
+      : "";
+  const moved =
+    priorDay != null
+      ? ` This moves the existing authorized meeting from Day ${priorDay}; no new contact was invented.`
+      : "";
+  return {
+    answer:
+      `Scheduled ${contactName(selected)} on Day ${edit.day}.${moved}${travel}\n\n` +
+      renderEventDayByDay(build, dayAssignments),
+    context: updatedContext,
+  };
+}
+
+async function buildEventContextualFollowUp(
+  client: ToolClient,
+  base: PlanResult,
+  context: EventPlanContext,
+  question: string,
+): Promise<PlanResult> {
+  await client.callTool("suggest_candidates", {
+    leaderId: context.leaderId,
+    eventId: context.eventId,
+    ...(context.topicIds?.length ? { topicIds: context.topicIds } : {}),
+    requireTopicMatch: false,
+  });
+  const suggest =
+    lastCapture(client.captured, "suggest_candidates")?.result ?? {};
+  if (isRejected(suggest)) {
+    return {
+      ...base,
+      deterministicReason: "contextual-follow-up",
+      rejected: true,
+      answer: "Access to the prior itinerary is no longer authorized for this persona.",
+      toolCalls: client.captured.map((call) => ({
+        name: call.name,
+        args: call.args,
+      })),
+      redactedCount: suggest.redactedCount ?? null,
+    };
+  }
+  if (!suggest.event || suggest.error) {
+    return {
+      ...base,
+      deterministicReason: "contextual-follow-up",
+      answer:
+        suggest.error ??
+        "The prior anchor event is no longer available to this persona.",
+      toolCalls: client.captured.map((call) => ({
+        name: call.name,
+        args: call.args,
+      })),
+      redactedCount: suggest.redactedCount ?? null,
+    };
+  }
+
+  const nearbyIds = new Set(
+    (suggest.candidates ?? [])
+      .map((candidate: any) => candidate?.contactId)
+      .filter(Boolean),
+  );
+  const acceptedContactIds = context.contactIds.filter((id) =>
+    nearbyIds.has(id),
+  );
+  const additionalContactIds = context.contactIds.filter(
+    (id) => !nearbyIds.has(id),
+  );
+  await client.callTool("build_itinerary", {
+    leaderId: context.leaderId,
+    eventId: context.eventId,
+    acceptedContactIds,
+    ...(additionalContactIds.length ? { additionalContactIds } : {}),
+    ...(context.topicIds?.length ? { topicIds: context.topicIds } : {}),
+    requireTopicMatch: false,
+  });
+
+  const build = lastCapture(client.captured, "build_itinerary")?.result ?? {};
+  const rejected = isRejected(build);
+  const itinerary = extractItinerary(build);
+  const kind = contextualEventQuestionKind(question);
+  const acceptedIds: string[] = (build?.accepted ?? [])
+    .map((contact: any) => contact?.contactId)
+    .filter((id: unknown): id is string => typeof id === "string");
+  const refreshedContext =
+    normalizeEventPlanContext(
+      {
+        ...context,
+        leaderId: build?.leader?.id ?? context.leaderId,
+        eventId: build?.event?.id ?? context.eventId,
+        contactIds: acceptedIds.length ? acceptedIds : context.contactIds,
+      },
+      context.persona,
+    ) ?? context;
+  let leaders: any[] = [];
+  let broaderContacts: any[] = [];
+  if (
+    !build.error &&
+    itinerary &&
+    kind === "leader-fit" &&
+    build.event?.city &&
+    build.event?.start &&
+    build.event?.end
+  ) {
+    await client.callTool("suggest_leaders", {
+      city: build.event.city,
+      window: { start: build.event.start, end: build.event.end },
+      ...(refreshedContext.topicIds?.length
+        ? { topicIds: refreshedContext.topicIds }
+        : {}),
+    });
+    leaders =
+      lastCapture(client.captured, "suggest_leaders")?.result?.leaders ?? [];
+  }
+  if (!build.error && itinerary && kind === "alternatives") {
+    await client.callTool("search_contacts", {
+      ...(refreshedContext.topicIds?.length
+        ? { topicIds: refreshedContext.topicIds }
+        : {}),
+    });
+    broaderContacts =
+      lastCapture(client.captured, "search_contacts")?.result?.contacts ?? [];
+  }
+  const scheduleEdit =
+    !build.error && itinerary && kind === "schedule-edit"
+      ? applyDayScheduleEdit(build, refreshedContext, question)
+      : null;
+  const responseContext = scheduleEdit?.context ?? refreshedContext;
+  const answer = build.error
+    ? build.error
+    : !itinerary
+      ? "The prior itinerary could not be rebuilt from the currently authorized contacts."
+      : scheduleEdit
+        ? scheduleEdit.answer
+      : kind === "day-by-day"
+        ? renderEventDayByDay(build, refreshedContext.dayAssignments)
+        : kind === "day-detail"
+          ? renderEventDayByDay(build, refreshedContext.dayAssignments)
+        : kind === "leader-fit"
+          ? renderLeaderFit(build, leaders)
+          : kind === "alternatives"
+            ? renderAlternatives(refreshedContext, suggest, broaderContacts)
+            : kind === "meetings"
+              ? renderMeetings(build, /\bwhy\b/i.test(question))
+              : kind === "route"
+                ? renderRoute(build)
+                : kind === "value"
+                  ? renderValue(build)
+                  : kind === "risks"
+                    ? renderRisks(build)
+                    : kind === "nearby-leaders"
+                      ? renderNearbyLeaders(build)
+                      : renderEventOverview(build);
+  return {
+    ...base,
+    ok: !rejected && !build.error && itinerary != null,
+    deterministicReason: "contextual-follow-up",
+    answer,
+    toolCalls: client.captured.map((call) => ({
+      name: call.name,
+      args: call.args,
+    })),
+    menu: null,
+    itinerary,
+    tripMap: null,
+    redactedCount: build.redactedCount ?? suggest.redactedCount ?? null,
+    rejected,
+    stage: "plan",
+    clarify: null,
+    leaderId: build.leader?.id ?? context.leaderId,
+    leaderName: build.leader?.name ?? suggest.leader?.name ?? null,
+    event: build.event ?? suggest.event ?? null,
+    topicIds: refreshedContext.topicIds ?? suggest.topicFocus ?? [],
+    conversationContext: responseContext,
+  };
+}
+
 /**
  * No-LLM fallback: anchor -> suggest -> build, mirroring what the model would compose.
  * Drives the shared client; results are read from `client.captured` by the caller.
@@ -392,51 +1484,105 @@ async function deterministicPlan(
   });
 }
 
-/**
- * LLM safety net: if the model produced a menu but never called build_itinerary, auto-build
- * from the top N (event flow) or from the plan_radius anchor (radius flow) so the demo always
- * gets a route + map.
- */
-async function ensureItinerary(
+async function buildTopicLandscape(
   client: ToolClient,
-  opts: { leaderId: string; topN: number },
-): Promise<void> {
-  const built = client.captured.some(
-    (c) => c.name === "build_itinerary" && !isRejected(c.result),
+  topicIds: string[],
+  base: PlanResult,
+): Promise<PlanResult> {
+  const contactsRes: any = await client.callTool("search_contacts", { topicIds });
+  const eventsRes: any = await client.callTool("search_events", { topicIds });
+  const redactedCount =
+    Number(contactsRes?.redactedCount ?? 0) +
+    Number(eventsRes?.redactedCount ?? 0);
+  if (contactsRes?.rejected || eventsRes?.rejected) {
+    return {
+      ...base,
+      ok: false,
+      stage: "answer",
+      answer: "Access to that engagement footprint was rejected for this persona.",
+      topicIds,
+      redactedCount,
+      rejected: true,
+    };
+  }
+
+  const contacts = [...(contactsRes?.contacts ?? [])].sort(
+    (a: any, b: any) =>
+      Number(b.strategicValue ?? 0) - Number(a.strategicValue ?? 0) ||
+      String(a.name).localeCompare(String(b.name)),
   );
-  if (built) return;
-
-  // Radius flow: a plan_radius result with stops but no build → auto-build the event-less itinerary.
-  const radius = lastCapture(client.captured, "plan_radius")?.result;
-  if (radius && !isRejected(radius) && (radius.stops?.length ?? 0) > 0) {
-    const args = radiusBuildArgsFromPlan(radius, opts.leaderId);
-    if (args) {
-      try {
-        await client.callTool("build_itinerary", args);
-      } catch {
-        /* advisory only */
-      }
-      return;
-    }
+  const events = [...(eventsRes?.events ?? [])];
+  const topics = loadTopics().filter((topic) => topicIds.includes(topic.id));
+  const topicName =
+    topics.map((topic) => topic.name).join(" / ") || topicIds.join(", ");
+  const locations = new Map<
+    string,
+    { label: string; contacts: number; events: number }
+  >();
+  for (const item of [...contacts, ...events]) {
+    const label =
+      [item.city, item.state].filter(Boolean).join(", ") ||
+      "Location unavailable";
+    const key = label.toLowerCase();
+    const row = locations.get(key) ?? { label, contacts: 0, events: 0 };
+    if ("status" in item) row.contacts += 1;
+    else row.events += 1;
+    locations.set(key, row);
   }
+  const activeLocations = [...locations.values()].sort(
+    (a, b) =>
+      b.contacts + b.events - (a.contacts + a.events) ||
+      b.contacts - a.contacts ||
+      a.label.localeCompare(b.label),
+  );
+  const approved = topics.filter((topic) => topic.approvedMessageId);
+  const meetingText = contacts.length
+    ? contacts
+        .slice(0, 5)
+        .map(
+          (contact: any, index: number) =>
+            `${index + 1}. ${contact.name}${contact.org ? ` (${contact.org})` : ""} — ` +
+            `${contact.city}, ${contact.state}; ${contact.status}; strategic value ${contact.strategicValue}.`,
+        )
+        .join("\n")
+    : "No authorized contacts are currently visible for this topic.";
+  const locationText = activeLocations.length
+    ? activeLocations
+        .slice(0, 5)
+        .map(
+          (location) =>
+            `${location.label} (${location.contacts} contact${location.contacts === 1 ? "" : "s"}, ` +
+            `${location.events} event${location.events === 1 ? "" : "s"})`,
+        )
+        .join("; ")
+    : "No authorized contact or event locations are currently visible.";
+  const messageText =
+    approved.length === topics.length && topics.length > 0
+      ? `Yes — an approved message is cataloged for ${topicName}.`
+      : approved.length > 0
+        ? `Partially — approved messaging is cataloged for ${approved.map((topic) => topic.name).join(", ")}, but not every matched topic.`
+        : `No approved message is cataloged for ${topicName}.`;
 
-  const suggest = lastCapture(client.captured, "suggest_candidates")?.result;
-  const candidates: any[] = suggest?.candidates ?? [];
-  if (isRejected(suggest) || candidates.length === 0) return;
-
-  const acceptedContactIds = candidates
-    .slice(0, opts.topN)
-    .map((c) => c.contactId);
-  try {
-    await client.callTool("build_itinerary", {
-      leaderId: suggest?.leader?.id ?? opts.leaderId,
-      ...(suggest?.event?.id ? { eventId: suggest.event.id } : {}),
-      acceptedContactIds,
-      ...(suggest?.topicFocus?.length ? { topicIds: suggest.topicFocus } : {}),
-    });
-  } catch {
-    /* advisory only */
-  }
+  return {
+    ...base,
+    ok: true,
+    stage: "answer",
+    deterministicReason: "topic-landscape",
+    answer:
+      `Current authorized engagement picture for ${topicName}:\n\n` +
+      `Who to meet\n${meetingText}\n\n` +
+      `Most active locations\n${locationText}\n\n` +
+      `Approved message\n${messageText}` +
+      (redactedCount > 0
+        ? `\n\n${redactedCount} result${redactedCount === 1 ? " was" : "s were"} redacted by access trim.`
+        : ""),
+    topicIds,
+    redactedCount,
+    toolCalls: client.captured.map((call) => ({
+      name: call.name,
+      args: call.args,
+    })),
+  };
 }
 
 function answerFromCaptured(captured: CapturedCall[]): string {
@@ -484,6 +1630,383 @@ function assemble(
   };
 }
 
+class IncompleteAgentDecision extends Error {}
+
+function capturedFromAgent(loop: PythonAgentResult): CapturedCall[] {
+  return loop.captured.map(({ name, args, result, text }) => ({
+    name,
+    args,
+    result,
+    text,
+  }));
+}
+
+function firstCapturedEvent(captured: CapturedCall[]): any | null {
+  return (
+    lastCapture(captured, "build_itinerary")?.result?.event ??
+    lastCapture(captured, "suggest_candidates")?.result?.event ??
+    lastCapture(captured, "search_events")?.result?.events?.[0] ??
+    null
+  );
+}
+
+function isCompleteBuildResult(result: any): boolean {
+  return !!(
+    result?.leader &&
+    Array.isArray(result?.accepted) &&
+    result.accepted.length > 0 &&
+    result?.route &&
+    result?.roi
+  );
+}
+
+function groundedLeaderShortlist(
+  category: EngagementCategory | null,
+  selectedLeaderId: string | null,
+  options: any[],
+): LeaderPick[] {
+  if (!category || !selectedLeaderId) return [];
+  const rosterById = new Map(loadLeaders().map((leader) => [leader.id, leader]));
+  const eligible = (options ?? []).filter((option) =>
+    rosterById
+      .get(option?.leaderId)
+      ?.engagementCategories?.includes(category),
+  );
+  const selected =
+    (options ?? []).find((option) => option?.leaderId === selectedLeaderId) ??
+    null;
+  const ordered = [
+    ...(selected ? [selected] : []),
+    ...eligible.filter((option) => option?.leaderId !== selectedLeaderId),
+  ];
+  return ordered.map((option) => ({
+    leaderId: option.leaderId,
+    name: option.name ?? null,
+    role: option.role ?? null,
+    score: option.score ?? null,
+    distanceMi:
+      typeof option.distanceMi === "number" ? option.distanceMi : null,
+    availableInWindow:
+      typeof option.availableInWindow === "boolean"
+        ? option.availableInWindow
+        : null,
+    why: leaderWhy(option),
+    recommended: option.leaderId === selectedLeaderId,
+    selected: option.leaderId === selectedLeaderId,
+  }));
+}
+
+/**
+ * Adapt the framework's grounded decision and captured MCP results to the existing chat contract.
+ * Intent and stage come from the agent; this function only projects authoritative tool data for the UI.
+ */
+export function agentDecisionToPlanResult(
+  base: PlanResult,
+  decision: PythonAgentDecision,
+  captured: CapturedCall[],
+): PlanResult {
+  const toolCalls = captured.map((call) => ({
+    name: call.name,
+    args: call.args,
+  }));
+  const plan = lastCapture(captured, "plan_options")?.result;
+  const radius = lastCapture(captured, "plan_radius")?.result;
+  const survey = lastCapture(captured, "survey_area")?.result;
+  const leadersResult = lastCapture(captured, "suggest_leaders")?.result;
+  const suggest = lastCapture(captured, "suggest_candidates")?.result;
+  const successfulBuildCalls = captured.filter(
+    (call) =>
+      call.name === "build_itinerary" &&
+      isCompleteBuildResult(call.result) &&
+      !isRejected(call.result),
+  );
+  const build = successfulBuildCalls.at(-1)?.result;
+  const event = firstCapturedEvent(captured);
+  const source = plan ?? radius ?? survey ?? {};
+  const lookupCalls = captured.filter(
+    (call) =>
+      call.name === "search_contacts" || call.name === "search_events",
+  );
+  const lookupTopicIds = [
+    ...new Set(
+      lookupCalls.flatMap((call) => {
+        const args = call.args as { topicIds?: unknown };
+        return Array.isArray(args?.topicIds)
+          ? args.topicIds.filter((id): id is string => typeof id === "string")
+          : [];
+      }),
+    ),
+  ];
+  const lookupRedactionCounts = lookupCalls
+    .map((call) => call.result?.redactedCount)
+    .filter((count): count is number => typeof count === "number");
+  const lookupRedactedCount = lookupRedactionCounts.length
+    ? lookupRedactionCounts.reduce((sum, count) => sum + count, 0)
+    : null;
+  const rejected = captured.some((call) => isRejected(call.result));
+  const redactedCount =
+    build?.redactedCount ??
+    plan?.redactedCount ??
+    radius?.redactedCount ??
+    survey?.redactedCount ??
+    leadersResult?.redactedCount ??
+    suggest?.redactedCount ??
+    lookupRedactedCount ??
+    null;
+
+  if (rejected) {
+    return {
+      ...base,
+      mode: "llm",
+      deterministicReason: null,
+      answer: decision.answer,
+      toolCalls,
+      rejected: true,
+      redactedCount,
+      stage: decision.stage === "clarify" ? "clarify" : "plan",
+      clarify: decision.stage === "clarify" ? decision.clarify : null,
+      category: decision.category,
+      leaderId: decision.leaderId,
+      event,
+      area: source?.area ?? build?.area ?? null,
+    };
+  }
+
+  if (decision.stage === "options") {
+    if (successfulBuildCalls.length < 2) {
+      throw new IncompleteAgentDecision(
+        "Agent returned options without at least two built itineraries.",
+      );
+    }
+    const recommendedIndex = decision.recommendedOptionIndex ?? 0;
+    if (
+      !Number.isInteger(recommendedIndex) ||
+      recommendedIndex < 0 ||
+      recommendedIndex >= successfulBuildCalls.length
+    ) {
+      throw new IncompleteAgentDecision(
+        "Agent recommended an itinerary option that was not built.",
+      );
+    }
+    const options: AreaItineraryOption[] = successfulBuildCalls.map(
+      (call, index) => {
+        const result = call.result;
+        const days = result?.duration?.days ?? result?.days ?? null;
+        const accepted: any[] = result?.accepted ?? [];
+        const roiScore = result?.roi?.roiScore ?? null;
+        const overBudget = !!result?.roi?.overBudget;
+        const categoryCounts =
+          result?.categoryCoverage?.counts ?? null;
+        const categoryMix =
+          result?.categoryCoverage?.summary ?? null;
+        return {
+          id: `agent-option-${index + 1}`,
+          tier: lengthSize(index, successfulBuildCalls.length),
+          label:
+            typeof days === "number"
+              ? `${days}-day itinerary`
+              : `Itinerary option ${index + 1}`,
+          category: decision.category,
+          summary:
+            `${accepted.length} meeting(s) · ROI ${roi2(roiScore)}` +
+            (overBudget ? " · OVER BUDGET" : ""),
+          days,
+          stopCount: accepted.length,
+          roiScore,
+          overBudget,
+          recommended: index === recommendedIndex,
+          contactIds: accepted
+            .map((contact: any) => contact?.contactId)
+            .filter(Boolean),
+          ok: true,
+          itinerary: extractItinerary(result),
+          tripMap: result?.tripMap ?? null,
+          categoryMix,
+          categoryCounts,
+          answer: call.text || null,
+        };
+      },
+    );
+    const recommended = options[recommendedIndex];
+    const recommendedBuild = successfulBuildCalls[recommendedIndex].result;
+    const leaderId =
+      decision.leaderId ?? recommendedBuild?.leader?.id ?? null;
+    return {
+      ...base,
+      ok: true,
+      mode: "llm",
+      deterministicReason: null,
+      answer: decision.answer,
+      toolCalls,
+      stage: "options",
+      clarify: null,
+      category: decision.category,
+      leaderId,
+      leaderName: recommendedBuild?.leader?.name ?? null,
+      event:
+        recommendedBuild?.event ??
+        event,
+      area:
+        recommendedBuild?.area ??
+        source?.area ??
+        null,
+      options,
+      recommendedOptionId: recommended.id,
+      menu: recommendedBuild?.accepted ?? null,
+      itinerary: recommended.itinerary,
+      tripMap: recommended.tripMap,
+      redactedCount:
+        recommendedBuild?.redactedCount ??
+        redactedCount,
+    };
+  }
+
+  if (decision.stage === "clarify") {
+    if (decision.clarify === "category") {
+      const question = categoryClarifyQuestion(plan?.categoryBreakdown ?? []);
+      if (question.choices.length === 0) {
+        throw new IncompleteAgentDecision(
+          "Agent requested a category without grounded category options.",
+        );
+      }
+      return {
+        ...base,
+        ok: true,
+        mode: "llm",
+        deterministicReason: null,
+        answer: decision.answer,
+        toolCalls,
+        stage: "clarify",
+        clarify: "category",
+        category: null,
+        leaderId: null,
+        questions: [question],
+        area: plan?.area ?? null,
+        today: plan?.today ?? null,
+        topicIds: plan?.topicIds ?? [],
+        areaSurvey: plan?.areaSurvey ?? [],
+        staleContacts: plan?.staleContacts ?? [],
+        areaEvents: plan?.areaEvents ?? [],
+        categoryBreakdown: plan?.categoryBreakdown ?? [],
+        redactedCount,
+      };
+    }
+
+    if (decision.clarify === "leader") {
+      const leaders =
+        leadersResult?.leaders ??
+        plan?.leaderOptions ??
+        radius?.leaderOptions ??
+        [];
+      if (leaders.length === 0) {
+        throw new IncompleteAgentDecision(
+          "Agent requested a leader without grounded leader options.",
+        );
+      }
+      return {
+        ...base,
+        ok: true,
+        mode: "llm",
+        deterministicReason: null,
+        answer: decision.answer,
+        toolCalls,
+        stage: "clarify",
+        clarify: "leader",
+        leaderId: null,
+        event,
+        area:
+          leadersResult?.area ??
+          plan?.area ??
+          radius?.area ??
+          null,
+        questions: [
+          leaderClarifyQuestion(leaders, leaders[0]?.leaderId ?? null),
+        ],
+        redactedCount,
+      };
+    }
+
+    throw new IncompleteAgentDecision(
+      "Agent returned a clarification without a supported clarification type.",
+    );
+  }
+
+  if (decision.stage === "answer" && decision.intent !== "lookup") {
+    throw new IncompleteAgentDecision(
+      "Agent returned an informational answer for a planning intent.",
+    );
+  }
+
+  if (decision.stage === "plan" && decision.intent !== "lookup" && !build) {
+    throw new IncompleteAgentDecision(
+      "Agent marked the response as a plan without building an itinerary.",
+    );
+  }
+
+  const projectionCaptured = [
+    ...captured.filter((call) => call.name !== "build_itinerary"),
+    ...successfulBuildCalls,
+  ];
+  const projected = assemble(
+    base,
+    "llm",
+    decision.answer,
+    toolCalls,
+    projectionCaptured,
+  );
+  const itinerary = extractItinerary(build);
+  const leaderId =
+    decision.leaderId ??
+    build?.leader?.id ??
+    radius?.chosenLeaderId ??
+    suggest?.leader?.id ??
+    null;
+  const leaderName =
+    build?.leader?.name ??
+    (plan?.leaderOptions ?? radius?.leaderOptions ?? leadersResult?.leaders ?? [])
+      .find((leader: any) => leader?.leaderId === leaderId)?.name ??
+    null;
+  const leaderShortlist = groundedLeaderShortlist(
+    decision.category,
+    leaderId,
+    plan?.leaderOptions ?? radius?.leaderOptions ?? [],
+  );
+  const menu =
+    projected.menu ??
+    build?.accepted ??
+    radius?.stops ??
+    null;
+
+  return {
+    ...projected,
+    ok:
+      !rejected &&
+      (decision.stage === "answer"
+        ? decision.answer.trim().length > 0
+        : itinerary != null),
+    deterministicReason: null,
+    stage: decision.stage === "answer" ? "answer" : "plan",
+    clarify: null,
+    category: decision.category,
+    leaderId,
+    leaderName,
+    leaderShortlist,
+    event,
+    area: build?.area ?? source?.area ?? null,
+    today: source?.today ?? build?.today ?? null,
+    topicIds: source?.topicIds ?? suggest?.topicFocus ?? lookupTopicIds,
+    areaSurvey: source?.areaSurvey ?? survey?.topics ?? [],
+    staleContacts: source?.staleContacts ?? survey?.staleContacts ?? [],
+    areaEvents: source?.areaEvents ?? survey?.areaEvents ?? [],
+    categoryBreakdown:
+      source?.categoryBreakdown ?? build?.categoryBreakdown ?? [],
+    menu,
+    itinerary,
+    tripMap: build?.tripMap ?? null,
+    redactedCount,
+  };
+}
+
 export async function planTrip(req: PlanRequest): Promise<PlanResult> {
   const persona = req.persona || DEFAULT_PERSONA();
   const topN = req.topN ?? DEFAULT_TOPN();
@@ -505,21 +2028,113 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
     clarify: null,
   };
 
+  const contextualQuestion = isContextualFollowUpQuestion(req.question);
+  const suppliedEventContext = normalizeEventPlanContext(req.context, persona);
+  const eventContext = contextualQuestion
+    ? suppliedEventContext
+    : null;
+
+  const contextualKind = eventContext
+    ? contextualEventQuestionKind(req.question)
+    : null;
+
+  // Explicit schedule mutations are host-managed so a model can never invent or silently move a
+  // meeting. All semantic reads and lookups go to Agent Framework first.
+  if (eventContext && contextualKind === "schedule-edit") {
+    let mutationClient: ToolClient;
+    try {
+      mutationClient = await makeToolClient(url, persona);
+    } catch (e: any) {
+      throwIfGovernanceDenied(e);
+      return {
+        ...base,
+        deterministicReason: "mcp-unavailable",
+        error:
+          `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
+          "Start the MCP server and the engagements agent workspace services.",
+      };
+    }
+    try {
+      return await buildEventContextualFollowUp(
+        mutationClient,
+        base,
+        eventContext,
+        req.question,
+      );
+    } finally {
+      await mutationClient.close().catch(() => {});
+    }
+  }
+
+  // Microsoft Agent Framework is the primary semantic interface. Prior context is advisory and may
+  // be stale; the agent decides whether the current question refers to it.
+  if (isModelConfigured()) {
+    try {
+      const loop = await runPythonAgent({
+        system: buildSystemPrompt(resolveDefaultLeaderId(), topN),
+        user: buildAgentUserPrompt(req, suppliedEventContext),
+        mcpUrl: url,
+        persona,
+        maxIterations: 10,
+      });
+      return agentDecisionToPlanResult(
+        base,
+        loop.decision,
+        capturedFromAgent(loop),
+      );
+    } catch (error) {
+      throwIfGovernanceDenied(error);
+      console.warn(
+        `[python-agent] framework decision failed; using deterministic fallback: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  if (
+    contextualQuestion &&
+    !eventContext &&
+    requiresPriorGroundedContext(req.question)
+  ) {
+    return {
+      ...base,
+      deterministicReason: "contextual-follow-up",
+      answer:
+        "I need the prior grounded itinerary in this conversation to answer that follow-up. Reopen the plan or name the event, leader, and selected meetings.",
+    };
+  }
+
   let client: ToolClient;
   try {
     client = await makeToolClient(url, persona);
   } catch (e: any) {
+    throwIfGovernanceDenied(e);
     return {
       ...base,
       deterministicReason: "mcp-unavailable",
       error:
-        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
-        "Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.",
+        `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
+        "Start the MCP server and the engagements agent workspace services.",
     };
   }
 
   try {
-    // ── Area/CATEGORY-first workflow (KNOWN-REGION asks — the DEFAULT for "Plan a trip to X") ─────
+    const topicIds = topicIdsFromText(req.question);
+    if (isTopicLandscapeQuestion(req.question)) {
+      return await buildTopicLandscape(client, topicIds, base);
+    }
+
+    if (eventContext && contextualQuestion) {
+      return await buildEventContextualFollowUp(
+        client,
+        base,
+        eventContext,
+        req.question,
+      );
+    }
+
+    // ── Deterministic fallback: area/category-first workflow for known-region asks ───────────────
     // A KNOWN-REGION ask ("Plan a trip to Boston", "what's worth doing in the Bay Area") drives a
     // CATEGORY-FIRST flow: survey the area, roll its hot topics / timely events / key contacts up by
     // engagement category, and ASK which audience to anchor on. Once the human picks a category (with
@@ -529,7 +2144,6 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
     // Innovation Forum) still gets the category briefing rather than auto-anchoring on the event.
     const areaAnchor = areaAskAnchor(req.question);
     if (areaAnchor) {
-      const topicIds = topicIdsFromText(req.question);
       const category = req.category ?? categoryFromQuestion(req.question);
       const daysM = req.question.match(/\b(\d+)\s*(?:day|days)\b/i);
       const days = req.days ?? (daysM ? Number(daysM[1]) : undefined);
@@ -597,14 +2211,13 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
       };
     }
 
-    // ── Leader-first, multi-option workflow (an explicitly-named EVENT that is NOT a known region) ─
+    // ── Deterministic fallback: leader-first options for an explicitly named event ───────────────
     // When the ask anchors on an authorized EVENT the user NAMES ("a trip to AUSA") — and the token is
     // not itself a known region — keep the "you're already going there" flow: make WHO explicit (a
     // ranked roster), then present several DIFFERENT-LENGTH itineraries (conference footprint → regional
     // swing) to compare. Radius asks ("3 days within 60 mi of Reston") keep the legacy path.
     const event = await resolveEventAnchor(client, req.question);
     if (event) {
-      const topicIds = topicIdsFromText(req.question);
       const leaderId = req.leaderId || leaderFromQuestion(req.question);
       if (!leaderId) {
         const leaders = await rankRosterForEvent(client, event, topicIds);
@@ -643,48 +2256,26 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
       return pr;
     }
 
-    // ── Legacy single-itinerary path (non-event asks: radius trips, free-form) ──────────────────
+    // ── Deterministic single-itinerary fallback (non-event asks: radius trips, free-form) ───────
     const leaderId = req.leaderId || resolveDefaultLeaderId();
-    let answer: string | null = null;
-    let toolCalls: { name: string; args: unknown }[] = [];
-    let mode: "llm" | "deterministic" = "deterministic";
-    // Why we'd stay deterministic on this free-form path: no model configured at all, or the model errored/timed out.
     const deterministicReason: DeterministicReason = isModelConfigured()
       ? "model-unavailable"
       : "model-not-configured";
 
-    if (isModelConfigured()) {
-      const loop = await runAgentLoop({
-        system: buildSystemPrompt(leaderId, topN),
-        user: req.question,
-        tools: AGENT_TOOLS,
-        callTool: client.callTool,
-        maxIterations: 8,
-        logger: console,
-      });
-      if (loop.output !== null) {
-        mode = "llm";
-        answer = loop.output;
-        toolCalls = loop.toolCalls;
-        await ensureItinerary(client, { leaderId, topN });
-      }
-    }
-
-    if (answer === null) {
-      // model unavailable or errored → deterministic router (reuses the same client/persona)
-      mode = "deterministic";
-      await deterministicPlan(client, {
-        question: req.question,
-        leaderId,
-        topN,
-      });
-      toolCalls = client.captured.map((c) => ({ name: c.name, args: c.args }));
-      answer = answerFromCaptured(client.captured);
-    }
+    await deterministicPlan(client, {
+      question: req.question,
+      leaderId,
+      topN,
+    });
+    const toolCalls = client.captured.map((c) => ({
+      name: c.name,
+      args: c.args,
+    }));
+    const answer = answerFromCaptured(client.captured);
 
     return assemble(
       base,
-      mode,
+      "deterministic",
       answer,
       toolCalls,
       client.captured,
@@ -1039,11 +2630,12 @@ export async function planAreaOptions(
   try {
     client = await makeToolClient(url, persona);
   } catch (e: any) {
+    throwIfGovernanceDenied(e);
     return {
       ...emptyOptions(persona, req.question ?? null, window),
       error:
-        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
-        "Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.",
+        `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
+        "Start the MCP server and the engagements agent workspace services.",
     };
   }
 
@@ -1140,7 +2732,10 @@ function extractItinerary(build: any): any | null {
     event: build.event,
     anchor: build.anchor,
     area: build.area,
-    days: build.days,
+    window: build.window,
+    days: build.duration?.days ?? build.days,
+    duration: build.duration,
+    meetingsPerDay: build.meetingsPerDay,
     capacity: build.capacity,
     accepted: build.accepted,
     route: build.route,
@@ -1209,11 +2804,12 @@ export async function buildAreaItinerary(
   try {
     client = await makeToolClient(url, persona);
   } catch (e: any) {
+    throwIfGovernanceDenied(e);
     return {
       ...base,
       error:
-        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
-        "Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.",
+        `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
+        "Start the MCP server and the engagements agent workspace services.",
     };
   }
 
@@ -1631,11 +3227,12 @@ export async function buildAreaItineraryOptions(
   try {
     client = await makeToolClient(url, persona);
   } catch (e: any) {
+    throwIfGovernanceDenied(e);
     return {
       ...empty,
       error:
-        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
-        "Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.",
+        `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
+        "Start the MCP server and the engagements agent workspace services.",
     };
   }
 
@@ -1846,7 +3443,8 @@ async function resolveEventAnchor(
   if (!query) return null;
   try {
     await client.callTool("search_events", { query });
-  } catch {
+  } catch (error) {
+    throwIfGovernanceDenied(error);
     return null;
   }
   const res = lastCapture(client.captured, "search_events")?.result ?? {};
@@ -1883,7 +3481,8 @@ async function rankRosterForEvent(
     const leaders: any[] =
       lastCapture(client.captured, "suggest_leaders")?.result?.leaders ?? [];
     if (leaders.length) return leaders;
-  } catch {
+  } catch (error) {
+    throwIfGovernanceDenied(error);
     /* fall through to the local roster */
   }
   return loadLeaders().map((l) => ({
@@ -1946,7 +3545,8 @@ async function rankRosterForArea(
       categoryBreakdown: res.categoryBreakdown ?? [],
       redactedCount: res.redactedCount ?? null,
     };
-  } catch {
+  } catch (error) {
+    throwIfGovernanceDenied(error);
     return { leaders: roster(), area: null, ...emptyIntel };
   }
 }
@@ -2137,11 +3737,12 @@ export async function buildEventItineraryOptions(
   try {
     client = await makeToolClient(url, persona);
   } catch (e: any) {
+    throwIfGovernanceDenied(e);
     return {
       ...empty,
       error:
-        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
-        "Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.",
+        `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
+        "Start the MCP server and the engagements agent workspace services.",
     };
   }
 
@@ -2210,6 +3811,7 @@ export function optionsToPlanResult(
     leaderId: opts.leaderId,
     leaderName: opts.leaderName,
     event: opts.event ?? event,
+    topicIds: opts.topicIds ?? base.topicIds ?? [],
     options: opts.options,
     recommendedOptionId: opts.recommendedOptionId,
     itinerary: rec?.itinerary ?? null,
@@ -2631,11 +4233,12 @@ export async function planRadiusOptions(
   try {
     client = await makeToolClient(url, persona);
   } catch (e: any) {
+    throwIfGovernanceDenied(e);
     return {
       ...empty,
       error:
-        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
-        "Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.",
+        `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
+        "Start the MCP server and the engagements agent workspace services.",
     };
   }
 
@@ -2727,11 +4330,12 @@ export async function buildRadiusItinerary(
   try {
     client = await makeToolClient(url, persona);
   } catch (e: any) {
+    throwIfGovernanceDenied(e);
     return {
       ...base,
       error:
-        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
-        "Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.",
+        `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
+        "Start the MCP server and the engagements agent workspace services.",
     };
   }
 
@@ -2894,11 +4498,12 @@ export async function hotTopics(
   try {
     client = await makeToolClient(url, persona);
   } catch (e: any) {
+    throwIfGovernanceDenied(e);
     return {
       ...base,
       error:
-        `Cannot reach the engagements MCP server at ${url}: ${e?.message || e}. ` +
-        "Start it with `npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements`.",
+        `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
+        "Start the MCP server and the engagements agent workspace services.",
     };
   }
 
@@ -2926,6 +4531,7 @@ export async function hotTopics(
       redactedCount: contactsRes?.redactedCount ?? null,
     };
   } catch (e: any) {
+    throwIfGovernanceDenied(e);
     return { ...base, error: e?.message || String(e) };
   } finally {
     await client.close().catch(() => {});

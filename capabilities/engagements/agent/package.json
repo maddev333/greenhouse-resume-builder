@@ -3,18 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Engagements orchestrator agent (MVP-PLAN M5) — the chat brain. Turns a natural-language trip question into security-trimmed MCP tool calls (suggest_candidates -> build_itinerary) over the engagements capability and returns an option menu + ui://trip-map payload. Azure OpenAI tool-calling loop (mcp-core) with a deterministic fallback.",
+  "description": "Strategic Engagements orchestration gateway backed by Microsoft Agent Framework and Agent Governance Toolkit in Python.",
   "main": "src/main.ts",
   "scripts": {
     "ask": "tsx src/main.ts",
-    "serve": "tsx src/main.ts --serve",
-    "dev": "tsx watch src/main.ts --serve",
+    "setup:python": "python -m venv .venv && .venv\\Scripts\\python.exe -m pip install -e \".[dev]\"",
+    "serve:runtime": ".venv\\Scripts\\python.exe -m engagements_agent",
+    "serve:gateway": "tsx src/main.ts --serve",
+    "serve": "concurrently -k -n python,gateway -c yellow,cyan \"npm run serve:runtime\" \"npm run serve:gateway\"",
+    "dev": "concurrently -k -n python,gateway -c yellow,cyan \"npm run serve:runtime\" \"tsx watch src/main.ts --serve\"",
     "typecheck": "tsc -p . --noEmit",
-    "test": "node --import tsx --test \"src/**/*.test.ts\""
+    "test:ts": "node --import tsx --test \"src/**/*.test.ts\"",
+    "test:python": ".venv\\Scripts\\python.exe -m pytest",
+    "test": "npm run test:ts && npm run test:python"
   },
   "dependencies": {
-    "@greenhouse-resume-builder/mcp-core": "*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",
     "express": "^5.1.0"
@@ -23,6 +26,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.0",
+    "concurrently": "^9.2.1",
     "tsx": "^4.19.0",
     "typescript": "^5.9.0"
   }

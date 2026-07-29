@@ -32,26 +32,27 @@ capabilities/
   engagements/            ← the demo (the only capability wired up)
     mcp/engagements/      MCP capability server: seed data, retrieval, security trim,
                           suggest_candidates / build_itinerary tools, and the ui://trip-map App
-    agent/                M5 orchestrator ("the chat brain") — POST /ask over the MCP tools
+    agent/                TS orchestration gateway + Python MAF/AGT runtime
     ui/                   M6 chat UI + real MCP-Apps host (the interface you run)
-  mcp-core/               shared MCP-server helper, agent loop, identity + governance gate
+  mcp-core/               shared MCP-server, identity, and security helpers
 shared/                   canonical Strategic Engagements domain schema (framework-free types)
 engagement-intelligence/  design docs (ARCHITECTURE, DEMO-DATASET, MVP-PLAN) + seed dataset
-governance/               optional Agent-Governance-Toolkit policy for mcp-core
+governance/               Agent Governance Toolkit policy loaded by the Python runtime
 ```
 
 ## Quickstart
 
-Prerequisites: **Node 20+** and npm. This is an npm-workspaces monorepo — run `npm install`
-once at the repo root.
+Prerequisites: **Node 20+**, npm, and **Python 3.11+**. Install both ecosystems once:
 
 ```powershell
 # from the repo root, one time:
 npm install
+npm run setup:python --workspace @greenhouse-resume-builder/cap-engagements-agent
 az login          # optional — enables the Azure OpenAI path; a deterministic fallback runs without it
 ```
 
-Then start the whole demo (builds the chat host and launches all three servers) with one command:
+Then start the whole demo. The agent workspace launches its TypeScript gateway and the Python
+Microsoft Agent Framework + Agent Governance Toolkit runtime together:
 
 ```powershell
 npm run demo --workspace @greenhouse-resume-builder/cap-engagements-ui
@@ -68,22 +69,28 @@ Copy `.env.example` to `.env` at the repo root to enable the optional integratio
 
 - **Live map tiles** — set `AZURE_MAPS_KEY`; the demo rebuilds the map App on start, so a restart
   picks up the key. Without it the map falls back to a schematic dots-and-routes view.
-- **LLM planning** — set `AZURE_OPENAI_*` (and `az login`) to use Azure OpenAI; otherwise the
-  orchestrator uses a deterministic planner.
+- **Agent planning** — set `AZURE_OPENAI_*` (and `az login`) so Microsoft Agent Framework owns
+  intent/workflow decisions; otherwise the gateway uses its deterministic planner.
+- **Agent governance** — enabled by default through `AGT_ENABLED=true`; policy is loaded from
+  `governance/policy.yaml` before model execution and every MCP tool call.
 - **Azure AI Search backend** — set `RETRIEVAL_BACKEND=search` + `AZURE_SEARCH_*` to index the
   seed data into Azure AI Search; the default `memory` backend needs no cloud resources.
 
 ## How it fits together
 
-Three services (plus a distinct sandbox origin). The **one** MCP server has **two clients**: the
-agent calls its **tools**, and the browser reads its **`ui://trip-map` App resource** directly.
+Four service processes (plus a distinct sandbox origin). The **one** MCP server has **two
+clients**: the Python agent runtime calls its **tools**, and the browser reads its
+**`ui://trip-map` App resource** directly.
 
 ```
 Browser chat host (:8080)                                  chat client + MCP-Apps host
   │
-  ├─ POST /ask ─────────────────────►  Orchestrator agent (:3020)   "the brain"
-  │  ◄─ { answer, menu[], tripMap }        └─ MCP tools/call ──────┐
-  │                                                                ▼
+  ├─ POST /ask ─────────────────────►  TS orchestration gateway (:3020)
+  │  ◄─ { answer, menu[], tripMap }        │
+  │                                         ▼
+  │                              Python MAF + AGT runtime (:3030)
+  │                                         └─ governed MCP tools/call ─┐
+  │                                                                     ▼
   └─ resources/read ui://trip-map ──────────────────►  Engagements MCP (:3010)
      (rendered in a sandboxed iframe, :8081)             • seed contacts/events/topics
                                                          • persona security trim

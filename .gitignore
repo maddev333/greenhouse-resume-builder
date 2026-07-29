@@ -43,6 +43,7 @@ pnpm-debug.log*
 
 # Cache
 .cache/
+.local/
 .eslintcache
 .stylelintcache
 
@@ -50,7 +51,9 @@ pnpm-debug.log*
 *.tmp
 *.temp
 *.pyc
+*.egg-info/
 __pycache__/
+.venv/
 
 # Testing coverage
 coverage/

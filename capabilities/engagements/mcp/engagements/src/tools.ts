@@ -585,7 +585,7 @@ export function registerEngagementTools(server: McpServer, getContext: ContextPr
         'Find the conferences/conventions/functions the caller is authorized to see — the trip "anchors" ' +
         'the planner batches contacts around. Same server-side trim + $filter reporting as search_contacts.',
       inputSchema: {
-        query: z.string().optional().describe('Free-text over event name / city / state ("AUSA").'),
+        query: z.string().optional().describe('Event id or free-text over event name / city / state ("E-AUSA" or "AUSA").'),
         topicIds: z.array(z.string()).optional().describe('Restrict to events covering any of these topic ids.'),
       },
     },

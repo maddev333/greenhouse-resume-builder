@@ -226,9 +226,12 @@ export async function searchEngagementEvents(q: EventQuery): Promise<TrimmedResu
 
   const recallParts: string[] = [KIND_EVENT];
   if (q.topicIds?.length) recallParts.push(topicClause(q.topicIds));
+  const query = q.query?.trim();
+  const exactId = query && /^E-[A-Za-z0-9-]+$/i.test(query) ? query : undefined;
+  if (exactId) recallParts.push(`id eq '${odataEscapeLiteral(exactId)}'`);
   const recallFilter = recallParts.join(' and ');
   const authorizedFilter = `${recallFilter} and ${decision.filter}`;
-  const text = q.query?.trim() ? q.query : '*';
+  const text = exactId ? '*' : query || '*';
 
   const client = new SearchClient<EngagementDoc>(serviceEndpoint(), INDEX_NAME, credential());
   const resp = await client.search(text, { filter: authorizedFilter, top: 1000, includeTotalCount: true });

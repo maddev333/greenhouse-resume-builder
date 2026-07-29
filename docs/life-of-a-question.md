@@ -24,17 +24,17 @@ follow the data that produces each of them.
 
 ## 1. Cast of components
 
-Three long-running services plus a distinct sandbox origin. The **one** MCP server has **two
-clients**: the orchestrator calls its **tools**; the browser reads its **`ui://trip-map` App
+Four long-running service processes plus a distinct sandbox origin. The **one** MCP server has
+two clients: the Python runtime calls its **tools**; the browser reads its **`ui://trip-map` App
 resource**.
 
 | # | Component | Process / URL | Role in a question |
 |---|-----------|---------------|--------------------|
 | 1 | **Chat host UI** (M6) | Browser, `:8080` | Captures the question + persona; POSTs `/ask`; renders answer + menu; hosts the trip-map App | 
 | 2 | **Sandbox proxy** | `:8081` (distinct origin) | Isolates the `ui://trip-map` MCP App in a cross-origin sandboxed iframe |
-| 3 | **Orchestrator / agent** (M5) | Node/Express, `:3020` | "The brain" — turns the question into tool calls; LLM loop or deterministic router; assembles the result |
-| 4 | **Engagements MCP capability** | Node, `:3010/mcp` | Security trim + deterministic planner engine + `ui://trip-map` resource, exposed as MCP tools |
-| 5 | **mcp-core** | in-proc library | Shared Azure OpenAI tool-calling loop, identity, governance gate |
+| 3 | **Orchestration gateway** (M5) | Node/Express, `:3020` | Preserves the HTTP/UI contract, deterministic workflows, and final response assembly |
+| 4 | **Agent runtime** | Python/FastAPI, `:3030` | Microsoft Agent Framework agent + official Agent Governance Toolkit policy, capabilities, and audit |
+| 5 | **Engagements MCP capability** | Node, `:3010/mcp` | Security trim + deterministic planner engine + `ui://trip-map` resource, exposed as MCP tools |
 | 6 | **Seed dataset** | JSON on disk | Source of record: leaders, contacts, events, topics, messages, regions (pre-geocoded) |
 | 7 | **Azure OpenAI** | cloud (optional) | Reasoning + tool selection for the LLM path; deterministic fallback when absent |
 | 8 | **Azure AI Search** | cloud (optional) | Alternate read-model backend (`RETRIEVAL_BACKEND=search`); enforces the same trim as an OData `$filter` |
@@ -43,9 +43,10 @@ resource**.
 ```
  Browser chat host (:8080)                                   chat client + MCP-Apps host
    │
-   ├─ POST /ask {question, persona} ─────────►  Orchestrator (:3020)   "the brain"
-   │  ◄─ {answer, menu[], itinerary, tripMap}      └─ MCP tools/call (x-demo-persona) ─┐
-   │                                                                                   ▼
+   ├─ POST /ask {question, persona} ─────────►  TS gateway (:3020)
+   │  ◄─ {answer, menu[], itinerary, tripMap}      └─ Python MAF + AGT (:3030) ─┐
+   │                                                                            │ governed tools/call
+   │                                                                            ▼
    └─ resources/read ui://trip-map ───────────────────────────►  Engagements MCP (:3010)
       (rendered in sandboxed iframe via :8081)                     • per-request security trim
                                                                    • deterministic planner engine
@@ -106,48 +107,51 @@ Nothing is computed until asked, but the shape of the data governs everything do
 ([`agent/src/main.ts`](../capabilities/engagements/agent/src/main.ts) →
 [`agent/src/orchestrator.ts`](../capabilities/engagements/agent/src/orchestrator.ts)).
 
-`planTrip` resolves defaults and **opens one MCP client bound to the persona**:
+`planTrip` resolves defaults and opens a **governed Python tool client** for capability validation
+and deterministic fallback:
 
-- `persona` → `x-demo-persona` header on every request via `makeToolClient`
-  ([`agent/src/tools.ts`](../capabilities/engagements/agent/src/tools.ts)). This single header is
-  what makes the capability enforce the same server-side trim the real Keycloak claims would.
-- `leaderId` defaults to the first seed leader; `topN` defaults to 3.
-- The client is a `StreamableHTTPClientTransport` MCP client pointed at
-  `ENGAGEMENTS_MCP_URL` (`http://localhost:3010/mcp`).
+- `makeToolClient` calls Python `/tools/list` to validate the MCP contract, then routes every
+  deterministic tool call through Python `/tools/call`.
+- The Python bridge evaluates `governance/policy.yaml`, writes AGT audit events, and only then
+  forwards `x-demo-persona` to the MCP capability for its server-side data trim.
+- `topN` defaults to 3. The first seed leader is only an emergency deterministic fallback; the
+  framework does not silently select one when the user needs to make a material leader choice.
+- The Python runtime uses Streamable HTTP against `ENGAGEMENTS_MCP_URL`
+  (`http://localhost:3010/mcp`) and preserves structured MCP results for final assembly.
 
-Then it chooses one of two planning paths.
+It then attempts the Agent Framework path first for every free-form `/ask`.
 
 ---
 
-## 5. Stage 3 — The planning brain (two paths, same tools)
+## 5. Stage 3 — The planning brain (agent first, governed fallback)
 
-### 5a. LLM path (primary, when Azure OpenAI is configured)
+### 5a. Agent Framework path (primary, when Azure OpenAI is configured)
 
-`isModelConfigured()` gates this. If on, `planTrip` runs **`runAgentLoop`**
-([`mcp-core/src/agent-loop.ts`](../capabilities/mcp-core/src/agent-loop.ts)) — a **self-hosted
-Azure OpenAI tool-calling loop** (the IL5-compliant "app owns the loop" pattern; the managed
-Foundry Agent Service is never used):
+`isModelConfigured()` gates this. If on, `planTrip` calls Python `/run`, which constructs a
+Microsoft Agent Framework `Agent` with the Azure OpenAI Chat Completions provider:
 
 1. **System prompt** = `buildSystemPrompt` — injects the leader roster and topic taxonomy read
    straight from the seed ([`agent/src/catalog.ts`](../capabilities/engagements/agent/src/catalog.ts))
-   plus the routing rules ("map 'UAS/drone' → T3", "always follow `suggest_candidates` with
-   `build_itinerary`").
-2. **Tool specs** = `AGENT_TOOLS` — JSON-schema mirrors of the capability's tools so the model
-   emits valid arguments (`agent/src/tools.ts`).
-3. The loop POSTs to Azure OpenAI (`temperature: 0`, `max_completion_tokens: 1800`,
-   `tool_choice: 'auto'`, up to 8 iterations). Each tool call the model requests is dispatched
-   through `client.callTool(name, args)` — i.e. straight into the MCP capability (Stage 4) — and
-   the result is fed back as a `tool` message so the model can chain the next call.
-4. **`ensureItinerary`** is a safety net: if the model produced a menu but forgot to call
-   `build_itinerary`, the orchestrator auto-builds from the top-N so a route + map always exist.
+   plus decision policy for area, event, radius, and lookup intents.
+2. Nine typed Python function tools expose the complete governed planning surface:
+   `search_contacts`, `search_events`, `survey_area`, `suggest_leaders`, `nearby_leaders`,
+   `plan_options`, `plan_radius`, `suggest_candidates`, and `build_itinerary`.
+3. AGT `AuditTrailMiddleware`, `GovernancePolicyMiddleware`, and
+   `CapabilityGuardMiddleware` run around the agent. The governed MCP bridge re-evaluates tool
+   arguments before the network call, so an allowed tool cannot carry denied content.
+4. The framework returns a typed **`AgentDecision`**: intent, response stage, clarification axis,
+   selected category/leader, recommended option, and concise answer. `agentDecisionToPlanResult`
+   projects only captured MCP data into the existing UI envelope; it does not reclassify the ask.
+5. An incomplete decision (for example, `stage=plan` without a successful `build_itinerary`) is
+   rejected and handed to the governed deterministic fallback rather than patched by TypeScript.
 
 > Token hygiene: the heavy `tripMap` payload is **stripped** from the tool result the model
 > sees (`makeToolClient`) but retained in `client.captured` for final assembly.
 
 ### 5b. Deterministic path (fallback, offline demo)
 
-When the model is unavailable or errors, `planTrip` calls **`deterministicPlan`** — a no-LLM
-router that mirrors what the model would compose (`orchestrator.ts`):
+When the model is unavailable, errors, or returns an incomplete grounded decision, `planTrip`
+uses the existing no-LLM workflows (`orchestrator.ts`):
 
 1. `parseRadiusAsk` detects a "fixed-radius" ask ("meet _Company_ for 3 days") → `plan_radius`
    → `build_itinerary`.
@@ -156,8 +160,8 @@ router that mirrors what the model would compose (`orchestrator.ts`):
 3. It calls `suggest_candidates`, widens the topic filter if that zeroed the menu, then calls
    `build_itinerary` with the top-N contact ids.
 
-Either path drives the **same** MCP client and the **same** tools — the only difference is who
-picks the arguments (the model vs. the deterministic router).
+Either path drives the **same Python AGT policy and MCP bridge** — the only difference is who
+picks the arguments (Microsoft Agent Framework vs. the deterministic router).
 
 ---
 
@@ -321,7 +325,7 @@ User        Chat host (:8080)     Orchestrator (:3020)      Engagements MCP (:30
  │────────────────►│  POST /ask           │                          │                       │
  │                 │─────────────────────►│  planTrip()              │                       │
  │                 │                      │  makeToolClient(persona) │                       │
- │                 │                      │  ── LLM loop OR router ─► │                       │
+ │                 │                      │  ── MAF decision ───────► │                       │
  │                 │                      │  tools/call suggest_…    │                       │
  │                 │                      │  (x-demo-persona) ──────►│  resolveSecurityCtx   │
  │                 │                      │                          │  trim FIRST ─► recall │◄─ seed (fresh)
@@ -342,11 +346,12 @@ User        Chat host (:8080)     Orchestrator (:3020)      Engagements MCP (:30
 
 ## 13. Where the LLM is — and is not
 
-- **LLM decides:** which tool to call and with what arguments; the final prose narrative
-  (system prompt + `runAgentLoop`).
+- **LLM decides:** intent, workflow, whether a grounded clarification is needed, which allowed
+  tools to call and with what arguments, option recommendation, and final prose
+  (system prompt + Microsoft Agent Framework).
 - **LLM never decides:** who is authorized (the security trim), the candidate scores, the route,
   the ROI, or the conflicts — all pure deterministic functions. Turning the model off swaps in
-  the deterministic router and yields the **same** structured plan, only with terser prose.
+  the deterministic fallback behind the same UI contract.
 - **The model never sees hidden data:** the trim runs server-side before recall, and the heavy
   map payload is stripped from the model's view.
 
@@ -354,13 +359,13 @@ User        Chat host (:8080)     Orchestrator (:3020)      Engagements MCP (:30
 
 | Situation | What happens |
 |-----------|--------------|
-| Azure OpenAI absent/errors/timeout | `runAgentLoop` returns `null` → deterministic router runs (offline-reliable) |
-| Model returns a menu but no itinerary | `ensureItinerary` auto-builds from top-N so a map always exists |
+| Azure OpenAI absent/errors/timeout | Python `/run` fails explicitly → the TypeScript gateway runs its governed deterministic router |
+| Framework returns an incomplete planning decision | Gateway rejects it and runs the governed deterministic fallback |
 | `RETRIEVAL_BACKEND=search` but no service | Read model silently falls back to `memory` |
 | Azure Maps key absent | Trip-map App renders a schematic dots-and-routes fallback |
 | `NO_TENANT` persona | Trim fail-closes → `rejected: true`, empty menu, no map |
 | `CROSS_TENANT` persona | Tenant isolation → empty result (0 cards) |
-| MCP server unreachable | `planTrip` returns a friendly error telling you to start `:3010` |
+| Python runtime or MCP server unreachable | `planTrip` returns a dependency error; the combined agent launcher starts `:3020` and `:3030` together |
 
 ---
 
@@ -371,10 +376,12 @@ User        Chat host (:8080)     Orchestrator (:3020)      Engagements MCP (:30
 | UI submit `/ask`, render menu + map | `capabilities/engagements/ui/src/index.tsx`, `.../config.ts` |
 | MCP-Apps host handshake | `capabilities/engagements/ui/src/implementation.ts` |
 | Orchestrator entry / HTTP routes | `capabilities/engagements/agent/src/main.ts` |
-| `planTrip`, deterministic router, `assemble` | `capabilities/engagements/agent/src/orchestrator.ts` |
-| Tool specs + persona-bound MCP client | `capabilities/engagements/agent/src/tools.ts` |
+| `planTrip`, `agentDecisionToPlanResult`, deterministic fallback | `capabilities/engagements/agent/src/orchestrator.ts` |
+| TypeScript governed-runtime client | `capabilities/engagements/agent/src/python-runtime.ts`, `.../tools.ts` |
 | Seed roster/topic grounding | `capabilities/engagements/agent/src/catalog.ts` |
-| Azure OpenAI tool-calling loop | `capabilities/mcp-core/src/agent-loop.ts` |
+| Microsoft Agent Framework runtime | `capabilities/engagements/agent/engagements_agent/runtime.py` |
+| AGT policy, middleware, audit | `capabilities/engagements/agent/engagements_agent/governance.py`, `governance/policy.yaml` |
+| Governed MCP bridge | `capabilities/engagements/agent/engagements_agent/mcp_client.py` |
 | MCP server (stateless, per-request ctx) | `capabilities/engagements/mcp/engagements/src/main.ts`, `.../server.ts` |
 | Caller claims from headers/persona | `capabilities/engagements/mcp/engagements/src/context.ts` |
 | Tool handlers + `ui://trip-map` resource | `capabilities/engagements/mcp/engagements/src/tools.ts` |
