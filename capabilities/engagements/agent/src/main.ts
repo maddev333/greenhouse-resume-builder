@@ -6,10 +6,19 @@
  * The HTTP surface is the seam the chat UI (M6) calls. Requires the engagements MCP server
  * running (default http://localhost:3010/mcp; override with ENGAGEMENTS_MCP_URL).
  */
-import './load-env.js';
-import type { Response } from 'express';
-import { buildAreaItinerary, buildAreaItineraryOptions, buildRadiusItinerary, hotTopics, planAreaOptions, planRadiusOptions, planTrip } from './orchestrator.js';
-import { PythonRuntimeRequestError } from './python-runtime.js';
+import "./load-env.js";
+import type { Response } from "express";
+import {
+  buildAreaItinerary,
+  buildAreaItineraryOptions,
+  buildRadiusItinerary,
+  discoverAreaBusinesses,
+  hotTopics,
+  planAreaOptions,
+  planRadiusOptions,
+  planTrip,
+} from "./orchestrator.js";
+import { PythonRuntimeRequestError } from "./python-runtime.js";
 
 interface CliArgs {
   question?: string;
@@ -40,29 +49,34 @@ function parseArgs(argv: string[]): CliArgs {
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--persona') out.persona = argv[++i];
-    else if (a === '--leader') out.leader = argv[++i];
-    else if (a === '--top') out.top = Number(argv[++i]);
-    else if (a === '--category' || a === '--cat') out.category = argv[++i];
-    else if (a === '--options') out.options = true;
-    else if (a === '--topics') out.topics = true;
-    else if (a === '--radius') out.radius = true;
-    else if (a === '--region') out.region = argv[++i];
-    else if (a === '--window') out.window = argv[++i];
-    else if (a === '--days') out.days = Number(argv[++i]);
-    else if (a === '--company') out.company = argv[++i];
-    else if (a === '--anchor') out.anchor = argv[++i];
-    else if (a === '--city') out.city = argv[++i];
-    else if (a === '--radius-mi' || a === '--mi') out.radiusMi = Number(argv[++i]);
-    else if (a === '--lat') out.lat = Number(argv[++i]);
-    else if (a === '--lng') out.lng = Number(argv[++i]);
-    else if (a === '--count') out.count = Number(argv[++i]);
-    else if (a === '--max-days') out.maxDays = Number(argv[++i]);
-    else if (a === '--per-day') out.perDay = Number(argv[++i]);
-    else if (a === '--target-days') out.targetDays = argv[++i].split(',').map((d) => Number(d.trim())).filter((n) => Number.isFinite(n));
+    if (a === "--persona") out.persona = argv[++i];
+    else if (a === "--leader") out.leader = argv[++i];
+    else if (a === "--top") out.top = Number(argv[++i]);
+    else if (a === "--category" || a === "--cat") out.category = argv[++i];
+    else if (a === "--options") out.options = true;
+    else if (a === "--topics") out.topics = true;
+    else if (a === "--radius") out.radius = true;
+    else if (a === "--region") out.region = argv[++i];
+    else if (a === "--window") out.window = argv[++i];
+    else if (a === "--days") out.days = Number(argv[++i]);
+    else if (a === "--company") out.company = argv[++i];
+    else if (a === "--anchor") out.anchor = argv[++i];
+    else if (a === "--city") out.city = argv[++i];
+    else if (a === "--radius-mi" || a === "--mi")
+      out.radiusMi = Number(argv[++i]);
+    else if (a === "--lat") out.lat = Number(argv[++i]);
+    else if (a === "--lng") out.lng = Number(argv[++i]);
+    else if (a === "--count") out.count = Number(argv[++i]);
+    else if (a === "--max-days") out.maxDays = Number(argv[++i]);
+    else if (a === "--per-day") out.perDay = Number(argv[++i]);
+    else if (a === "--target-days")
+      out.targetDays = argv[++i]
+        .split(",")
+        .map((d) => Number(d.trim()))
+        .filter((n) => Number.isFinite(n));
     else rest.push(a);
   }
-  out.question = rest.join(' ').trim() || undefined;
+  out.question = rest.join(" ").trim() || undefined;
   return out;
 }
 
@@ -74,9 +88,7 @@ function parseWindow(w?: string): { start: string; end: string } | undefined {
 
 function sendRequestError(res: Response, error: unknown): void {
   const status =
-    error instanceof PythonRuntimeRequestError
-      ? error.status
-      : 500;
+    error instanceof PythonRuntimeRequestError ? error.status : 500;
   res.status(status).json({
     ok: false,
     error: error instanceof Error ? error.message : String(error),
@@ -94,23 +106,34 @@ async function options(argv: string[]): Promise<void> {
     window: parseWindow(args.window),
   });
 
-  console.log(`\n[persona ${result.persona}] stage=${result.stage}${result.rejected ? '  ACCESS REJECTED' : ''}`);
+  console.log(
+    `\n[persona ${result.persona}] stage=${result.stage}${result.rejected ? "  ACCESS REJECTED" : ""}`,
+  );
   if (result.error) console.error(`\n! ${result.error}`);
   if (result.answer) console.log(`\n${result.answer}`);
   for (const q of result.questions) {
     console.log(`\n${q.prompt}`);
     for (const c of q.choices) {
-      console.log(`  ${c.selected ? '●' : '○'} ${c.label}${c.detail ? `  — ${c.detail}` : ''}`);
+      console.log(
+        `  ${c.selected ? "●" : "○"} ${c.label}${c.detail ? `  — ${c.detail}` : ""}`,
+      );
     }
   }
-  if (result.stage === 'options') {
-    console.log(`\n— area ${result.area?.name ?? '?'}; ${result.areaSurvey.length} topic(s); redacted ${result.redactedCount ?? 0}`);
-    console.log(`  to build: POST /build { leaderId, durationTier?, extensionContactIds?, region }`);
+  if (result.stage === "options") {
+    console.log(
+      `\n— area ${result.area?.name ?? "?"}; ${result.areaSurvey.length} topic(s); redacted ${result.redactedCount ?? 0}`,
+    );
+    console.log(
+      `  to build: POST /build { leaderId, durationTier?, extensionContactIds?, region }`,
+    );
   }
-  if (result.stage === 'clarify' && result.clarify === 'leader') {
-    console.log(`\n— pick a leader, then: POST /build-options { leaderId, region } — compare one single-audience itinerary per engagement category the leader engages`);
+  if (result.stage === "clarify" && result.clarify === "leader") {
+    console.log(
+      `\n— pick a leader, then: POST /build-options { leaderId, region } — compare one single-audience itinerary per engagement category the leader engages`,
+    );
   }
-  if (process.env.ENGAGEMENTS_AGENT_JSON) console.log(`\n${JSON.stringify(result, null, 2)}`);
+  if (process.env.ENGAGEMENTS_AGENT_JSON)
+    console.log(`\n${JSON.stringify(result, null, 2)}`);
 }
 
 /**
@@ -122,7 +145,9 @@ async function options(argv: string[]): Promise<void> {
 async function itineraries(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   if (!args.leader) {
-    console.error('usage: npm run ask -- --itineraries --leader L1 [--region NCR | --city Reston] [--window 2025-10-06..2025-10-31] [--count 3] [--max-days 7] [--per-day 2] [--target-days 2,5,7] [--persona EA_G8]');
+    console.error(
+      "usage: npm run ask -- --itineraries --leader L1 [--region NCR | --city Reston] [--window 2025-10-06..2025-10-31] [--count 3] [--max-days 7] [--per-day 2] [--target-days 2,5,7] [--persona EA_G8]",
+    );
     process.exit(1);
   }
   const result = await buildAreaItineraryOptions({
@@ -137,17 +162,28 @@ async function itineraries(argv: string[]): Promise<void> {
     targetDays: args.targetDays,
   });
 
-  console.log(`\n[persona ${result.persona}] itinerary options for ${result.leaderId}${result.leaderName ? ` (${result.leaderName})` : ''}${result.rejected ? '  ACCESS REJECTED' : ''}`);
+  console.log(
+    `\n[persona ${result.persona}] itinerary options for ${result.leaderId}${result.leaderName ? ` (${result.leaderName})` : ""}${result.rejected ? "  ACCESS REJECTED" : ""}`,
+  );
   if (result.error) console.error(`\n! ${result.error}`);
-  console.log(`— area ${result.area?.name ?? '?'}; ${result.options.length} single-audience option(s) by engagement category; redacted ${result.redactedCount ?? 0}`);
+  console.log(
+    `— area ${result.area?.name ?? "?"}; ${result.options.length} single-audience option(s) by engagement category; redacted ${result.redactedCount ?? 0}`,
+  );
   for (const o of result.options) {
     const roi = o.itinerary?.roi?.roiScore ?? o.roiScore;
     const nearby = o.itinerary?.nearbyLeaders?.length ?? 0;
-    console.log(`\n${o.id === result.recommendedOptionId ? '★' : '·'} ${o.label}${o.category ? ` [${o.category}]` : ''} — ${o.summary}`);
-    console.log(`    ${o.days} day(s), ${o.stopCount} stop(s), ROI ${roi}${o.overBudget ? ' (OVER BUDGET)' : ''}; nearby leaders ${nearby}; map ${o.tripMap ? 'YES' : 'no'}`);
+    console.log(
+      `\n${o.id === result.recommendedOptionId ? "★" : "·"} ${o.label}${o.category ? ` [${o.category}]` : ""} — ${o.summary}`,
+    );
+    console.log(
+      `    ${o.days} day(s), ${o.stopCount} stop(s), ROI ${roi}${o.overBudget ? " (OVER BUDGET)" : ""}; nearby leaders ${nearby}; map ${o.tripMap ? "YES" : "no"}`,
+    );
   }
-  console.log(`\n  each option above is a complete SINGLE-AUDIENCE itinerary (route + ROI + trip map) — pick one by its category id (e.g. ${result.recommendedOptionId ?? 'industry'}).`);
-  if (process.env.ENGAGEMENTS_AGENT_JSON) console.log(`\n${JSON.stringify(result, null, 2)}`);
+  console.log(
+    `\n  each option above is a complete SINGLE-AUDIENCE itinerary (route + ROI + trip map) — pick one by its category id (e.g. ${result.recommendedOptionId ?? "industry"}).`,
+  );
+  if (process.env.ENGAGEMENTS_AGENT_JSON)
+    console.log(`\n${JSON.stringify(result, null, 2)}`);
 }
 
 /** Fixed-radius planner (STAGE 1) from the CLI: fill a fixed-day trip around a company/coordinate/city. */
@@ -169,43 +205,62 @@ async function radius(argv: string[]): Promise<void> {
     window: parseWindow(args.window),
   });
 
-  console.log(`\n[persona ${result.persona}] radius${result.rejected ? '  ACCESS REJECTED' : ''}`);
+  console.log(
+    `\n[persona ${result.persona}] radius${result.rejected ? "  ACCESS REJECTED" : ""}`,
+  );
   if (result.error) console.error(`\n! ${result.error}`);
   if (result.answer) console.log(`\n${result.answer}`);
   for (const q of result.questions) {
     console.log(`\n${q.prompt}`);
     for (const c of q.choices) {
-      console.log(`  ${c.selected ? '●' : '○'} ${c.label}${c.detail ? `  — ${c.detail}` : ''}`);
+      console.log(
+        `  ${c.selected ? "●" : "○"} ${c.label}${c.detail ? `  — ${c.detail}` : ""}`,
+      );
     }
   }
   console.log(
-    `\n— anchor ${result.anchor?.name ?? '(coord/area)'}; area ${result.area?.name ?? '?'} (${result.area?.radiusMi ?? '?'} mi); ` +
-      `${result.days ?? '?'} day(s), capacity ${result.capacity ?? '?'}; stops ${result.stops.length}; redacted ${result.redactedCount ?? 0}`,
+    `\n— anchor ${result.anchor?.name ?? "(coord/area)"}; area ${result.area?.name ?? "?"} (${result.area?.radiusMi ?? "?"} mi); ` +
+      `${result.days ?? "?"} day(s), capacity ${result.capacity ?? "?"}; stops ${result.stops.length}; redacted ${result.redactedCount ?? 0}`,
   );
-  console.log(`  to build: POST /build-radius { leaderId, days, anchorContactId|company|lat+lng|city, acceptedContactIds?, extensionContactIds? }`);
-  if (process.env.ENGAGEMENTS_AGENT_JSON) console.log(`\n${JSON.stringify(result, null, 2)}`);
+  console.log(
+    `  to build: POST /build-radius { leaderId, days, anchorContactId|company|lat+lng|city, acceptedContactIds?, extensionContactIds? }`,
+  );
+  if (process.env.ENGAGEMENTS_AGENT_JSON)
+    console.log(`\n${JSON.stringify(result, null, 2)}`);
 }
 
 /** Hot topics from the CLI: rank the seed taxonomy by the persona's live footprint. */
 async function topics(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const result = await hotTopics({ persona: args.persona });
-  console.log(`\n[persona ${result.persona}]${result.rejected ? '  ACCESS REJECTED' : ''}`);
+  console.log(
+    `\n[persona ${result.persona}]${result.rejected ? "  ACCESS REJECTED" : ""}`,
+  );
   if (result.error) console.error(`\n! ${result.error}`);
-  if (result.topics.length === 0 && !result.error) console.log('\n(no hot topics visible to this persona)');
+  if (result.topics.length === 0 && !result.error)
+    console.log("\n(no hot topics visible to this persona)");
   for (const t of result.topics) {
-    console.log(`  🔥 ${t.topicId} ${t.name}  — ${t.reason} (score ${t.score})`);
+    console.log(
+      `  🔥 ${t.topicId} ${t.name}  — ${t.reason} (score ${t.score})`,
+    );
   }
-  if (process.env.ENGAGEMENTS_AGENT_JSON) console.log(`\n${JSON.stringify(result, null, 2)}`);
+  if (process.env.ENGAGEMENTS_AGENT_JSON)
+    console.log(`\n${JSON.stringify(result, null, 2)}`);
 }
 
 async function ask(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   if (!args.question) {
-    console.error('usage: npm run ask -- "<question>" [--persona EA_G8] [--category industry] [--leader L1] [--top 3]');
-    console.error('   or: npm run ask -- --options "<ask>" [--region NCR] [--window 2025-10-06..2025-10-31] [--persona EA_G8]');
-    console.error('   or: npm run ask -- --radius --company "Meridian Robotics" --days 3 [--radius-mi 40] [--lat --lng | --city] [--persona EA_G8]');
-    console.error('   or: npm run ask -- --topics [--persona EA_G8]');
+    console.error(
+      'usage: npm run ask -- "<question>" [--persona EA_G8] [--category industry] [--leader L1] [--top 3]',
+    );
+    console.error(
+      '   or: npm run ask -- --options "<ask>" [--region NCR] [--window 2025-10-06..2025-10-31] [--persona EA_G8]',
+    );
+    console.error(
+      '   or: npm run ask -- --radius --company "Meridian Robotics" --days 3 [--radius-mi 40] [--lat --lng | --city] [--persona EA_G8]',
+    );
+    console.error("   or: npm run ask -- --topics [--persona EA_G8]");
     process.exit(1);
   }
   const result = await planTrip({
@@ -218,54 +273,66 @@ async function ask(argv: string[]): Promise<void> {
     radiusMi: args.radiusMi,
   });
 
-  console.log(`\n[persona ${result.persona}] mode=${result.mode}${result.stage ? ` stage=${result.stage}` : ''}${result.rejected ? '  ACCESS REJECTED' : ''}`);
+  console.log(
+    `\n[persona ${result.persona}] mode=${result.mode}${result.stage ? ` stage=${result.stage}` : ""}${result.rejected ? "  ACCESS REJECTED" : ""}`,
+  );
   if (result.error) console.error(`\n! ${result.error}`);
   if (result.answer) console.log(`\n${result.answer}`);
 
   // Category-first: WHICH engagement audience to anchor on (asked up front, before a leader is chosen).
-  if (result.stage === 'clarify' && result.questions?.length) {
+  if (result.stage === "clarify" && result.questions?.length) {
     for (const c of result.questions[0].choices) {
-      console.log(`   ${c.recommended ? '★' : '·'} ${c.label}${c.detail ? ` — ${c.detail}` : ''}`);
+      console.log(
+        `   ${c.recommended ? "★" : "·"} ${c.label}${c.detail ? ` — ${c.detail}` : ""}`,
+      );
     }
-    const flag = result.clarify === 'category' ? '--category <id>' : '--leader <id>';
-    console.log(`\n— re-run with the chosen ${result.clarify ?? 'option'}: ${flag}`);
+    const flag =
+      result.clarify === "category" ? "--category <id>" : "--leader <id>";
+    console.log(
+      `\n— re-run with the chosen ${result.clarify ?? "option"}: ${flag}`,
+    );
   }
   // Different-length itinerary options to compare.
-  if (result.stage === 'options' && result.options?.length) {
+  if (result.stage === "options" && result.options?.length) {
     for (const o of result.options) {
       console.log(
-        `   ${o.recommended ? '★ REC' : '     '} [${o.id}] ${o.label} — ${o.stopCount} stop(s), ROI ${o.roiScore ?? '—'}${o.overBudget ? ' (OVER BUDGET)' : ''}`,
+        `   ${o.recommended ? "★ REC" : "     "} [${o.id}] ${o.label} — ${o.stopCount} stop(s), ROI ${o.roiScore ?? "—"}${o.overBudget ? " (OVER BUDGET)" : ""}`,
       );
     }
   }
 
-  console.log(`\n— tools: ${result.toolCalls.map((t) => t.name).join(' → ') || '(none)'}`);
   console.log(
-    `— menu: ${result.menu?.length ?? 0} option(s); redacted ${result.redactedCount ?? 0}; trip-map ${result.tripMap ? 'YES' : 'no'}`,
+    `\n— tools: ${result.toolCalls.map((t) => t.name).join(" → ") || "(none)"}`,
   );
-  if (process.env.ENGAGEMENTS_AGENT_JSON) console.log(`\n${JSON.stringify(result, null, 2)}`);
+  console.log(
+    `— menu: ${result.menu?.length ?? 0} option(s); redacted ${result.redactedCount ?? 0}; trip-map ${result.tripMap ? "YES" : "no"}`,
+  );
+  if (process.env.ENGAGEMENTS_AGENT_JSON)
+    console.log(`\n${JSON.stringify(result, null, 2)}`);
 }
 
 async function serve(): Promise<void> {
-  const express = (await import('express')).default;
-  const cors = (await import('cors')).default;
+  const express = (await import("express")).default;
+  const cors = (await import("cors")).default;
   const app = express();
   app.use(cors());
   app.use(express.json());
 
-  app.get('/health', (_req, res) => {
+  app.get("/health", (_req, res) => {
     res.json({
       ok: true,
-      service: 'engagements-orchestrator',
-      mcp: process.env.ENGAGEMENTS_MCP_URL || 'http://localhost:3010/mcp',
-      pythonAgent: process.env.ENGAGEMENTS_PYTHON_AGENT_URL || 'http://127.0.0.1:3030',
+      service: "engagements-orchestrator",
+      mcp: process.env.ENGAGEMENTS_MCP_URL || "http://localhost:3010/mcp",
+      pythonAgent:
+        process.env.ENGAGEMENTS_PYTHON_AGENT_URL || "http://127.0.0.1:3030",
     });
   });
 
   // Hot topics — a topic-first entry point for the UI. Persona-trimmed; picking one just seeds a
   // free-form /ask, so it kicks off a search without locking the user into a flow.
-  app.get('/topics', async (req, res) => {
-    const persona = typeof req.query.persona === 'string' ? req.query.persona : undefined;
+  app.get("/topics", async (req, res) => {
+    const persona =
+      typeof req.query.persona === "string" ? req.query.persona : undefined;
     try {
       res.json(await hotTopics({ persona }));
     } catch (e: any) {
@@ -273,14 +340,63 @@ async function serve(): Promise<void> {
     }
   });
 
-  app.post('/ask', async (req, res) => {
-    const { question, persona, leaderId, topN, category, radiusMi, days, context, history } = req.body ?? {};
-    if (!question || typeof question !== 'string') {
-      res.status(400).json({ ok: false, error: 'body.question (string) is required' });
+  app.post("/ask", async (req, res) => {
+    const {
+      question,
+      persona,
+      leaderId,
+      topN,
+      category,
+      radiusMi,
+      days,
+      context,
+      history,
+    } = req.body ?? {};
+    if (!question || typeof question !== "string") {
+      res
+        .status(400)
+        .json({ ok: false, error: "body.question (string) is required" });
       return;
     }
     try {
-      res.json(await planTrip({ question, persona, leaderId, topN, category, radiusMi, days, context, history }));
+      res.json(
+        await planTrip({
+          question,
+          persona,
+          leaderId,
+          topN,
+          category,
+          radiusMi,
+          days,
+          context,
+          history,
+        }),
+      );
+    } catch (e: any) {
+      sendRequestError(res, e);
+    }
+  });
+
+  // Area discovery — organizations physically around a travel anchor, each flagged known/new against
+  // the caller's AUTHORIZED contacts. Awareness only: a new business is not a contact, so it cannot be
+  // routed into an itinerary until it is onboarded through the normal relationship path.
+  app.post("/discover", async (req, res) => {
+    const { city, state, lat, lng, query, focus, radiusMi, limit, persona } =
+      req.body ?? {};
+    try {
+      res.json(
+        await discoverAreaBusinesses({
+          city,
+          state,
+          lat,
+          lng,
+          query,
+          focus,
+          radiusMi,
+          limit,
+          persona,
+        }),
+      );
     } catch (e: any) {
       sendRequestError(res, e);
     }
@@ -288,25 +404,81 @@ async function serve(): Promise<void> {
 
   // Interactive planner — STAGE 1: survey an area and return the ranked option menus (or ask
   // "which area?"). The UI renders `questions` as option groups; nothing is committed yet.
-  app.post('/plan-options', async (req, res) => {
-    const { question, persona, regionId, region, city, state, radiusMi, window, leaderId, topicIds, requireTopicMatch } = req.body ?? {};
+  app.post("/plan-options", async (req, res) => {
+    const {
+      question,
+      persona,
+      regionId,
+      region,
+      city,
+      state,
+      radiusMi,
+      window,
+      leaderId,
+      topicIds,
+      requireTopicMatch,
+    } = req.body ?? {};
     try {
-      res.json(await planAreaOptions({ question, persona, regionId, region, city, state, radiusMi, window, leaderId, topicIds, requireTopicMatch }));
+      res.json(
+        await planAreaOptions({
+          question,
+          persona,
+          regionId,
+          region,
+          city,
+          state,
+          radiusMi,
+          window,
+          leaderId,
+          topicIds,
+          requireTopicMatch,
+        }),
+      );
     } catch (e: any) {
       sendRequestError(res, e);
     }
   });
 
   // Interactive planner — STAGE 2: build the final itinerary + ui://trip-map from the human's picks.
-  app.post('/build', async (req, res) => {
-    const { persona, regionId, region, city, state, radiusMi, window, leaderId, durationTier, extensionContactIds, acceptedContactIds, anchorEventId, topicIds } = req.body ?? {};
-    if (!leaderId || typeof leaderId !== 'string') {
-      res.status(400).json({ ok: false, error: 'body.leaderId (string) is required' });
+  app.post("/build", async (req, res) => {
+    const {
+      persona,
+      regionId,
+      region,
+      city,
+      state,
+      radiusMi,
+      window,
+      leaderId,
+      durationTier,
+      extensionContactIds,
+      acceptedContactIds,
+      anchorEventId,
+      topicIds,
+    } = req.body ?? {};
+    if (!leaderId || typeof leaderId !== "string") {
+      res
+        .status(400)
+        .json({ ok: false, error: "body.leaderId (string) is required" });
       return;
     }
     try {
       res.json(
-        await buildAreaItinerary({ persona, regionId, region, city, state, radiusMi, window, leaderId, durationTier, extensionContactIds, acceptedContactIds, anchorEventId, topicIds }),
+        await buildAreaItinerary({
+          persona,
+          regionId,
+          region,
+          city,
+          state,
+          radiusMi,
+          window,
+          leaderId,
+          durationTier,
+          extensionContactIds,
+          acceptedContactIds,
+          anchorEventId,
+          topicIds,
+        }),
       );
     } catch (e: any) {
       sendRequestError(res, e);
@@ -316,14 +488,46 @@ async function serve(): Promise<void> {
   // Interactive planner — STAGE 2 (options): for the CHOSEN leader, build MULTIPLE complete
   // itineraries of DIFFERENT LENGTHS (short visit → full regional tour) so the EA compares finished
   // trips and proceeds with one. Optional knobs: optionCount / maxDays / targetDays / meetingsPerDay.
-  app.post('/build-options', async (req, res) => {
-    const { persona, regionId, region, city, state, radiusMi, window, leaderId, topicIds, optionCount, maxDays, targetDays, meetingsPerDay } = req.body ?? {};
-    if (!leaderId || typeof leaderId !== 'string') {
-      res.status(400).json({ ok: false, error: 'body.leaderId (string) is required' });
+  app.post("/build-options", async (req, res) => {
+    const {
+      persona,
+      regionId,
+      region,
+      city,
+      state,
+      radiusMi,
+      window,
+      leaderId,
+      topicIds,
+      optionCount,
+      maxDays,
+      targetDays,
+      meetingsPerDay,
+    } = req.body ?? {};
+    if (!leaderId || typeof leaderId !== "string") {
+      res
+        .status(400)
+        .json({ ok: false, error: "body.leaderId (string) is required" });
       return;
     }
     try {
-      res.json(await buildAreaItineraryOptions({ persona, regionId, region, city, state, radiusMi, window, leaderId, topicIds, optionCount, maxDays, targetDays, meetingsPerDay }));
+      res.json(
+        await buildAreaItineraryOptions({
+          persona,
+          regionId,
+          region,
+          city,
+          state,
+          radiusMi,
+          window,
+          leaderId,
+          topicIds,
+          optionCount,
+          maxDays,
+          targetDays,
+          meetingsPerDay,
+        }),
+      );
     } catch (e: any) {
       sendRequestError(res, e);
     }
@@ -331,15 +535,53 @@ async function serve(): Promise<void> {
 
   // Fixed-radius planner — STAGE 1: fill a fixed-day trip around a company/coordinate/city and return
   // the who/extend menus. Event-OPTIONAL: no anchor event is required or invented.
-  app.post('/plan-radius', async (req, res) => {
-    const { question, persona, anchorContactId, company, lat, lng, city, state, region, regionId, radiusMi, days, meetingsPerDay, window, leaderId, topicIds, requireTopicMatch } = req.body ?? {};
-    if (typeof days !== 'number' || !(days > 0)) {
-      res.status(400).json({ ok: false, error: 'body.days (positive number) is required' });
+  app.post("/plan-radius", async (req, res) => {
+    const {
+      question,
+      persona,
+      anchorContactId,
+      company,
+      lat,
+      lng,
+      city,
+      state,
+      region,
+      regionId,
+      radiusMi,
+      days,
+      meetingsPerDay,
+      window,
+      leaderId,
+      topicIds,
+      requireTopicMatch,
+    } = req.body ?? {};
+    if (typeof days !== "number" || !(days > 0)) {
+      res
+        .status(400)
+        .json({ ok: false, error: "body.days (positive number) is required" });
       return;
     }
     try {
       res.json(
-        await planRadiusOptions({ question, persona, anchorContactId, company, lat, lng, city, state, region, regionId, radiusMi, days, meetingsPerDay, window, leaderId, topicIds, requireTopicMatch }),
+        await planRadiusOptions({
+          question,
+          persona,
+          anchorContactId,
+          company,
+          lat,
+          lng,
+          city,
+          state,
+          region,
+          regionId,
+          radiusMi,
+          days,
+          meetingsPerDay,
+          window,
+          leaderId,
+          topicIds,
+          requireTopicMatch,
+        }),
       );
     } catch (e: any) {
       sendRequestError(res, e);
@@ -347,42 +589,106 @@ async function serve(): Promise<void> {
   });
 
   // Fixed-radius planner — STAGE 2: build the event-less itinerary + ui://trip-map from the picks.
-  app.post('/build-radius', async (req, res) => {
-    const { persona, anchorContactId, company, lat, lng, city, state, region, regionId, radiusMi, days, meetingsPerDay, window, leaderId, acceptedContactIds, extensionContactIds, topicIds } = req.body ?? {};
-    if (!leaderId || typeof leaderId !== 'string') {
-      res.status(400).json({ ok: false, error: 'body.leaderId (string) is required' });
+  app.post("/build-radius", async (req, res) => {
+    const {
+      persona,
+      anchorContactId,
+      company,
+      lat,
+      lng,
+      city,
+      state,
+      region,
+      regionId,
+      radiusMi,
+      days,
+      meetingsPerDay,
+      window,
+      leaderId,
+      acceptedContactIds,
+      extensionContactIds,
+      topicIds,
+    } = req.body ?? {};
+    if (!leaderId || typeof leaderId !== "string") {
+      res
+        .status(400)
+        .json({ ok: false, error: "body.leaderId (string) is required" });
       return;
     }
-    if (typeof days !== 'number' || !(days > 0)) {
-      res.status(400).json({ ok: false, error: 'body.days (positive number) is required' });
+    if (typeof days !== "number" || !(days > 0)) {
+      res
+        .status(400)
+        .json({ ok: false, error: "body.days (positive number) is required" });
       return;
     }
     try {
       res.json(
-        await buildRadiusItinerary({ persona, anchorContactId, company, lat, lng, city, state, region, regionId, radiusMi, days, meetingsPerDay, window, leaderId, acceptedContactIds, extensionContactIds, topicIds }),
+        await buildRadiusItinerary({
+          persona,
+          anchorContactId,
+          company,
+          lat,
+          lng,
+          city,
+          state,
+          region,
+          regionId,
+          radiusMi,
+          days,
+          meetingsPerDay,
+          window,
+          leaderId,
+          acceptedContactIds,
+          extensionContactIds,
+          topicIds,
+        }),
       );
     } catch (e: any) {
       sendRequestError(res, e);
     }
   });
 
-  const port = Number(process.env.ENGAGEMENTS_AGENT_PORT || 3020);
+  const port = Number(
+    process.env.ENGAGEMENTS_AGENT_PORT || process.env.PORT || 3020,
+  );
   const server = app.listen(port, () => {
     console.log(`Engagements orchestrator on http://localhost:${port}`);
-    console.log(`  POST /ask           { question, persona?, leaderId?, topN?, category?, context?, history? } — conversational planning`);
-    console.log(`  GET  /topics        ?persona=EA_G8                                       — hot topics (topic-first entry)`);
-    console.log(`  POST /plan-options  { question?|region?|city?, persona?, window? }       — interactive: survey + option menus`);
-    console.log(`  POST /build         { leaderId, durationTier?, extensionContactIds?, region? } — build itinerary + trip map`);
-    console.log(`  POST /build-options { leaderId, region?|city?, window?, optionCount?, maxDays?, targetDays?[] } — compare full itineraries of DIFFERENT LENGTHS`);
-    console.log(`  POST /plan-radius   { days, company?|anchorContactId?|lat+lng?|city?, radiusMi?, persona? } — fixed-radius: fill + menus`);
-    console.log(`  POST /build-radius  { leaderId, days, company?|anchorContactId?|lat+lng?|city?, acceptedContactIds? } — event-less itinerary + map`);
-    console.log(`  -> engagements MCP: ${process.env.ENGAGEMENTS_MCP_URL || 'http://localhost:3010/mcp'}`);
-    console.log(`  -> Python MAF + AGT: ${process.env.ENGAGEMENTS_PYTHON_AGENT_URL || 'http://127.0.0.1:3030'}`);
-    console.log(`  -> model: ${process.env.AZURE_OPENAI_DEPLOYMENT ? `Azure OpenAI (${process.env.AZURE_OPENAI_DEPLOYMENT}) via Microsoft Agent Framework` : 'not configured — governed deterministic fallback'}`);
+    console.log(
+      `  POST /ask           { question, persona?, leaderId?, topN?, category?, context?, history? } — conversational planning`,
+    );
+    console.log(
+      `  GET  /topics        ?persona=EA_G8                                       — hot topics (topic-first entry)`,
+    );
+    console.log(
+      `  POST /plan-options  { question?|region?|city?, persona?, window? }       — interactive: survey + option menus`,
+    );
+    console.log(
+      `  POST /build         { leaderId, durationTier?, extensionContactIds?, region? } — build itinerary + trip map`,
+    );
+    console.log(
+      `  POST /build-options { leaderId, region?|city?, window?, optionCount?, maxDays?, targetDays?[] } — compare full itineraries of DIFFERENT LENGTHS`,
+    );
+    console.log(
+      `  POST /plan-radius   { days, company?|anchorContactId?|lat+lng?|city?, radiusMi?, persona? } — fixed-radius: fill + menus`,
+    );
+    console.log(
+      `  POST /build-radius  { leaderId, days, company?|anchorContactId?|lat+lng?|city?, acceptedContactIds? } — event-less itinerary + map`,
+    );
+    console.log(
+      `  -> engagements MCP: ${process.env.ENGAGEMENTS_MCP_URL || "http://localhost:3010/mcp"}`,
+    );
+    console.log(
+      `  -> Python MAF + AGT: ${process.env.ENGAGEMENTS_PYTHON_AGENT_URL || "http://127.0.0.1:3030"}`,
+    );
+    console.log(
+      `  -> model: ${process.env.AZURE_OPENAI_DEPLOYMENT ? `Azure OpenAI (${process.env.AZURE_OPENAI_DEPLOYMENT}) via Microsoft Agent Framework` : "not configured — governed deterministic fallback"}`,
+    );
   });
-  server.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`Engagements orchestrator: port ${port} is already in use — a previous orchestrator may still be running. Stop that process or set ENGAGEMENTS_AGENT_PORT to a free port, then retry.`);
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(
+        `Engagements orchestrator: port ${port} is already in use — a previous orchestrator may still be running. Stop that process or set ENGAGEMENTS_AGENT_PORT to a free port, then retry.`,
+      );
     } else {
       console.error(err);
     }
@@ -392,12 +698,12 @@ async function serve(): Promise<void> {
 
 const argv = process.argv.slice(2);
 function dispatch(): Promise<void> {
-  if (argv.includes('--serve')) return serve();
-  const rest = argv.filter((a) => a !== '--serve');
-  if (rest.includes('--topics')) return topics(rest);
-  if (rest.includes('--radius')) return radius(rest);
-  if (rest.includes('--itineraries')) return itineraries(rest);
-  if (rest.includes('--options')) return options(rest);
+  if (argv.includes("--serve")) return serve();
+  const rest = argv.filter((a) => a !== "--serve");
+  if (rest.includes("--topics")) return topics(rest);
+  if (rest.includes("--radius")) return radius(rest);
+  if (rest.includes("--itineraries")) return itineraries(rest);
+  if (rest.includes("--options")) return options(rest);
   return ask(rest);
 }
 dispatch().catch((e) => {

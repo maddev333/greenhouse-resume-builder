@@ -20,4 +20,5 @@ def settings(tmp_path: Path) -> Settings:
         model_api_key=None,
         model_token_scope="https://cognitiveservices.azure.com/.default",
         request_timeout_seconds=5,
+        discovery_mcp_url="http://discovery.test/mcp",
     )

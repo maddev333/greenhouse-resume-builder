@@ -1,11 +1,22 @@
 {
   "name": "greenhouse-resume-builder",
   "private": true,
+  "scripts": {
+    "demo": "npm run demo --workspace @greenhouse-resume-builder/cap-engagements-ui",
+    "package:webapps": "node scripts/package-webapps.mjs",
+    "package:webapp:gateway": "node scripts/package-webapps.mjs gateway",
+    "package:webapp:runtime": "node scripts/package-webapps.mjs runtime",
+    "package:webapp:mcp": "node scripts/package-webapps.mjs mcp"
+  },
   "workspaces": [
     "shared",
     "capabilities/mcp-core",
     "capabilities/*/mcp/*",
     "capabilities/*/agent",
     "capabilities/*/ui"
-  ]
+  ],
+  "devDependencies": {
+    "archiver": "^7.0.1",
+    "esbuild": "^0.28.1"
+  }
 }

@@ -159,8 +159,13 @@ class AgentRuntime:
         started_calls = 0
         run_denials = denials if denials is not None else []
         max_tool_calls = self._tool_call_limit(request.max_iterations)
+        discovery_url = request.discovery_mcp_url or self.settings.discovery_mcp_url
 
-        async def invoke(name: str, arguments: dict[str, Any]) -> Any:
+        async def invoke(
+            name: str,
+            arguments: dict[str, Any],
+            mcp_url: str | None = None,
+        ) -> Any:
             nonlocal started_calls
             async with invocation_lock:
                 if run_denials:
@@ -172,7 +177,7 @@ class AgentRuntime:
                 started_calls += 1
                 try:
                     result = await self.mcp_client.call_tool(
-                        mcp_url=request.mcp_url,
+                        mcp_url=mcp_url or request.mcp_url,
                         persona=request.persona,
                         name=name,
                         arguments={
@@ -562,6 +567,67 @@ class AgentRuntime:
                 },
             )
 
+        @tool(approval_mode="never_require")
+        async def search_businesses(
+            city: Annotated[str | None, Field(description="Anchor city for the sweep.")] = None,
+            state: Annotated[
+                str | None,
+                Field(description="State abbreviation disambiguating the city."),
+            ] = None,
+            lat: Annotated[
+                float | None,
+                Field(description="Anchor latitude; pair with lng to reuse an itinerary stop."),
+            ] = None,
+            lng: Annotated[float | None, Field(description="Anchor longitude.")] = None,
+            query: Annotated[
+                str | None,
+                Field(description='Keyword matched against business NAMES (e.g. "aerospace").'),
+            ] = None,
+            focus: Annotated[
+                list[
+                    Literal[
+                        "industry",
+                        "manufacturing",
+                        "technology",
+                        "research",
+                        "academia",
+                        "government",
+                        "venues",
+                    ]
+                ]
+                | None,
+                Field(description="Restrict the sweep to engageable organization types."),
+            ] = None,
+            radiusMi: Annotated[
+                float | None,
+                Field(description="Search radius in miles (default 10, max 31)."),
+            ] = None,
+            limit: Annotated[
+                int | None,
+                Field(description="Maximum businesses to return (default 15, max 50)."),
+            ] = None,
+        ) -> Any:
+            """Find PUBLIC businesses physically around a travel area.
+
+            Served by the separate Area Discovery capability, so results carry no relationship
+            history and no security trim. Always cross-reference the returned names against
+            search_contacts before presenting any as a new lead.
+            """
+            return await invoke(
+                "search_businesses",
+                {
+                    "city": city,
+                    "state": state,
+                    "lat": lat,
+                    "lng": lng,
+                    "query": query,
+                    "focus": focus,
+                    "radiusMi": radiusMi,
+                    "limit": limit,
+                },
+                mcp_url=discovery_url,
+            )
+
         return [
             search_contacts,
             search_events,
@@ -572,6 +638,7 @@ class AgentRuntime:
             plan_radius,
             suggest_candidates,
             build_itinerary,
+            *([search_businesses] if discovery_url else []),
         ]
 
     def _tool_call_limit(self, requested: int) -> int:

@@ -7,10 +7,7 @@
  * and audit apply to every agent-originated MCP invocation rather than only model calls.
  */
 import { randomUUID } from "node:crypto";
-import {
-  callGovernedTool,
-  discoverGovernedTools,
-} from "./python-runtime.js";
+import { callGovernedTool, discoverGovernedTools } from "./python-runtime.js";
 
 export const AGENT_TOOL_NAMES = [
   "search_contacts",
@@ -22,7 +19,12 @@ export const AGENT_TOOL_NAMES = [
   "plan_radius",
   "suggest_candidates",
   "build_itinerary",
+  "search_businesses",
 ] as const;
+
+/** Area Discovery capability endpoint the governed runtime should route `search_businesses` to. */
+export const DISCOVERY_URL = (): string =>
+  process.env.DISCOVERY_MCP_URL || "http://localhost:3011/mcp";
 
 export interface CapturedCall {
   name: string;
@@ -41,8 +43,12 @@ export interface ToolClient {
 }
 
 /** Open a governed Python tool gateway bound to one demo persona. */
-export async function makeToolClient(url: string, persona: string): Promise<ToolClient> {
-  await discoverGovernedTools({ mcpUrl: url, persona });
+export async function makeToolClient(
+  url: string,
+  persona: string,
+): Promise<ToolClient> {
+  const discoveryMcpUrl = DISCOVERY_URL();
+  await discoverGovernedTools({ mcpUrl: url, persona, discoveryMcpUrl });
   const captured: CapturedCall[] = [];
   const traceId = randomUUID();
 
@@ -51,6 +57,7 @@ export async function makeToolClient(url: string, persona: string): Promise<Tool
       mcpUrl: url,
       persona,
       traceId,
+      discoveryMcpUrl,
       name,
       args: args ?? {},
     });

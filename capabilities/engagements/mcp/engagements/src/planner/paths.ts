@@ -1,15 +1,20 @@
 /**
  * Filesystem anchors for the planner engine.
  *
- * Resolved from this file's directory (via `import.meta.url`, since this now lives in an ESM
- * package) so it works both under `tsx` (src/planner) and after `tsc` compilation (dist/planner).
- * This module lives at `capabilities/engagements/mcp/engagements/src/planner`, so six parents up
- * is the repo root.
+ * Source runs resolve from this module's directory. Deployment bundles collapse modules into one
+ * file, so they instead find the packaged seed directory beneath the Web App working directory.
  */
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const sourceSeedDir = resolve(here, '../../../../../../engagement-intelligence/seed');
+const packagedSeedDir = resolve(process.cwd(), 'engagement-intelligence', 'seed');
 
 /** The staged seed directory (`engagement-intelligence/seed`). */
-export const SEED_DIR = resolve(here, '../../../../../../engagement-intelligence/seed');
+export const SEED_DIR = process.env.ENGAGEMENTS_SEED_DIR
+  ? resolve(process.env.ENGAGEMENTS_SEED_DIR)
+  : existsSync(packagedSeedDir)
+    ? packagedSeedDir
+    : sourceSeedDir;

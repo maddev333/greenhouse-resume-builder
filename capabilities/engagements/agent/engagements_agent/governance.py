@@ -21,7 +21,7 @@ from agentmesh.governance import AuditLog
 
 from .config import Settings
 
-ORCHESTRATOR_TOOL_NAMES = frozenset(
+ENGAGEMENTS_TOOL_NAMES = frozenset(
     {
         "search_contacts",
         "search_events",
@@ -34,6 +34,13 @@ ORCHESTRATOR_TOOL_NAMES = frozenset(
         "build_itinerary",
     }
 )
+
+#: Tools served by the standalone Area Discovery capability, not the engagements capability. Kept in a
+#: separate set so `/tools/list` never demands them from the engagements MCP, while `authorize_tool`
+#: and the capability guard still govern them exactly like every other tool.
+DISCOVERY_TOOL_NAMES = frozenset({"search_businesses"})
+
+ORCHESTRATOR_TOOL_NAMES = ENGAGEMENTS_TOOL_NAMES | DISCOVERY_TOOL_NAMES
 
 MODEL_TOOL_NAMES = ORCHESTRATOR_TOOL_NAMES
 

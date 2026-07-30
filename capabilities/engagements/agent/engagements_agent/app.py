@@ -8,7 +8,12 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 
 from .config import Settings
-from .governance import GovernanceDenied, GovernanceRuntime, ORCHESTRATOR_TOOL_NAMES
+from .governance import (
+    DISCOVERY_TOOL_NAMES,
+    ENGAGEMENTS_TOOL_NAMES,
+    GovernanceDenied,
+    GovernanceRuntime,
+)
 from .mcp_client import GovernedMcpClient, McpCallError
 from .models import (
     AgentRunRequest,
@@ -72,23 +77,47 @@ def create_app(
                 persona=request.persona,
             )
             available = {item.name for item in tools}
-            missing = sorted(ORCHESTRATOR_TOOL_NAMES - available)
+            missing = sorted(ENGAGEMENTS_TOOL_NAMES - available)
             if missing:
                 raise HTTPException(
                     status_code=502,
                     detail=f"Engagements MCP is missing required tools: {', '.join(missing)}",
                 )
-            return ToolListResponse(
-                tools=[item for item in tools if item.name in ORCHESTRATOR_TOOL_NAMES]
-            )
+            selected = [item for item in tools if item.name in ENGAGEMENTS_TOOL_NAMES]
         except McpCallError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+        # Area Discovery is a separate, OPTIONAL capability: if it is not running, the orchestrator
+        # still gets the full engagements surface rather than failing the whole turn.
+        discovery_url = request.discovery_mcp_url or configured_settings.discovery_mcp_url
+        if discovery_url:
+            try:
+                discovered = await configured_mcp.list_tools(
+                    mcp_url=discovery_url,
+                    persona=request.persona,
+                )
+                selected.extend(
+                    item for item in discovered if item.name in DISCOVERY_TOOL_NAMES
+                )
+            except McpCallError:
+                pass
+
+        return ToolListResponse(tools=selected)
+
     @app.post("/tools/call")
     async def call_tool(request: ToolCallRequest):
+        mcp_url = request.mcp_url
+        if request.name in DISCOVERY_TOOL_NAMES:
+            discovery_url = request.discovery_mcp_url or configured_settings.discovery_mcp_url
+            if not discovery_url:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Area Discovery is not configured; set DISCOVERY_MCP_URL.",
+                )
+            mcp_url = discovery_url
         try:
             return await configured_mcp.call_tool(
-                mcp_url=request.mcp_url,
+                mcp_url=mcp_url,
                 persona=request.persona,
                 name=request.name,
                 arguments=request.args,

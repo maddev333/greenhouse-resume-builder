@@ -49,6 +49,7 @@ class Settings:
     model_api_key: str | None
     model_token_scope: str
     request_timeout_seconds: float
+    discovery_mcp_url: str | None = None
     governance_audit_max_entries: int = 10_000
 
     @classmethod
@@ -82,6 +83,9 @@ class Settings:
                 "https://cognitiveservices.azure.com/.default",
             ),
             request_timeout_seconds=float(os.getenv("AGENT_REQUEST_TIMEOUT_SECONDS", "45")),
+            discovery_mcp_url=(
+                os.getenv("DISCOVERY_MCP_URL", "http://localhost:3011/mcp").strip() or None
+            ),
             governance_audit_max_entries=_env_int(
                 "AGT_AUDIT_MAX_ENTRIES",
                 10_000,
@@ -92,3 +96,7 @@ class Settings:
     @property
     def model_configured(self) -> bool:
         return bool(self.model_endpoint and self.model_deployment)
+
+    @property
+    def discovery_configured(self) -> bool:
+        return bool(self.discovery_mcp_url)

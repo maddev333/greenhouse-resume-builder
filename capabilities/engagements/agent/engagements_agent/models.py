@@ -24,6 +24,8 @@ class ToolContextRequest(ApiModel):
     mcp_url: str
     persona: str = "EA_BASIC"
     trace_id: str | None = None
+    #: Area Discovery capability endpoint. Falls back to the runtime's DISCOVERY_MCP_URL setting.
+    discovery_mcp_url: str | None = None
 
 
 class ToolListRequest(ToolContextRequest):

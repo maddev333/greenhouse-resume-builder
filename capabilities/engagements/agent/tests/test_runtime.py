@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
@@ -6,6 +7,7 @@ from pydantic import ValidationError
 import engagements_agent.runtime as runtime_module
 from engagements_agent.config import Settings
 from engagements_agent.governance import (
+    ENGAGEMENTS_TOOL_NAMES,
     MODEL_TOOL_NAMES,
     GovernanceDenied,
     GovernanceRuntime,
@@ -36,6 +38,63 @@ def test_agent_framework_tools_match_governance_allowlist(settings: Settings) ->
         "additionalContactIds"
         in schemas["build_itinerary"]["function"]["parameters"]["properties"]
     )
+
+
+def test_discovery_tool_is_omitted_when_no_discovery_endpoint(
+    settings: Settings,
+) -> None:
+    configured = replace(settings, discovery_mcp_url=None)
+    governance = GovernanceRuntime(configured)
+    bridge = GovernedMcpClient(governance, timeout_seconds=5)
+    runtime = AgentRuntime(configured, governance, bridge)
+    request = AgentRunRequest(
+        system="Use tools.",
+        user="What is near Huntsville?",
+        mcpUrl="http://mcp.test/mcp",
+        persona="EA_G8",
+        traceId="trace-no-discovery",
+    )
+
+    names = {tool.name for tool in runtime._build_tools(request, [])}
+
+    assert names == ENGAGEMENTS_TOOL_NAMES
+
+
+async def test_discovery_tool_targets_the_discovery_capability(
+    settings: Settings,
+) -> None:
+    class Bridge:
+        seen: list[str] = []
+
+        async def call_tool(self, **kwargs):
+            self.seen.append(kwargs["mcp_url"])
+            return CapturedCall(
+                name=kwargs["name"],
+                args=kwargs["arguments"],
+                result={},
+                text="",
+                modelResult={},
+            )
+
+    governance = GovernanceRuntime(settings)
+    bridge = Bridge()
+    runtime = AgentRuntime(settings, governance, bridge)
+    request = AgentRunRequest(
+        system="Use tools.",
+        user="What is near Huntsville?",
+        mcpUrl="http://mcp.test/mcp",
+        persona="EA_G8",
+        traceId="trace-discovery",
+    )
+    tools = {tool.name: tool for tool in runtime._build_tools(request, [])}
+
+    await tools["search_businesses"].invoke(
+        arguments={"city": "Huntsville", "state": "AL", "focus": ["industry"]}
+    )
+    await tools["search_contacts"].invoke(arguments={"query": "Huntsville"})
+
+    # Discovery is a DIFFERENT capability server; engagements calls must not be redirected to it.
+    assert bridge.seen == ["http://discovery.test/mcp", "http://mcp.test/mcp"]
 
 
 def test_agent_decision_rejects_inconsistent_stage_fields() -> None:

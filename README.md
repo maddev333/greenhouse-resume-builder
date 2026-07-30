@@ -63,6 +63,31 @@ Open **http://localhost:8080**. Press `Ctrl+C` to stop.
 Full run details, the manual three-terminal path, config, and troubleshooting live in
 [`capabilities/engagements/ui/README.md`](capabilities/engagements/ui/README.md).
 
+## Build Azure Web App ZIPs
+
+Create the three deployment artifacts from the repository root:
+
+```powershell
+npm run package:webapps
+```
+
+The command writes self-contained artifacts beneath `.deploy\`:
+
+| Artifact | Web App runtime | Startup |
+| --- | --- | --- |
+| `engagements-agent-gateway.zip` | Node.js 20+ | `npm start` |
+| `engagements-agent-runtime.zip` | Python 3.11+ | `bash startup.sh` |
+| `engagements-mcp.zip` | Node.js 20+ | `npm start` |
+
+The Node artifacts bundle their production dependencies and the seed data. The Python artifact
+contains `requirements.txt`, the Agent Governance Toolkit policy, and its startup script; enable
+App Service build automation with `SCM_DO_BUILD_DURING_DEPLOYMENT=true` so Oryx installs the Python
+dependencies during ZIP deployment. Configure the Python Web App startup command as
+`bash startup.sh`. App settings and `.env` files are deliberately not included in any archive.
+
+Build only one artifact with `npm run package:webapp:gateway`,
+`npm run package:webapp:runtime`, or `npm run package:webapp:mcp`.
+
 ### Optional configuration
 
 Copy `.env.example` to `.env` at the repo root to enable the optional integrations:

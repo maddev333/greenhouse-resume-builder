@@ -20,12 +20,7 @@ export interface PythonAgentDecision {
   intent: "area" | "event" | "radius" | "lookup";
   stage: "clarify" | "options" | "plan" | "answer";
   clarify: "category" | "leader" | null;
-  category:
-    | "congressional"
-    | "academia"
-    | "industry"
-    | "army-internal"
-    | null;
+  category: "congressional" | "academia" | "industry" | "army-internal" | null;
   leaderId: string | null;
   recommendedOptionIndex: number | null;
   answer: string;
@@ -35,6 +30,8 @@ interface RuntimeRequestContext {
   mcpUrl: string;
   persona: string;
   traceId?: string;
+  /** Area Discovery capability endpoint; the runtime falls back to its own DISCOVERY_MCP_URL. */
+  discoveryMcpUrl?: string;
 }
 
 export class PythonRuntimeRequestError extends Error {
@@ -55,7 +52,10 @@ export function isGovernanceDenial(
 }
 
 const runtimeUrl = (): string =>
-  (process.env.ENGAGEMENTS_PYTHON_AGENT_URL || "http://127.0.0.1:3030").replace(/\/+$/, "");
+  (process.env.ENGAGEMENTS_PYTHON_AGENT_URL || "http://127.0.0.1:3030").replace(
+    /\/+$/,
+    "",
+  );
 
 const timeoutMs = (): number => {
   const configured = Number(process.env.ENGAGEMENTS_PYTHON_AGENT_TIMEOUT_MS);
@@ -71,10 +71,13 @@ export function isModelConfigured(): boolean {
 export async function discoverGovernedTools(
   context: RuntimeRequestContext,
 ): Promise<string[]> {
-  const response = await postJson<{ tools: { name: string }[] }>("/tools/list", {
-    ...context,
-    traceId: context.traceId || randomUUID(),
-  });
+  const response = await postJson<{ tools: { name: string }[] }>(
+    "/tools/list",
+    {
+      ...context,
+      traceId: context.traceId || randomUUID(),
+    },
+  );
   return response.tools.map((tool) => tool.name);
 }
 
@@ -97,6 +100,7 @@ export async function runPythonAgent(input: {
   persona: string;
   maxIterations?: number;
   traceId?: string;
+  discoveryMcpUrl?: string;
 }): Promise<PythonAgentResult> {
   return postJson<PythonAgentResult>("/run", {
     ...input,
@@ -117,14 +121,16 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
       signal: controller.signal,
     });
     if (!response.ok) {
-      const payload = await response.json().catch(() => null) as { detail?: unknown } | null;
+      const payload = (await response.json().catch(() => null)) as {
+        detail?: unknown;
+      } | null;
       const detail =
         typeof payload?.detail === "string"
           ? payload.detail
           : `HTTP ${response.status}`;
       throw new PythonRuntimeRequestError(response.status, path, detail);
     }
-    return await response.json() as T;
+    return (await response.json()) as T;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error(`Python agent runtime ${path} timed out at ${endpoint}.`);

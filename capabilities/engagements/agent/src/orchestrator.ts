@@ -13,6 +13,7 @@
  */
 import {
   makeToolClient,
+  DISCOVERY_URL,
   type CapturedCall,
   type ToolClient,
 } from "./tools.js";
@@ -243,9 +244,20 @@ export function buildSystemPrompt(
     "5. Use stage=options only after two or more build_itinerary calls succeed; use stage=plan only after",
     "   one succeeds. Use stage=answer only for grounded lookup responses. Set category and leaderId only",
     "   when selected or grounded; otherwise return null.",
-    "6. Never invent contacts, events, ids, attributes, choices, or metrics. The capability applies the",
+    "6. Area discovery — only when the user asks what ELSE is in the area, who they are missing, or for",
+    "   organizations they do not already track: call search_businesses with the area anchor and a focus",
+    "   (industry / manufacturing / technology / research / academia / government / venues). Its results are",
+    "   PUBLIC place data from a separate capability — they carry no relationship history and no security",
+    "   trim. You MUST then call search_contacts for the same area and report a business as a new lead ONLY",
+    "   when its name matches no authorized contact organization. Present these as awareness items, never as",
+    "   existing relationships, and never place one into an itinerary: build_itinerary routes authorized",
+    "   contact ids only, so an undiscovered business cannot become a stop until it is onboarded as a contact.",
+    "   An awareness sweep is informational, so return intent=lookup and stage=answer — NOT intent=area,",
+    "   which is reserved for actually building a trip. Only switch to intent=area if the user then asks to",
+    "   plan travel around what you surfaced.",
+    "7. Never invent contacts, events, ids, attributes, choices, or metrics. The capability applies the",
     "   security trim; expose its redactedCount and access-rejection result honestly.",
-    "7. Keep answer concise and EA-ready. The structured decision fields control the host UI.",
+    "8. Keep answer concise and EA-ready. The structured decision fields control the host UI.",
   ].join("\n");
 }
 
@@ -671,9 +683,7 @@ export interface DayScheduleEdit {
 }
 
 /** Parse an explicit request to place an item onto a numbered itinerary day. */
-export function parseDayScheduleEdit(
-  question: string,
-): DayScheduleEdit | null {
+export function parseDayScheduleEdit(question: string): DayScheduleEdit | null {
   if (
     !/\b(?:add|put|place|move|shift|schedule|book|slot|include)\b/i.test(
       question,
@@ -750,9 +760,7 @@ function buildEventDaySchedule(
   const start = event?.start;
   if (!event?.name || !start || !ISO_DAY.test(start)) return null;
 
-  const accepted: any[] = Array.isArray(build?.accepted)
-    ? build.accepted
-    : [];
+  const accepted: any[] = Array.isArray(build?.accepted) ? build.accepted : [];
   const acceptedById = new Map<string, any>(
     accepted
       .filter((contact) => contact?.contactId)
@@ -777,9 +785,7 @@ function buildEventDaySchedule(
       inclusiveDays(event.start, event.end) ||
       1,
   );
-  const offSite = ordered.filter(
-    (contact) => contact?.placement !== "on-site",
-  );
+  const offSite = ordered.filter((contact) => contact?.placement !== "on-site");
   const statedDays =
     Number(build?.duration?.days) || Number(build?.days) || onSiteDays;
   const assignmentMax = Math.max(
@@ -881,7 +887,8 @@ export function renderEventDayByDay(
     return "The grounded itinerary does not include enough event-date detail for a day-by-day breakdown.";
   }
 
-  const leader = build?.leader?.name ?? build?.leader?.id ?? "the selected leader";
+  const leader =
+    build?.leader?.name ?? build?.leader?.id ?? "the selected leader";
   const lines = schedule.days.map((day, index) => {
     const prefix = `${index + 1}. Day ${index + 1} — ${displayDay(day.date)}:`;
     if (day.eventDay) {
@@ -951,7 +958,9 @@ function renderLeaderFit(build: any, leaders: any[]): string {
   const eventName = build?.event?.name ?? "the current event";
   const why = [
     `topic fit ${metric(top?.factors?.topicMatch)}`,
-    top.availableInWindow ? "available in the event window" : "not available in the event window",
+    top.availableInWindow
+      ? "available in the event window"
+      : "not available in the event window",
     typeof top.distanceMi === "number"
       ? `${Math.round(top.distanceMi)} mi from the event area`
       : null,
@@ -979,7 +988,8 @@ function renderLeaderFit(build: any, leaders: any[]): string {
 
 function renderMeetings(build: any, explain: boolean): string {
   const accepted: any[] = build?.accepted ?? [];
-  if (accepted.length === 0) return "The current itinerary has no authorized meetings.";
+  if (accepted.length === 0)
+    return "The current itinerary has no authorized meetings.";
   const lines = accepted.map((contact, index) => {
     const details = [
       contact.placement,
@@ -1048,20 +1058,19 @@ function renderAlternatives(
   }
   return [
     "Additional authorized candidates for this event:",
-    ...alternatives.slice(0, 5).map(
-      (candidate: any, index: number) =>
-        `${index + 1}. ${contactWithLocation(candidate)} — ${candidate.detail}`,
-    ),
+    ...alternatives
+      .slice(0, 5)
+      .map(
+        (candidate: any, index: number) =>
+          `${index + 1}. ${contactWithLocation(candidate)} — ${candidate.detail}`,
+      ),
     "Adding one would require rebuilding the itinerary and rechecking duration, ROI, and conflicts.",
   ].join("\n");
 }
 
 function renderRoute(build: any): string {
   const accepted = new Map<string, any>(
-    (build?.accepted ?? []).map((contact: any) => [
-      contact.contactId,
-      contact,
-    ]),
+    (build?.accepted ?? []).map((contact: any) => [contact.contactId, contact]),
   );
   const order: any[] = build?.route?.order ?? [];
   const orderedNames = order.map((stop) => {
@@ -1105,7 +1114,9 @@ function renderRisks(build: any): string {
     ...conflicts.map(
       (conflict, index) =>
         `${index + 1}. ${conflict.severity}/${conflict.type}: ${conflict.message}${
-          conflict.recommendation ? ` Recommendation: ${conflict.recommendation}` : ""
+          conflict.recommendation
+            ? ` Recommendation: ${conflict.recommendation}`
+            : ""
         }`,
     ),
   ].join("\n");
@@ -1161,10 +1172,7 @@ function applyDayScheduleEdit(
   question: string,
 ): { answer: string; context: EventPlanContext } {
   const edit = parseDayScheduleEdit(question);
-  const schedule = buildEventDaySchedule(
-    build,
-    context.dayAssignments ?? {},
-  );
+  const schedule = buildEventDaySchedule(build, context.dayAssignments ?? {});
   if (!edit || !schedule) {
     return {
       answer:
@@ -1273,7 +1281,8 @@ async function buildEventContextualFollowUp(
       ...base,
       deterministicReason: "contextual-follow-up",
       rejected: true,
-      answer: "Access to the prior itinerary is no longer authorized for this persona.",
+      answer:
+        "Access to the prior itinerary is no longer authorized for this persona.",
       toolCalls: client.captured.map((call) => ({
         name: call.name,
         args: call.args,
@@ -1373,25 +1382,25 @@ async function buildEventContextualFollowUp(
       ? "The prior itinerary could not be rebuilt from the currently authorized contacts."
       : scheduleEdit
         ? scheduleEdit.answer
-      : kind === "day-by-day"
-        ? renderEventDayByDay(build, refreshedContext.dayAssignments)
-        : kind === "day-detail"
+        : kind === "day-by-day"
           ? renderEventDayByDay(build, refreshedContext.dayAssignments)
-        : kind === "leader-fit"
-          ? renderLeaderFit(build, leaders)
-          : kind === "alternatives"
-            ? renderAlternatives(refreshedContext, suggest, broaderContacts)
-            : kind === "meetings"
-              ? renderMeetings(build, /\bwhy\b/i.test(question))
-              : kind === "route"
-                ? renderRoute(build)
-                : kind === "value"
-                  ? renderValue(build)
-                  : kind === "risks"
-                    ? renderRisks(build)
-                    : kind === "nearby-leaders"
-                      ? renderNearbyLeaders(build)
-                      : renderEventOverview(build);
+          : kind === "day-detail"
+            ? renderEventDayByDay(build, refreshedContext.dayAssignments)
+            : kind === "leader-fit"
+              ? renderLeaderFit(build, leaders)
+              : kind === "alternatives"
+                ? renderAlternatives(refreshedContext, suggest, broaderContacts)
+                : kind === "meetings"
+                  ? renderMeetings(build, /\bwhy\b/i.test(question))
+                  : kind === "route"
+                    ? renderRoute(build)
+                    : kind === "value"
+                      ? renderValue(build)
+                      : kind === "risks"
+                        ? renderRisks(build)
+                        : kind === "nearby-leaders"
+                          ? renderNearbyLeaders(build)
+                          : renderEventOverview(build);
   return {
     ...base,
     ok: !rejected && !build.error && itinerary != null,
@@ -1489,7 +1498,9 @@ async function buildTopicLandscape(
   topicIds: string[],
   base: PlanResult,
 ): Promise<PlanResult> {
-  const contactsRes: any = await client.callTool("search_contacts", { topicIds });
+  const contactsRes: any = await client.callTool("search_contacts", {
+    topicIds,
+  });
   const eventsRes: any = await client.callTool("search_events", { topicIds });
   const redactedCount =
     Number(contactsRes?.redactedCount ?? 0) +
@@ -1499,7 +1510,8 @@ async function buildTopicLandscape(
       ...base,
       ok: false,
       stage: "answer",
-      answer: "Access to that engagement footprint was rejected for this persona.",
+      answer:
+        "Access to that engagement footprint was rejected for this persona.",
       topicIds,
       redactedCount,
       rejected: true,
@@ -1666,11 +1678,11 @@ function groundedLeaderShortlist(
   options: any[],
 ): LeaderPick[] {
   if (!category || !selectedLeaderId) return [];
-  const rosterById = new Map(loadLeaders().map((leader) => [leader.id, leader]));
+  const rosterById = new Map(
+    loadLeaders().map((leader) => [leader.id, leader]),
+  );
   const eligible = (options ?? []).filter((option) =>
-    rosterById
-      .get(option?.leaderId)
-      ?.engagementCategories?.includes(category),
+    rosterById.get(option?.leaderId)?.engagementCategories?.includes(category),
   );
   const selected =
     (options ?? []).find((option) => option?.leaderId === selectedLeaderId) ??
@@ -1724,8 +1736,7 @@ export function agentDecisionToPlanResult(
   const event = firstCapturedEvent(captured);
   const source = plan ?? radius ?? survey ?? {};
   const lookupCalls = captured.filter(
-    (call) =>
-      call.name === "search_contacts" || call.name === "search_events",
+    (call) => call.name === "search_contacts" || call.name === "search_events",
   );
   const lookupTopicIds = [
     ...new Set(
@@ -1795,10 +1806,8 @@ export function agentDecisionToPlanResult(
         const accepted: any[] = result?.accepted ?? [];
         const roiScore = result?.roi?.roiScore ?? null;
         const overBudget = !!result?.roi?.overBudget;
-        const categoryCounts =
-          result?.categoryCoverage?.counts ?? null;
-        const categoryMix =
-          result?.categoryCoverage?.summary ?? null;
+        const categoryCounts = result?.categoryCoverage?.counts ?? null;
+        const categoryMix = result?.categoryCoverage?.summary ?? null;
         return {
           id: `agent-option-${index + 1}`,
           tier: lengthSize(index, successfulBuildCalls.length),
@@ -1829,8 +1838,7 @@ export function agentDecisionToPlanResult(
     );
     const recommended = options[recommendedIndex];
     const recommendedBuild = successfulBuildCalls[recommendedIndex].result;
-    const leaderId =
-      decision.leaderId ?? recommendedBuild?.leader?.id ?? null;
+    const leaderId = decision.leaderId ?? recommendedBuild?.leader?.id ?? null;
     return {
       ...base,
       ok: true,
@@ -1843,21 +1851,14 @@ export function agentDecisionToPlanResult(
       category: decision.category,
       leaderId,
       leaderName: recommendedBuild?.leader?.name ?? null,
-      event:
-        recommendedBuild?.event ??
-        event,
-      area:
-        recommendedBuild?.area ??
-        source?.area ??
-        null,
+      event: recommendedBuild?.event ?? event,
+      area: recommendedBuild?.area ?? source?.area ?? null,
       options,
       recommendedOptionId: recommended.id,
       menu: recommendedBuild?.accepted ?? null,
       itinerary: recommended.itinerary,
       tripMap: recommended.tripMap,
-      redactedCount:
-        recommendedBuild?.redactedCount ??
-        redactedCount,
+      redactedCount: recommendedBuild?.redactedCount ?? redactedCount,
     };
   }
 
@@ -1914,11 +1915,7 @@ export function agentDecisionToPlanResult(
         clarify: "leader",
         leaderId: null,
         event,
-        area:
-          leadersResult?.area ??
-          plan?.area ??
-          radius?.area ??
-          null,
+        area: leadersResult?.area ?? plan?.area ?? radius?.area ?? null,
         questions: [
           leaderClarifyQuestion(leaders, leaders[0]?.leaderId ?? null),
         ],
@@ -1963,19 +1960,19 @@ export function agentDecisionToPlanResult(
     null;
   const leaderName =
     build?.leader?.name ??
-    (plan?.leaderOptions ?? radius?.leaderOptions ?? leadersResult?.leaders ?? [])
-      .find((leader: any) => leader?.leaderId === leaderId)?.name ??
+    (
+      plan?.leaderOptions ??
+      radius?.leaderOptions ??
+      leadersResult?.leaders ??
+      []
+    ).find((leader: any) => leader?.leaderId === leaderId)?.name ??
     null;
   const leaderShortlist = groundedLeaderShortlist(
     decision.category,
     leaderId,
     plan?.leaderOptions ?? radius?.leaderOptions ?? [],
   );
-  const menu =
-    projected.menu ??
-    build?.accepted ??
-    radius?.stops ??
-    null;
+  const menu = projected.menu ?? build?.accepted ?? radius?.stops ?? null;
 
   return {
     ...projected,
@@ -2030,9 +2027,7 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
 
   const contextualQuestion = isContextualFollowUpQuestion(req.question);
   const suppliedEventContext = normalizeEventPlanContext(req.context, persona);
-  const eventContext = contextualQuestion
-    ? suppliedEventContext
-    : null;
+  const eventContext = contextualQuestion ? suppliedEventContext : null;
 
   const contextualKind = eventContext
     ? contextualEventQuestionKind(req.question)
@@ -2076,6 +2071,7 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
         mcpUrl: url,
         persona,
         maxIterations: 10,
+        discoveryMcpUrl: DISCOVERY_URL(),
       });
       return agentDecisionToPlanResult(
         base,
@@ -4529,6 +4525,199 @@ export async function hotTopics(
       ok: true,
       topics,
       redactedCount: contactsRes?.redactedCount ?? null,
+    };
+  } catch (e: any) {
+    throwIfGovernanceDenied(e);
+    return { ...base, error: e?.message || String(e) };
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+// ── Area discovery: organizations in the travel area the traveler does NOT already track ─────────
+//
+// The Area Discovery capability returns PUBLIC place data with no relationship history, so the
+// "is this new?" judgement is made HERE, by diffing those names against the caller's authorized
+// contacts. That trim matters: an organization hidden from this persona is reported as `new`, never
+// as a redacted record, so the diff can never be used to probe what the caller cannot see.
+
+/** Corporate suffixes and articles stripped before matching a POI name to a tracked organization. */
+const ORG_NOISE =
+  /\b(inc|llc|corp|corporation|co|company|ltd|limited|plc|group|holdings|the)\b/g;
+
+/** Shorter normalized names are matched only on equality — "ABC" must not swallow "ABC Systems". */
+const MIN_CONTAINMENT_LENGTH = 5;
+
+export function normalizeOrgName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(ORG_NOISE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export interface AreaBusiness {
+  name: string;
+  category: string | null;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  lat: number;
+  lng: number;
+  distanceMi: number | null;
+  url: string | null;
+  /** Contact id when this business is already a tracked relationship VISIBLE to this caller. */
+  knownContactId: string | null;
+  knownContactName: string | null;
+}
+
+/** Pure diff — exported so the matching rules are testable without a server. */
+export function diffAgainstKnownContacts(
+  businesses: any[],
+  contacts: any[],
+): AreaBusiness[] {
+  const known = contacts
+    .map((c) => ({ contact: c, org: normalizeOrgName(String(c?.org ?? "")) }))
+    .filter((entry) => entry.org.length > 0);
+
+  return businesses.map((b): AreaBusiness => {
+    const name = normalizeOrgName(String(b?.name ?? ""));
+    const hit = name
+      ? known.find(({ org }) => {
+          if (org === name) return true;
+          const shorter = Math.min(org.length, name.length);
+          if (shorter < MIN_CONTAINMENT_LENGTH) return false;
+          return org.includes(name) || name.includes(org);
+        })
+      : undefined;
+
+    return {
+      name: b?.name ?? "",
+      category: b?.category ?? null,
+      address: b?.address ?? null,
+      city: b?.city ?? null,
+      state: b?.state ?? null,
+      lat: b?.lat,
+      lng: b?.lng,
+      distanceMi: b?.distanceMi ?? null,
+      url: b?.url ?? null,
+      knownContactId: hit?.contact?.id ?? null,
+      knownContactName: hit?.contact?.name ?? hit?.contact?.org ?? null,
+    };
+  });
+}
+
+export interface DiscoverAreaRequest {
+  city?: string;
+  state?: string;
+  lat?: number;
+  lng?: number;
+  query?: string;
+  focus?: string[];
+  radiusMi?: number;
+  limit?: number;
+  persona?: string;
+  serverUrl?: string;
+}
+
+export interface DiscoverAreaResult {
+  ok: boolean;
+  persona: string;
+  anchor: any | null;
+  /** Every business found, each flagged known/new. */
+  businesses: AreaBusiness[];
+  /** Only the ones with no matching authorized relationship — the "make me aware" list. */
+  newBusinesses: AreaBusiness[];
+  knownCount: number;
+  rejected: boolean;
+  error?: string;
+}
+
+/**
+ * Sweep the area around a travel anchor and report which organizations are NEW to this caller.
+ *
+ * Both calls go through the governed Python runtime, so AGT policy and the hash-chained audit log
+ * cover the discovery lookup exactly like every engagements tool.
+ */
+export async function discoverAreaBusinesses(
+  req: DiscoverAreaRequest,
+): Promise<DiscoverAreaResult> {
+  const persona = req.persona || DEFAULT_PERSONA();
+  const url = req.serverUrl || DEFAULT_URL();
+  const base: DiscoverAreaResult = {
+    ok: false,
+    persona,
+    anchor: null,
+    businesses: [],
+    newBusinesses: [],
+    knownCount: 0,
+    rejected: false,
+  };
+
+  if (
+    !req.city &&
+    !(typeof req.lat === "number" && typeof req.lng === "number")
+  ) {
+    return {
+      ...base,
+      error:
+        "Provide an anchor: a city (with optional state) or a lat/lng pair.",
+    };
+  }
+
+  let client: ToolClient;
+  try {
+    client = await makeToolClient(url, persona);
+  } catch (e: any) {
+    throwIfGovernanceDenied(e);
+    return {
+      ...base,
+      error:
+        `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
+        "Start the MCP server and the engagements agent workspace services.",
+    };
+  }
+
+  try {
+    const found: any = await client.callTool("search_businesses", {
+      city: req.city,
+      state: req.state,
+      lat: req.lat,
+      lng: req.lng,
+      query: req.query,
+      focus: req.focus,
+      radiusMi: req.radiusMi,
+      limit: req.limit,
+    });
+    if (found?.error) return { ...base, error: String(found.error) };
+
+    // Security trim runs server-side: this is only what THIS persona may see.
+    const contactsRes: any = await client.callTool("search_contacts", {
+      query: req.city || undefined,
+    });
+    if (contactsRes?.rejected) {
+      return {
+        ...base,
+        ok: true,
+        rejected: true,
+        anchor: found?.anchor ?? null,
+      };
+    }
+
+    const businesses = diffAgainstKnownContacts(
+      found?.businesses ?? [],
+      contactsRes?.contacts ?? [],
+    );
+    const newBusinesses = businesses.filter((b) => b.knownContactId === null);
+
+    return {
+      ...base,
+      ok: true,
+      anchor: found?.anchor ?? null,
+      businesses,
+      newBusinesses,
+      knownCount: businesses.length - newBusinesses.length,
     };
   } catch (e: any) {
     throwIfGovernanceDenied(e);
