@@ -4,7 +4,12 @@ import pytest
 from agent_framework import Agent
 
 from engagements_agent.config import Settings
-from engagements_agent.governance import GovernanceDenied, GovernanceRuntime
+from engagements_agent.governance import (
+    ENGAGEMENTS_TOOL_NAMES,
+    GovernanceDenied,
+    GovernanceRuntime,
+    resolve_capability_backend,
+)
 
 
 def test_agt_policy_allows_planning_tool(settings: Settings) -> None:
@@ -22,6 +27,32 @@ def test_agt_policy_allows_planning_tool(settings: Settings) -> None:
     assert governance.max_tool_calls == 10
     assert settings.governance_audit_path is not None
     assert settings.governance_audit_path.read_text(encoding="utf-8").count("\n") == 1
+
+
+def test_agt_policy_allows_the_grounding_tool(settings: Settings) -> None:
+    """search_grounding is part of the capability contract, so the allowlist must admit it."""
+    governance = GovernanceRuntime(settings)
+
+    governance.authorize_tool(
+        name="search_grounding",
+        arguments={"query": "UAS at AUSA"},
+        trace_id="trace-grounding",
+        caller_agent_id="test-agent",
+    )
+
+    assert governance.verify_audit()
+
+
+def test_capability_backend_is_classified_from_the_registered_tools() -> None:
+    assert resolve_capability_backend(set(ENGAGEMENTS_TOOL_NAMES)) == "planner"
+    # A `search` backend may serve BOTH structured records and a RAG corpus.
+    assert (
+        resolve_capability_backend({*ENGAGEMENTS_TOOL_NAMES, "search_grounding"})
+        == "planner"
+    )
+    assert resolve_capability_backend({"search_grounding"}) == "grounding"
+    assert resolve_capability_backend({"search_contacts"}) is None
+    assert resolve_capability_backend(set()) is None
 
 
 def test_agt_policy_blocks_ssn_in_tool_arguments(settings: Settings) -> None:

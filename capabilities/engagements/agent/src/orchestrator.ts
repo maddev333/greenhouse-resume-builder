@@ -10,13 +10,17 @@
 import {
   makeToolClient,
   DISCOVERY_URL,
+  GROUNDING_TOOL_NAME,
+  GroundingOnlyCapabilityError,
   type CapturedCall,
   type ToolClient,
 } from "./tools.js";
 import {
+  discoverGovernedTools,
   isGovernanceDenial,
   isModelConfigured,
   runPythonAgent,
+  type DiscoveredCapability,
   type PythonAgentDecision,
   type PythonAgentResult,
 } from "./python-runtime.js";
@@ -28,6 +32,7 @@ import {
   ENGAGEMENT_CATEGORY_ORDER,
   defaultWindow,
   demoToday,
+  isSeedCatalog,
   loadLeaders,
   loadTopics,
   regionChoices,
@@ -97,6 +102,7 @@ export interface EventPlanContext {
  *   - 'mcp-unavailable'      the capability server could not be reached → no planner/model turn was possible
  *   - 'model-not-configured' Azure OpenAI is not configured → deterministic fallback
  *   - 'model-unavailable'    Azure OpenAI is configured but the call failed/returned null → deterministic fallback
+ *   - 'grounding-only-capability' the capability serves a document corpus (RETRIEVAL_BACKEND=grounding) → no planner surface exists
  */
 export type DeterministicReason =
   | "area-anchored"
@@ -105,7 +111,8 @@ export type DeterministicReason =
   | "topic-landscape"
   | "mcp-unavailable"
   | "model-not-configured"
-  | "model-unavailable";
+  | "model-unavailable"
+  | "grounding-only-capability";
 
 export interface PlanResult {
   ok: boolean;
@@ -177,23 +184,38 @@ const DEFAULT_TOPN = (): number => {
 export function buildSystemPrompt(
   defaultLeaderId: string,
   topN: number,
+  groundingAvailable = false,
 ): string {
   const window = defaultWindow();
+  // The roster/topic catalogs come from the demo seed. They are only legitimate grounding when the
+  // capability serves that same seed; against a customer index they are demo records the model would
+  // otherwise present as real people.
+  const catalogs = isSeedCatalog()
+    ? [
+        "Leader roster (always use an id; engagement categories constrain who is a credible recommendation):",
+        rosterForPrompt(),
+        "",
+        'Topic catalog (map natural language such as "UAS/drone" or "autonomy" to the grounded ids):',
+        topicsForPrompt(),
+      ]
+    : [
+        "There is NO local leader roster or topic catalog in this prompt: the capability reads a customer",
+        "index, not the demo dataset. Every leader id, topic id, contact, organization, and event MUST come",
+        "from a tool result in THIS turn (suggest_leaders, plan_options, search_contacts, search_events).",
+        "When the tools return nothing, say plainly that the index has no match and stop — never fill the",
+        "gap from prior knowledge, from these instructions, or with illustrative examples.",
+      ];
   return [
     "You are the Strategic Engagements Orchestrator, the planning brain for a U.S. Army senior-leader",
     "executive assistant (EA). You own intent classification, workflow selection, tool choice, and the",
     "decision to answer, ask a grounded clarification, or finish a plan. You are the PRIMARY router for",
     "every user turn; classify the current request before considering prior conversation. Use ONLY the",
-    "provided tools and the grounded leader/topic catalogs in this prompt.",
+    "provided tools and any grounded catalogs in this prompt.",
     "",
     `Default planning window: ${window.start} through ${window.end}.`,
     `Emergency fallback leader: "${defaultLeaderId}" (do not silently use it when a material leader choice is missing).`,
     "",
-    "Leader roster (always use an id; engagement categories constrain who is a credible recommendation):",
-    rosterForPrompt(),
-    "",
-    'Topic catalog (map natural language such as "UAS/drone" or "autonomy" to the grounded ids):',
-    topicsForPrompt(),
+    ...catalogs,
     "",
     "Decision policy:",
     "0. Contextual follow-up — when the user refers to a prior answer and the request includes prior",
@@ -244,7 +266,49 @@ export function buildSystemPrompt(
     "   which is reserved for actually building a trip. Only switch to intent=area if the user then asks to",
     "   plan travel around what you surfaced.",
     "7. Never invent contacts, events, ids, attributes, choices, or metrics.",
-    "8. Keep answer concise and EA-ready. The structured decision fields control the host UI.",
+    ...(groundingAvailable
+      ? [
+          `8. A ${GROUNDING_TOOL_NAME} tool is also available over an indexed document corpus. Use it for`,
+          "   narrative, policy, or background questions the structured tools cannot answer, and cite the",
+          "   title/url of every passage you use. It returns documents, never contacts or itinerary stops.",
+          "9. Keep answer concise and EA-ready. The structured decision fields control the host UI.",
+        ]
+      : [
+          "8. Keep answer concise and EA-ready. The structured decision fields control the host UI.",
+        ]),
+  ].join("\n");
+}
+
+/**
+ * System prompt for a capability running RETRIEVAL_BACKEND=grounding.
+ *
+ * That deployment registers ONLY `search_grounding` over a document corpus — there are no contacts,
+ * events, leaders, or itineraries to plan with, and no seed catalog is injected. The turn is a cited
+ * lookup or it is nothing.
+ */
+export function buildGroundingSystemPrompt(): string {
+  return [
+    "You are the Strategic Engagements grounded-answer assistant for a U.S. Army senior-leader",
+    "executive assistant (EA).",
+    "",
+    `The connected capability serves a DOCUMENT corpus and exposes exactly one tool, ${GROUNDING_TOOL_NAME}.`,
+    "There is no contact directory, event calendar, leader roster, topic catalog, or itinerary builder",
+    "available in this deployment, and none is embedded in these instructions.",
+    "",
+    "Policy:",
+    `1. Call ${GROUNDING_TOOL_NAME} before answering. Re-query with different wording when the first`,
+    "   passages are thin; you may call it several times.",
+    "2. Answer ONLY from the returned passages. Cite the title (and url when present) of each passage",
+    "   you rely on.",
+    "3. If no passage supports an answer, say the corpus has nothing on it and stop. Do NOT substitute",
+    "   prior knowledge, generic advice, illustrative names, or example organizations — a plausible",
+    "   answer with no passage behind it is the worst possible outcome here.",
+    "4. Never name a person, organization, event, or leader id that did not appear in a passage.",
+    "5. You cannot plan trips, rank leaders, or build itineraries in this deployment. When asked, say",
+    "   the planning tools are not connected, then answer whatever part the corpus does cover.",
+    '6. Always return intent="lookup" and stage="answer"; leave clarify, category, leaderId, and',
+    "   recommendedOptionIndex null.",
+    "7. Keep answer concise and EA-ready.",
   ].join("\n");
 }
 
@@ -1585,6 +1649,31 @@ function capturedFromAgent(loop: PythonAgentResult): CapturedCall[] {
   }));
 }
 
+/**
+ * Project a failed `makeToolClient` into a plan result. A grounding-only capability is reachable and
+ * healthy — it simply has no planner surface — so it must not be reported as an outage.
+ */
+function toolClientFailure(
+  base: PlanResult,
+  url: string,
+  error: any,
+): PlanResult {
+  if (error instanceof GroundingOnlyCapabilityError) {
+    return {
+      ...base,
+      deterministicReason: "grounding-only-capability",
+      error: error.message,
+    };
+  }
+  return {
+    ...base,
+    deterministicReason: "mcp-unavailable",
+    error:
+      `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${error?.message || error}. ` +
+      "Start the MCP server and the engagements agent workspace services.",
+  };
+}
+
 function firstCapturedEvent(captured: CapturedCall[]): any | null {
   return (
     lastCapture(captured, "build_itinerary")?.result?.event ??
@@ -1928,13 +2017,7 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
       mutationClient = await makeToolClient(url);
     } catch (e: any) {
       throwIfGovernanceDenied(e);
-      return {
-        ...base,
-        deterministicReason: "mcp-unavailable",
-        error:
-          `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
-          "Start the MCP server and the engagements agent workspace services.",
-      };
+      return toolClientFailure(base, url, e);
     }
     try {
       return await buildEventContextualFollowUp(
@@ -1951,26 +2034,70 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
   // Microsoft Agent Framework is the primary semantic interface. Prior context is advisory and may
   // be stale; the agent decides whether the current question refers to it.
   if (isModelConfigured()) {
+    // Ask the capability what it actually serves BEFORE composing a prompt. A grounding-only
+    // deployment has no planner tools, and running the planning prompt against it produces a
+    // confident answer built from the prompt's own catalogs instead of the customer's index.
+    let capability: DiscoveredCapability | null = null;
     try {
-      const loop = await runPythonAgent({
-        system: buildSystemPrompt(resolveDefaultLeaderId(), topN),
-        user: buildAgentUserPrompt(req, suppliedEventContext),
+      capability = await discoverGovernedTools({
         mcpUrl: url,
-        maxIterations: 10,
         discoveryMcpUrl: DISCOVERY_URL(),
       });
-      return agentDecisionToPlanResult(
-        base,
-        loop.decision,
-        capturedFromAgent(loop),
-      );
     } catch (error) {
       throwIfGovernanceDenied(error);
       console.warn(
-        `[python-agent] framework decision failed; using deterministic fallback: ${
+        `[python-agent] capability discovery failed; using deterministic fallback: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+    }
+
+    if (capability) {
+      const groundingOnly = capability.backend === "grounding";
+      try {
+        const loop = await runPythonAgent({
+          system: groundingOnly
+            ? buildGroundingSystemPrompt()
+            : buildSystemPrompt(
+                resolveDefaultLeaderId(),
+                topN,
+                capability.tools.includes(GROUNDING_TOOL_NAME),
+              ),
+          user: buildAgentUserPrompt(
+            req,
+            groundingOnly ? null : suppliedEventContext,
+          ),
+          mcpUrl: url,
+          maxIterations: 10,
+          discoveryMcpUrl: DISCOVERY_URL(),
+        });
+        return agentDecisionToPlanResult(
+          base,
+          loop.decision,
+          capturedFromAgent(loop),
+        );
+      } catch (error) {
+        throwIfGovernanceDenied(error);
+        // There is no deterministic planner for a document corpus: falling through would call nine
+        // tools the capability does not register and report the failure as a planning result.
+        if (groundingOnly) {
+          return {
+            ...base,
+            deterministicReason: "grounding-only-capability",
+            stage: "answer",
+            error:
+              `The grounded answer could not be produced from the document corpus at ${url}: ` +
+              `${error instanceof Error ? error.message : String(error)}. ` +
+              "This capability runs RETRIEVAL_BACKEND=grounding, so there is no deterministic " +
+              "planner to fall back to.",
+          };
+        }
+        console.warn(
+          `[python-agent] framework decision failed; using deterministic fallback: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
   }
 
@@ -1992,13 +2119,7 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
     client = await makeToolClient(url);
   } catch (e: any) {
     throwIfGovernanceDenied(e);
-    return {
-      ...base,
-      deterministicReason: "mcp-unavailable",
-      error:
-        `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
-        "Start the MCP server and the engagements agent workspace services.",
-    };
+    return toolClientFailure(base, url, e);
   }
 
   try {

@@ -21,6 +21,7 @@ from agentmesh.governance import AuditLog
 
 from .config import Settings
 
+#: The deterministic planner surface — registered by RETRIEVAL_BACKEND=memory and =search.
 ENGAGEMENTS_TOOL_NAMES = frozenset(
     {
         "search_contacts",
@@ -35,14 +36,37 @@ ENGAGEMENTS_TOOL_NAMES = frozenset(
     }
 )
 
+#: Document/chunk RAG over the customer corpus. It is the ONLY tool the capability registers under
+#: RETRIEVAL_BACKEND=grounding, and it is registered ALONGSIDE the planner surface when a `search`
+#: backend also declares a `mapping.grounding` block.
+GROUNDING_TOOL_NAMES = frozenset({"search_grounding"})
+
+#: Everything the engagements capability itself may serve, across backends.
+CAPABILITY_TOOL_NAMES = ENGAGEMENTS_TOOL_NAMES | GROUNDING_TOOL_NAMES
+
 #: Tools served by the standalone Area Discovery capability, not the engagements capability. Kept in a
 #: separate set so `/tools/list` never demands them from the engagements MCP, while `authorize_tool`
 #: and the capability guard still govern them exactly like every other tool.
 DISCOVERY_TOOL_NAMES = frozenset({"search_businesses"})
 
-ORCHESTRATOR_TOOL_NAMES = ENGAGEMENTS_TOOL_NAMES | DISCOVERY_TOOL_NAMES
+ORCHESTRATOR_TOOL_NAMES = CAPABILITY_TOOL_NAMES | DISCOVERY_TOOL_NAMES
 
 MODEL_TOOL_NAMES = ORCHESTRATOR_TOOL_NAMES
+
+
+def resolve_capability_backend(available: set[str]) -> str | None:
+    """Classify the tool surface an engagements MCP actually registered.
+
+    ``"planner"`` when the full deterministic planner surface is present (a `search` backend may
+    additionally carry ``search_grounding``), ``"grounding"`` for a RAG-only corpus, and ``None``
+    when the endpoint serves neither — the caller must then fail loudly rather than let a model
+    answer with no grounded tool behind it.
+    """
+    if ENGAGEMENTS_TOOL_NAMES <= available:
+        return "planner"
+    if GROUNDING_TOOL_NAMES <= available:
+        return "grounding"
+    return None
 
 _MAX_TRACKED_TRACES = 10_000
 

@@ -140,6 +140,13 @@ Azure AI Search index instead:
    `search` and `grounding` never read the seed, and requesting either without
    `AZURE_SEARCH_SERVICE` is a hard error rather than a silent fallback to demo data.
 
+   Set it in the **repo-root `.env`** so the orchestrator sees it too, not only the MCP server: the
+   orchestrator uses it to decide whether the bundled demo leader roster and topic catalog may be
+   injected into the model's system prompt. Against a customer index they must not be — a model whose
+   tools come back empty will otherwise answer from those demo records. In `grounding` mode the
+   orchestrator detects the corpus from the registered tools, answers through `search_grounding` with
+   citations, and requires Azure OpenAI (there is no deterministic planner for a document corpus).
+
 Details of the registry, its validation rules and the two caveats worth knowing are in
 [`capabilities/engagements/mcp/engagements/README.md`](capabilities/engagements/mcp/engagements/README.md).
 

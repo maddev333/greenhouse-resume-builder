@@ -39,6 +39,9 @@ class ToolDescriptor(ApiModel):
 
 class ToolListResponse(ApiModel):
     tools: list[ToolDescriptor]
+    #: Which surface the engagements MCP registered: the deterministic planner (RETRIEVAL_BACKEND
+    #: memory/search) or a document-corpus RAG only (RETRIEVAL_BACKEND=grounding).
+    backend: Literal["planner", "grounding"] = "planner"
 
 
 class ToolCallRequest(ToolContextRequest):

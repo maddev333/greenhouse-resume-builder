@@ -98,10 +98,17 @@ npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagem
 # listening on http://localhost:3010/mcp
 ```
 
-The Python runtime's `/tools/list` **requires all nine** engagements tools, so the capability must be
-running with `RETRIEVAL_BACKEND=memory` or `search`. A capability started with
-`RETRIEVAL_BACKEND=grounding` registers only `search_grounding` and this orchestrator will refuse it
-with a 502 naming the missing tools.
+The Python runtime discovers the capability's tool surface on every turn and adapts to it:
+
+| Capability backend  | Tools offered to the model                                                                 | Turn                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `memory` / `search` | the nine planner tools (plus `search_grounding` when the index also declares a RAG corpus) | the full planning workflows below                                                               |
+| `grounding`         | `search_grounding` only                                                                    | a cited grounded answer (`intent=lookup`, `stage=answer`); the deterministic planner is refused |
+
+An endpoint that serves neither surface fails with a 502 naming the missing tools, rather than a
+model turn with no grounded tool behind it. Under `grounding` the seed's leader roster and topic
+catalog are kept OUT of the system prompt (a text corpus has no leaders, and a model handed the demo
+roster will answer from it), so Azure OpenAI is required — there is no deterministic path.
 
 **2a. Start the Python runtime** for CLI use:
 

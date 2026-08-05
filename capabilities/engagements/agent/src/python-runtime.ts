@@ -33,6 +33,20 @@ interface RuntimeRequestContext {
   discoveryMcpUrl?: string;
 }
 
+/**
+ * Which surface the engagements capability actually registered:
+ *   - 'planner'   the nine structured planning tools (RETRIEVAL_BACKEND=memory or search)
+ *   - 'grounding' ONLY `search_grounding` over a document corpus (RETRIEVAL_BACKEND=grounding)
+ * The planner surface may additionally carry `search_grounding` when a `search` index also declares
+ * a `mapping.grounding` block.
+ */
+export type CapabilityBackend = "planner" | "grounding";
+
+export interface DiscoveredCapability {
+  tools: string[];
+  backend: CapabilityBackend;
+}
+
 export class PythonRuntimeRequestError extends Error {
   constructor(
     readonly status: number,
@@ -69,15 +83,28 @@ export function isModelConfigured(): boolean {
 
 export async function discoverGovernedTools(
   context: RuntimeRequestContext,
-): Promise<string[]> {
-  const response = await postJson<{ tools: { name: string }[] }>(
-    "/tools/list",
-    {
-      ...context,
-      traceId: context.traceId || randomUUID(),
-    },
-  );
-  return response.tools.map((tool) => tool.name);
+): Promise<DiscoveredCapability> {
+  const response = await postJson<{
+    tools: { name: string }[];
+    backend?: string;
+  }>("/tools/list", {
+    ...context,
+    traceId: context.traceId || randomUUID(),
+  });
+  const tools = response.tools.map((tool) => tool.name);
+  return { tools, backend: resolveBackend(tools, response.backend) };
+}
+
+/** Trust the runtime's classification when it sends one; otherwise read it off the tool names. */
+function resolveBackend(
+  tools: string[],
+  declared: string | undefined,
+): CapabilityBackend {
+  if (declared === "planner" || declared === "grounding") return declared;
+  const names = new Set(tools);
+  return names.has("search_grounding") && !names.has("search_contacts")
+    ? "grounding"
+    : "planner";
 }
 
 export async function callGovernedTool(

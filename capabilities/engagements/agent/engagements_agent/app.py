@@ -9,10 +9,13 @@ from fastapi import FastAPI, HTTPException
 
 from .config import Settings
 from .governance import (
+    CAPABILITY_TOOL_NAMES,
     DISCOVERY_TOOL_NAMES,
     ENGAGEMENTS_TOOL_NAMES,
+    GROUNDING_TOOL_NAMES,
     GovernanceDenied,
     GovernanceRuntime,
+    resolve_capability_backend,
 )
 from .mcp_client import GovernedMcpClient, McpCallError
 from .models import (
@@ -74,20 +77,31 @@ def create_app(
         try:
             tools = await configured_mcp.list_tools(mcp_url=request.mcp_url)
             available = {item.name for item in tools}
-            missing = sorted(ENGAGEMENTS_TOOL_NAMES - available)
-            if missing:
+            # A grounding-only capability is a legitimate deployment, not a broken one: it serves a
+            # document corpus instead of structured records. Demanding the planner tools of it would
+            # reject the whole turn, so classify the surface and hand back what it actually has.
+            backend = resolve_capability_backend(available)
+            if backend is None:
+                missing = sorted(ENGAGEMENTS_TOOL_NAMES - available)
                 raise HTTPException(
                     status_code=502,
-                    detail=f"Engagements MCP is missing required tools: {', '.join(missing)}",
+                    detail=(
+                        "Engagements MCP serves neither the planner surface (missing: "
+                        f"{', '.join(missing)}) nor search_grounding."
+                    ),
                 )
-            selected = [item for item in tools if item.name in ENGAGEMENTS_TOOL_NAMES]
+            wanted = (
+                CAPABILITY_TOOL_NAMES if backend == "planner" else GROUNDING_TOOL_NAMES
+            )
+            selected = [item for item in tools if item.name in wanted]
         except McpCallError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
         # Area Discovery is a separate, OPTIONAL capability: if it is not running, the orchestrator
-        # still gets the full engagements surface rather than failing the whole turn.
+        # still gets the full engagements surface rather than failing the whole turn. It augments a
+        # TRIP, so it is not offered alongside a document corpus that cannot produce one.
         discovery_url = request.discovery_mcp_url or configured_settings.discovery_mcp_url
-        if discovery_url:
+        if discovery_url and backend == "planner":
             try:
                 discovered = await configured_mcp.list_tools(mcp_url=discovery_url)
                 selected.extend(
@@ -96,7 +110,7 @@ def create_app(
             except McpCallError:
                 pass
 
-        return ToolListResponse(tools=selected)
+        return ToolListResponse(tools=selected, backend=backend)
 
     @app.post("/tools/call")
     async def call_tool(request: ToolCallRequest):

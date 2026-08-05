@@ -7,7 +7,11 @@
  * and audit apply to every agent-originated MCP invocation rather than only model calls.
  */
 import { randomUUID } from "node:crypto";
-import { callGovernedTool, discoverGovernedTools } from "./python-runtime.js";
+import {
+  callGovernedTool,
+  discoverGovernedTools,
+  type CapabilityBackend,
+} from "./python-runtime.js";
 
 export const AGENT_TOOL_NAMES = [
   "search_contacts",
@@ -21,6 +25,26 @@ export const AGENT_TOOL_NAMES = [
   "build_itinerary",
   "search_businesses",
 ] as const;
+
+/** Grounded Q&A over the customer's document corpus — served instead of the planner surface. */
+export const GROUNDING_TOOL_NAME = "search_grounding";
+
+/**
+ * Thrown when the capability serves ONLY `search_grounding`. A document corpus carries no
+ * contact/event/leader records, so the deterministic router has nothing to compose — and quietly
+ * continuing would let the model answer from the prompt catalog instead of the customer's index.
+ */
+export class GroundingOnlyCapabilityError extends Error {
+  constructor(url: string) {
+    super(
+      `The engagements capability at ${url} is running RETRIEVAL_BACKEND=grounding: it registers ` +
+        `only ${GROUNDING_TOOL_NAME}, so the deterministic planner has no contact, event, or leader ` +
+        "tools to compose. Configure Azure OpenAI to answer grounded questions from that corpus, or " +
+        "point the orchestrator at a capability running RETRIEVAL_BACKEND=memory or search.",
+    );
+    this.name = "GroundingOnlyCapabilityError";
+  }
+}
 
 /** Area Discovery capability endpoint the governed runtime should route `search_businesses` to. */
 export const DISCOVERY_URL = (): string =>
@@ -39,13 +63,21 @@ export interface ToolClient {
   callTool: (name: string, args: any) => Promise<unknown>;
   captured: CapturedCall[];
   traceId: string;
+  /** The surface the capability registered — always 'planner' here (see makeToolClient). */
+  backend: CapabilityBackend;
   close: () => Promise<void>;
 }
 
 /** Open a governed Python tool gateway. */
 export async function makeToolClient(url: string): Promise<ToolClient> {
   const discoveryMcpUrl = DISCOVERY_URL();
-  await discoverGovernedTools({ mcpUrl: url, discoveryMcpUrl });
+  const capability = await discoverGovernedTools({
+    mcpUrl: url,
+    discoveryMcpUrl,
+  });
+  if (capability.backend === "grounding") {
+    throw new GroundingOnlyCapabilityError(url);
+  }
   const captured: CapturedCall[] = [];
   const traceId = randomUUID();
 
@@ -66,5 +98,11 @@ export async function makeToolClient(url: string): Promise<ToolClient> {
     return call.modelResult;
   };
 
-  return { callTool, captured, traceId, close: async () => {} };
+  return {
+    callTool,
+    captured,
+    traceId,
+    backend: capability.backend,
+    close: async () => {},
+  };
 }

@@ -6,32 +6,45 @@
  * (a) inject a valid roster into the system prompt and (b) resolve a default leader when the
  * user does not name one. Topic keyword mapping powers the no-LLM fallback.
  */
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
-const SEED_DIR = resolve(import.meta.dirname, '..', '..', '..', '..', 'engagement-intelligence', 'seed');
+const SEED_DIR = resolve(
+  import.meta.dirname,
+  "..",
+  "..",
+  "..",
+  "..",
+  "engagement-intelligence",
+  "seed",
+);
 
 /**
  * The four strategic stakeholder AUDIENCES an Army leader balances (plus a catch-all `other`), in
  * report order. Mirrors `@greenhouse-resume-builder/shared`'s `EngagementCategory`/`ENGAGEMENT_CATEGORIES`;
  * re-declared here (like {@link Leader}) so the agent stays decoupled from the shared package.
  */
-export type EngagementCategory = 'congressional' | 'academia' | 'industry' | 'army-internal' | 'other';
+export type EngagementCategory =
+  | "congressional"
+  | "academia"
+  | "industry"
+  | "army-internal"
+  | "other";
 
 export const ENGAGEMENT_CATEGORY_ORDER: readonly EngagementCategory[] = [
-  'congressional',
-  'academia',
-  'industry',
-  'army-internal',
-  'other',
+  "congressional",
+  "academia",
+  "industry",
+  "army-internal",
+  "other",
 ] as const;
 
 export const CATEGORY_LABEL: Record<EngagementCategory, string> = {
-  congressional: 'Congressional',
-  academia: 'Academia',
-  industry: 'Industry',
-  'army-internal': 'Army internal',
-  other: 'Other',
+  congressional: "Congressional",
+  academia: "Academia",
+  industry: "Industry",
+  "army-internal": "Army internal",
+  other: "Other",
 };
 
 export interface Leader {
@@ -68,7 +81,7 @@ interface DemoClockConfig {
 }
 
 function readSeed<T>(file: string): T {
-  return JSON.parse(readFileSync(resolve(SEED_DIR, file), 'utf-8')) as T;
+  return JSON.parse(readFileSync(resolve(SEED_DIR, file), "utf-8")) as T;
 }
 
 let _leaders: Leader[] | null = null;
@@ -77,26 +90,43 @@ let _regions: Region[] | null = null;
 let _config: DemoClockConfig | null = null;
 
 export function loadLeaders(): Leader[] {
-  return (_leaders ??= readSeed<Leader[]>('leaders.json'));
+  return (_leaders ??= readSeed<Leader[]>("leaders.json"));
 }
 
 export function loadTopics(): Topic[] {
-  return (_topics ??= readSeed<Topic[]>('topics.json'));
+  return (_topics ??= readSeed<Topic[]>("topics.json"));
 }
 
 export function loadRegions(): Region[] {
-  return (_regions ??= readSeed<Region[]>('regions.json'));
+  return (_regions ??= readSeed<Region[]>("regions.json"));
 }
 
 function loadClockConfig(): DemoClockConfig {
-  return (_config ??= readSeed<DemoClockConfig>('config.json'));
+  return (_config ??= readSeed<DemoClockConfig>("config.json"));
+}
+
+/**
+ * Whether this file's catalogs describe the data the capability is actually serving.
+ *
+ * Leaders, topics, regions, and the demo clock are read from `engagement-intelligence/seed`, so they
+ * only describe reality when the capability reads that same seed — `RETRIEVAL_BACKEND=memory`, the
+ * default. Against a customer index (`search`) or a document corpus (`grounding`) the seed is DEMO
+ * data, and injecting it into the system prompt is exactly what lets a model answer with seeded
+ * leaders while the real tools return nothing. Both processes read the repo-root `.env`, so this
+ * mirrors the capability's own `resolveBackend()`.
+ */
+export function isSeedCatalog(): boolean {
+  const backend = (process.env.RETRIEVAL_BACKEND ?? "memory")
+    .trim()
+    .toLowerCase();
+  return backend === "" || backend === "memory";
 }
 
 /** The leader whose time is planned when the user does not name one. */
 export function resolveDefaultLeaderId(): string {
   const env = process.env.ENGAGEMENTS_DEFAULT_LEADER?.trim();
   if (env && loadLeaders().some((l) => l.id === env)) return env;
-  return loadLeaders()[0]?.id ?? 'L1';
+  return loadLeaders()[0]?.id ?? "L1";
 }
 
 /**
@@ -104,10 +134,26 @@ export function resolveDefaultLeaderId(): string {
  * ("UAS/drone", "cyber") onto the seed taxonomy. The LLM path does this via the prompt.
  */
 const TOPIC_KEYWORDS: Record<string, string[]> = {
-  T1: ['industrial base', 'dib', 'supply chain', 'munition', 'acquisition', 'contracting'],
-  T2: ['cyber', 'zero-trust', 'zero trust', 'c5isr', 'network defense'],
-  T3: ['uas', 'drone', 'autonom', 'startup', 'innovation', 'venture', 'dual-use', 'non-traditional'],
-  T4: ['stem', 'talent', 'recruit', 'workforce'],
+  T1: [
+    "industrial base",
+    "dib",
+    "supply chain",
+    "munition",
+    "acquisition",
+    "contracting",
+  ],
+  T2: ["cyber", "zero-trust", "zero trust", "c5isr", "network defense"],
+  T3: [
+    "uas",
+    "drone",
+    "autonom",
+    "startup",
+    "innovation",
+    "venture",
+    "dual-use",
+    "non-traditional",
+  ],
+  T4: ["stem", "talent", "recruit", "workforce"],
 };
 
 export function topicIdsFromText(text: string): string[] {
@@ -122,19 +168,19 @@ export function rosterForPrompt(): string {
     .map(
       (l) =>
         `  ${l.id}: ${l.name} — ${l.role} [${l.domain}], home ${l.homeBase.city}, ${l.homeBase.state}; ` +
-        `SME ${l.smeAreas.join('/')}; audiences ${(l.engagementCategories ?? []).join('/') || 'unspecified'}`,
+        `SME ${l.smeAreas.join("/")}; audiences ${(l.engagementCategories ?? []).join("/") || "unspecified"}`,
     )
-    .join('\n');
+    .join("\n");
 }
 
 export function topicsForPrompt(): string {
   return loadTopics()
     .map(
       (t) =>
-        `  ${t.id}: ${t.name} (${t.smeAreas.join(', ')}); owner ${t.ownerOrg ?? 'unassigned'}; ` +
-        `approved message ${t.approvedMessageId ? 'yes' : 'no'}`,
+        `  ${t.id}: ${t.name} (${t.smeAreas.join(", ")}); owner ${t.ownerOrg ?? "unassigned"}; ` +
+        `approved message ${t.approvedMessageId ? "yes" : "no"}`,
     )
-    .join('\n');
+    .join("\n");
 }
 
 // ── Area-first grounding (Phase 4 interactive planner) ──────────────────────
@@ -148,7 +194,11 @@ export interface AreaInput {
 }
 
 /** Region chips for the UI + the "which area?" clarifying question (value = region id). */
-export function regionChoices(): { value: string; label: string; detail: string }[] {
+export function regionChoices(): {
+  value: string;
+  label: string;
+  detail: string;
+}[] {
   return loadRegions().map((r) => ({
     value: r.id,
     label: r.name,
@@ -165,13 +215,19 @@ export function regionChoices(): { value: string; label: string; detail: string 
 export function resolveAreaInput(text: string): AreaInput | null {
   const haystack = text.toLowerCase();
   const pairs = loadRegions()
-    .flatMap((r) => [r.name, ...r.aliases].map((alias) => ({ id: r.id, alias })))
+    .flatMap((r) =>
+      [r.name, ...r.aliases].map((alias) => ({ id: r.id, alias })),
+    )
     .sort((a, b) => b.alias.length - a.alias.length);
   for (const { id, alias } of pairs) {
-    const rx = new RegExp(`\\b${alias.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+    const rx = new RegExp(
+      `\\b${alias.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+    );
     if (rx.test(haystack)) return { regionId: id };
   }
-  const loc = text.match(/\b(?:in|to|at|near|around|visiting|visit)\s+([A-Z][\w.]*(?:\s+[A-Z][\w.]*)*)/);
+  const loc = text.match(
+    /\b(?:in|to|at|near|around|visiting|visit)\s+([A-Z][\w.]*(?:\s+[A-Z][\w.]*)*)/,
+  );
   if (loc?.[1]) return { city: loc[1].trim() };
   return null;
 }
@@ -198,14 +254,18 @@ export function defaultWindow(): { start: string; end: string } {
   const env = process.env.ENGAGEMENTS_PLAN_WINDOW?.trim();
   const m = env?.match(/^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/);
   if (m) return { start: m[1], end: m[2] };
-  const cfg = loadClockConfig();
-  const start = addMonthsISO(cfg.today, cfg.shiftMonths ?? 0);
+  const start = demoToday();
   const horizon = Number(process.env.ENGAGEMENTS_PLAN_HORIZON_DAYS) || 25;
   return { start, end: addDaysISO(start, horizon) };
 }
 
-/** The demo clock's effective "today" (shift-aware) — used to rank upcoming events for hot topics. */
+/**
+ * Effective "today" the plan window and event freshness are relative to: the demo clock (shift-aware)
+ * when the capability serves the seed, otherwise the real clock — a customer index carries real
+ * dates, and the seed's month shift would silently mis-window every query against it.
+ */
 export function demoToday(): string {
+  if (!isSeedCatalog()) return new Date().toISOString().slice(0, 10);
   const cfg = loadClockConfig();
   return addMonthsISO(cfg.today, cfg.shiftMonths ?? 0);
 }

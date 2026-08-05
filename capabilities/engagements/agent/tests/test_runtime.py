@@ -7,14 +7,28 @@ from pydantic import ValidationError
 import engagements_agent.runtime as runtime_module
 from engagements_agent.config import Settings
 from engagements_agent.governance import (
+    CAPABILITY_TOOL_NAMES,
     ENGAGEMENTS_TOOL_NAMES,
+    GROUNDING_TOOL_NAMES,
     MODEL_TOOL_NAMES,
     GovernanceDenied,
     GovernanceRuntime,
 )
-from engagements_agent.mcp_client import GovernedMcpClient
-from engagements_agent.models import AgentDecision, AgentRunRequest, CapturedCall
+from engagements_agent.mcp_client import GovernedMcpClient, McpCallError
+from engagements_agent.models import (
+    AgentDecision,
+    AgentRunRequest,
+    CapturedCall,
+    ToolDescriptor,
+)
 from engagements_agent.runtime import AgentRuntime, AgentRunTimeout
+
+
+class PlannerBridge:
+    """Bridge stub advertising the planner surface `AgentRuntime.run` discovers per turn."""
+
+    async def list_tools(self, *, mcp_url: str) -> list[ToolDescriptor]:
+        return [ToolDescriptor(name=name) for name in sorted(ENGAGEMENTS_TOOL_NAMES)]
 
 
 def test_agent_framework_tools_match_governance_allowlist(settings: Settings) -> None:
@@ -28,7 +42,7 @@ def test_agent_framework_tools_match_governance_allowlist(settings: Settings) ->
         traceId="trace-tools",
     )
 
-    tools = runtime._build_tools(request, [])
+    tools = runtime._build_tools(request, [], None, set(CAPABILITY_TOOL_NAMES))
 
     assert {tool.name for tool in tools} == MODEL_TOOL_NAMES
     schemas = {tool.name: tool.to_json_schema_spec() for tool in tools}
@@ -37,6 +51,51 @@ def test_agent_framework_tools_match_governance_allowlist(settings: Settings) ->
         "additionalContactIds"
         in schemas["build_itinerary"]["function"]["parameters"]["properties"]
     )
+
+
+def test_grounding_only_capability_builds_only_the_grounding_tool(
+    settings: Settings,
+) -> None:
+    """RETRIEVAL_BACKEND=grounding registers one tool; the model must be offered exactly that.
+
+    Offering the planner surface instead makes every call fail "tool not found", which the model
+    hides by answering from its instructions instead of the corpus.
+    """
+    configured = replace(settings, discovery_mcp_url=None)
+    governance = GovernanceRuntime(configured)
+    bridge = GovernedMcpClient(governance, timeout_seconds=5)
+    runtime = AgentRuntime(configured, governance, bridge)
+    request = AgentRunRequest(
+        system="Answer from the corpus.",
+        user="Who should I meet on UAS at AUSA?",
+        mcpUrl="http://mcp.test/mcp",
+        traceId="trace-grounding",
+    )
+
+    tools = runtime._build_tools(request, [], None, set(GROUNDING_TOOL_NAMES))
+
+    assert {tool.name for tool in tools} == GROUNDING_TOOL_NAMES
+    schema = tools[0].to_json_schema_spec()["function"]["parameters"]
+    assert schema["required"] == ["query"]
+
+
+async def test_a_capability_with_no_recognised_surface_fails_the_run(
+    settings: Settings,
+) -> None:
+    class Bridge:
+        async def list_tools(self, *, mcp_url: str):
+            return []
+
+    runtime = AgentRuntime(settings, GovernanceRuntime(settings), Bridge())
+    request = AgentRunRequest(
+        system="Use tools.",
+        user="Plan a trip.",
+        mcpUrl="http://mcp.test/mcp",
+        traceId="trace-empty",
+    )
+
+    with pytest.raises(McpCallError, match="nor search_grounding"):
+        await runtime._discover_capability(request)
 
 
 def test_discovery_tool_is_omitted_when_no_discovery_endpoint(
@@ -232,7 +291,7 @@ async def test_tool_governance_denial_aborts_agent_run(
     settings: Settings,
     monkeypatch,
 ) -> None:
-    class Bridge:
+    class Bridge(PlannerBridge):
         async def call_tool(self, **kwargs):
             raise GovernanceDenied("block-ssn", "Sensitive input is blocked.")
 
@@ -323,7 +382,7 @@ async def test_agent_run_timeout_cancels_model_work(
             await asyncio.sleep(1)
 
     governance = GovernanceRuntime(configured)
-    runtime = AgentRuntime(configured, governance, object())
+    runtime = AgentRuntime(configured, governance, PlannerBridge())
     model_client = ModelClient()
 
     async def create_model_client(_max_iterations: int):
@@ -380,7 +439,7 @@ async def test_agent_run_returns_structured_framework_decision(
             return type("Response", (), {"value": expected})()
 
     governance = GovernanceRuntime(settings)
-    runtime = AgentRuntime(settings, governance, object())
+    runtime = AgentRuntime(settings, governance, PlannerBridge())
     model_client = ModelClient()
 
     async def create_model_client(_max_iterations: int):

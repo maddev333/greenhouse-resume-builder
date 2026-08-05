@@ -28,6 +28,7 @@ import {
   bestLeadersForCategory,
   buildOptionQuestions,
   buildRadiusQuestions,
+  buildGroundingSystemPrompt,
   buildSystemPrompt,
   categoryClarifyQuestion,
   categoryFromQuestion,
@@ -640,6 +641,177 @@ test("system prompt embeds the roster and the chosen default leader + topN", () 
   assert.match(topicsForPrompt(), /T4: .*approved message yes/);
   assert.match(topicsForPrompt(), /T3: .*approved message no/);
 });
+
+test(
+  "system prompt drops the demo roster when the capability reads a customer index",
+  { concurrency: false },
+  () => {
+    const prior = process.env.RETRIEVAL_BACKEND;
+    process.env.RETRIEVAL_BACKEND = "search";
+    try {
+      const prompt = buildSystemPrompt("L1", 3);
+      // The seed roster/topics describe DEMO people; against a customer index they are exactly the
+      // "grounded" catalog a model reaches for when the real tools come back empty.
+      assert.doesNotMatch(prompt, /Whitfield/);
+      assert.doesNotMatch(prompt, /Leader roster/);
+      assert.doesNotMatch(prompt, /Topic catalog/);
+      assert.match(prompt, /NO local leader roster or topic catalog/);
+      assert.match(prompt, /MUST come\nfrom a tool result in THIS turn/);
+      assert.ok(prompt.includes("You own intent classification"));
+    } finally {
+      if (prior === undefined) delete process.env.RETRIEVAL_BACKEND;
+      else process.env.RETRIEVAL_BACKEND = prior;
+    }
+  },
+);
+
+test("system prompt advertises search_grounding only when the index carries a corpus", () => {
+  assert.doesNotMatch(buildSystemPrompt("L1", 3), /search_grounding/);
+  assert.match(
+    buildSystemPrompt("L1", 3, true),
+    /search_grounding tool is also available/,
+  );
+});
+
+test("the grounding prompt carries no catalog and forbids unsupported answers", () => {
+  const prompt = buildGroundingSystemPrompt();
+  assert.match(prompt, /exactly one tool, search_grounding/);
+  assert.match(prompt, /Answer ONLY from the returned passages/);
+  assert.match(prompt, /Do NOT substitute/);
+  assert.match(prompt, /cannot plan trips/);
+  assert.doesNotMatch(prompt, /Whitfield/);
+  assert.doesNotMatch(prompt, /\bL1\b/);
+  assert.doesNotMatch(prompt, /\bT3\b/);
+});
+
+test(
+  "a grounding-only capability answers through search_grounding instead of the planner tools",
+  { concurrency: false },
+  async (t) => {
+    const originalFetch = globalThis.fetch;
+    const prior = {
+      endpoint: process.env.AZURE_OPENAI_ENDPOINT,
+      deployment: process.env.AZURE_OPENAI_DEPLOYMENT,
+      backend: process.env.RETRIEVAL_BACKEND,
+    };
+    t.after(() => {
+      globalThis.fetch = originalFetch;
+      for (const [key, value] of [
+        ["AZURE_OPENAI_ENDPOINT", prior.endpoint],
+        ["AZURE_OPENAI_DEPLOYMENT", prior.deployment],
+        ["RETRIEVAL_BACKEND", prior.backend],
+      ] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+    process.env.AZURE_OPENAI_ENDPOINT = "https://model.invalid";
+    process.env.AZURE_OPENAI_DEPLOYMENT = "gpt-test";
+    process.env.RETRIEVAL_BACKEND = "grounding";
+
+    const paths: string[] = [];
+    let runBody: any = null;
+    globalThis.fetch = (async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      paths.push(path);
+      const json = (payload: unknown) =>
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      if (path === "/tools/list") {
+        return json({
+          tools: [{ name: "search_grounding" }],
+          backend: "grounding",
+        });
+      }
+      runBody = JSON.parse(String(init?.body));
+      const capture = {
+        name: "search_grounding",
+        args: { query: "AUSA UAS" },
+        result: {
+          hits: [{ id: "d1#3", title: "AUSA exhibitor guide", text: "…" }],
+        },
+        text: '1 passage(s) for "AUSA UAS".',
+        modelResult: { hits: [] },
+      };
+      return json({
+        output: null,
+        decision: {
+          intent: "lookup",
+          stage: "answer",
+          clarify: null,
+          category: null,
+          leaderId: null,
+          recommendedOptionIndex: null,
+          answer: "Per the AUSA exhibitor guide, …",
+        },
+        iterations: 2,
+        toolCalls: [{ name: "search_grounding", args: capture.args }],
+        captured: [capture],
+      });
+    }) as typeof fetch;
+
+    const result = await planTrip({
+      question:
+        "I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?",
+      serverUrl: "http://mcp.invalid/mcp",
+    });
+
+    assert.equal(result.mode, "llm");
+    assert.equal(result.stage, "answer");
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      result.toolCalls.map((call) => call.name),
+      ["search_grounding"],
+    );
+    // The surface is discovered before the prompt is composed, and the demo seed never reaches it.
+    assert.deepEqual(paths, ["/tools/list", "/run"]);
+    assert.match(runBody.system, /exactly one tool, search_grounding/);
+    assert.doesNotMatch(runBody.system, /Whitfield/);
+    assert.doesNotMatch(runBody.system, /Leader roster/);
+  },
+);
+
+test(
+  "a grounding-only capability refuses the deterministic planner instead of reporting an outage",
+  { concurrency: false },
+  async (t) => {
+    const originalFetch = globalThis.fetch;
+    const prior = {
+      endpoint: process.env.AZURE_OPENAI_ENDPOINT,
+      deployment: process.env.AZURE_OPENAI_DEPLOYMENT,
+    };
+    t.after(() => {
+      globalThis.fetch = originalFetch;
+      if (prior.endpoint === undefined)
+        delete process.env.AZURE_OPENAI_ENDPOINT;
+      else process.env.AZURE_OPENAI_ENDPOINT = prior.endpoint;
+      if (prior.deployment === undefined)
+        delete process.env.AZURE_OPENAI_DEPLOYMENT;
+      else process.env.AZURE_OPENAI_DEPLOYMENT = prior.deployment;
+    });
+    delete process.env.AZURE_OPENAI_ENDPOINT;
+    delete process.env.AZURE_OPENAI_DEPLOYMENT;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          tools: [{ name: "search_grounding" }],
+          backend: "grounding",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+
+    const result = await planTrip({
+      question: "Plan two days around Huntsville for the UAS topic.",
+      serverUrl: "http://mcp.invalid/mcp",
+    });
+
+    assert.equal(result.deterministicReason, "grounding-only-capability");
+    assert.match(result.error ?? "", /RETRIEVAL_BACKEND=grounding/);
+    assert.deepEqual(result.toolCalls, []);
+  },
+);
 
 test("agent decision projects grounded category clarification into the chat contract", () => {
   const base = {

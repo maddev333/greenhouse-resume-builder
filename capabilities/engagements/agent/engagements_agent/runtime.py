@@ -17,8 +17,13 @@ from openai import AsyncAzureOpenAI
 from pydantic import Field
 
 from .config import DEFAULT_AZURE_OPENAI_API_VERSION, Settings
-from .governance import GovernanceDenied, GovernanceRuntime
-from .mcp_client import GovernedMcpClient
+from .governance import (
+    ENGAGEMENTS_TOOL_NAMES,
+    GovernanceDenied,
+    GovernanceRuntime,
+    resolve_capability_backend,
+)
+from .mcp_client import GovernedMcpClient, McpCallError
 from .models import (
     AgentDecision,
     AgentRunRequest,
@@ -60,8 +65,9 @@ class AgentRuntime:
         try:
             try:
                 async with run_timeout:
+                    available = await self._discover_capability(request)
                     client = await self._create_model_client(request.max_iterations)
-                    tools = self._build_tools(request, captured, denials)
+                    tools = self._build_tools(request, captured, denials, available)
                     max_tokens = self.governance.max_tokens
                     async with Agent(
                         client=client,
@@ -149,12 +155,34 @@ class AgentRuntime:
             function_invocation_configuration=invocation_configuration,
         )
 
+    async def _discover_capability(self, request: AgentRunRequest) -> set[str]:
+        """Names the engagements MCP actually registers, for THIS run.
+
+        The model's tool list is derived from the live capability rather than assumed. A
+        grounding-only deployment gets `search_grounding`; handing it the nine planner tools instead
+        makes every call come back "tool not found", which the model papers over by answering from
+        its instructions. An endpoint serving no recognised surface raises, so the turn fails loudly
+        instead of returning an ungrounded answer.
+        """
+        descriptors = await self.mcp_client.list_tools(mcp_url=request.mcp_url)
+        available = {item.name for item in descriptors}
+        if resolve_capability_backend(available) is None:
+            missing = sorted(ENGAGEMENTS_TOOL_NAMES - available)
+            raise McpCallError(
+                f"Engagements MCP at {request.mcp_url} serves neither the planner surface "
+                f"(missing: {', '.join(missing)}) nor search_grounding, so the model has no "
+                "grounded tool to answer with."
+            )
+        return available
+
     def _build_tools(
         self,
         request: AgentRunRequest,
         captured: list[CapturedCall],
         denials: list[GovernanceDenied] | None = None,
+        available: set[str] | None = None,
     ) -> list[Any]:
+        served = available if available is not None else set(ENGAGEMENTS_TOOL_NAMES)
         invocation_lock = asyncio.Lock()
         started_calls = 0
         run_denials = denials if denials is not None else []
@@ -627,7 +655,40 @@ class AgentRuntime:
                 mcp_url=discovery_url,
             )
 
-        return [
+        @tool(approval_mode="never_require")
+        async def search_grounding(
+            query: Annotated[
+                str,
+                Field(description="The question or topic to find passages for."),
+            ],
+            top: Annotated[
+                int | None,
+                Field(
+                    description="How many passages to return after collapsing by source document "
+                    "(default 8)."
+                ),
+            ] = None,
+            filter: Annotated[  # noqa: A002 - the MCP argument is named `filter`
+                str | None,
+                Field(
+                    description="Optional OData $filter narrowing the corpus "
+                    "(e.g. \"category eq 'policy'\")."
+                ),
+            ] = None,
+        ) -> Any:
+            """Retrieve ranked passages from the indexed document corpus.
+
+            Hybrid keyword + vector recall with semantic reranking where configured. Returns the
+            passage text plus its citation metadata (id, title, url) — cite those and answer from
+            nothing else.
+            """
+            return await invoke(
+                "search_grounding",
+                {"query": query, "top": top, "filter": filter},
+            )
+
+        planner = ENGAGEMENTS_TOOL_NAMES <= served
+        planner_tools = [
             search_contacts,
             search_events,
             survey_area,
@@ -637,7 +698,12 @@ class AgentRuntime:
             plan_radius,
             suggest_candidates,
             build_itinerary,
-            *([search_businesses] if discovery_url else []),
+        ]
+        return [
+            *(planner_tools if planner else []),
+            *([search_grounding] if "search_grounding" in served else []),
+            # Area Discovery augments a TRIP; a document corpus has no itinerary to sweep around.
+            *([search_businesses] if discovery_url and planner else []),
         ]
 
     def _tool_call_limit(self, requested: int) -> int:

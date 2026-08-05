@@ -129,7 +129,9 @@ Nothing is computed until asked, but the shape of the data governs everything do
 and deterministic fallback:
 
 - `makeToolClient` calls Python `/tools/list` to validate the MCP contract, then routes every
-  deterministic tool call through Python `/tools/call`.
+  deterministic tool call through Python `/tools/call`. A capability serving only
+  `search_grounding` is refused here — there are no records for the deterministic workflows to
+  compose — and the turn is reported as `grounding-only-capability`, not as an outage.
 - The Python bridge evaluates `governance/policy.yaml`, writes AGT audit events, and only then
   forwards the call to the MCP capability.
 - `topN` defaults to 3. The first seed leader is only an emergency deterministic fallback; the
@@ -145,15 +147,24 @@ It then attempts the Agent Framework path first for every free-form `/ask`.
 
 ### 5a. Agent Framework path (primary, when Azure OpenAI is configured)
 
-`isModelConfigured()` gates this. If on, `planTrip` calls Python `/run`, which constructs a
-Microsoft Agent Framework `Agent` with the Azure OpenAI Chat Completions provider:
+`isModelConfigured()` gates this. If on, `planTrip` first discovers what the capability actually
+serves (Python `/tools/list`), then calls Python `/run`, which constructs a Microsoft Agent Framework
+`Agent` with the Azure OpenAI Chat Completions provider:
 
-1. **System prompt** = `buildSystemPrompt` — injects the leader roster and topic taxonomy read
-   straight from the seed ([`agent/src/catalog.ts`](../capabilities/engagements/agent/src/catalog.ts))
-   plus decision policy for area, event, radius, and lookup intents.
-2. Nine typed Python function tools expose the complete governed planning surface:
-   `search_contacts`, `search_events`, `survey_area`, `suggest_leaders`, `nearby_leaders`,
-   `plan_options`, `plan_radius`, `suggest_candidates`, and `build_itinerary`.
+1. **System prompt** = `buildSystemPrompt` — decision policy for area, event, radius, and lookup
+   intents, plus the leader roster and topic taxonomy read straight from the seed
+   ([`agent/src/catalog.ts`](../capabilities/engagements/agent/src/catalog.ts)). Those catalogs are
+   injected **only under `RETRIEVAL_BACKEND=memory`**, where the capability serves that same seed.
+   Against a customer index the prompt instead states that every id must come from a tool result in
+   that turn: a model holding the demo roster will otherwise answer from it when the real tools come
+   back empty. A `grounding` capability gets `buildGroundingSystemPrompt` — no catalog at all, cite
+   the passages or say the corpus has nothing.
+2. The model's tools are built from the **discovered** surface, not assumed: the nine typed Python
+   function tools (`search_contacts`, `search_events`, `survey_area`, `suggest_leaders`,
+   `nearby_leaders`, `plan_options`, `plan_radius`, `suggest_candidates`, `build_itinerary`) for a
+   planner capability, `search_grounding` when the index carries a corpus, and that tool _alone_
+   under `RETRIEVAL_BACKEND=grounding`. An endpoint serving neither surface fails the run with a 502
+   instead of handing the model nine tools that every one of them answer "tool not found".
 3. AGT `AuditTrailMiddleware`, `GovernancePolicyMiddleware`, and
    `CapabilityGuardMiddleware` run around the agent. The governed MCP bridge re-evaluates tool
    arguments before the network call, so an allowed tool cannot carry denied content.
