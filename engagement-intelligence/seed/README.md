@@ -9,19 +9,19 @@ call at demo time — locations are pre-geocoded).
 
 ## Files
 
-| File | Entity | Count |
-|------|--------|------:|
-| `schema.ts` | Canonical target types (drops into `shared/src/` on Day-1) | — |
-| `topics.json` | `Topic` — trip subjects / approved-message anchors | 4 |
-| `messages.json` | `Message` — approved, versioned talking points | 3 |
-| `leaders.json` | `Leader` — Pool A (senior leaders whose time we allocate) | 6 |
-| `contacts.json` | `Contact` — Pool B (30 active + 5 prospects) | 35 |
-| `events.json` | `Event` — travel anchors / attendee-magnets | 6 |
-| `engagements.json` | `Engagement` — past meetings (history) | 3 |
-| `afteractions.json` | `AfterActionNote` — EXSUM readouts (message-drift signal) | 2 |
-| `config.json` | Demo-clock config (`today`, `staleCutoffDays`, `shiftMonths`) | — |
-| `clock.mjs` | Shared clock helper (reads `config.json`, applies the shift) | — |
-| `validate.mjs` | Dependency-free integrity checker | — |
+| File                | Entity                                                        | Count |
+| ------------------- | ------------------------------------------------------------- | ----: |
+| `schema.ts`         | Canonical target types (drops into `shared/src/` on Day-1)    |     — |
+| `topics.json`       | `Topic` — trip subjects / approved-message anchors            |     4 |
+| `messages.json`     | `Message` — approved, versioned talking points                |     3 |
+| `leaders.json`      | `Leader` — Pool A (senior leaders whose time we allocate)     |     6 |
+| `contacts.json`     | `Contact` — Pool B (30 active + 5 prospects)                  |    35 |
+| `events.json`       | `Event` — travel anchors / attendee-magnets                   |     6 |
+| `engagements.json`  | `Engagement` — past meetings (history)                        |     3 |
+| `afteractions.json` | `AfterActionNote` — EXSUM readouts (message-drift signal)     |     2 |
+| `config.json`       | Demo-clock config (`today`, `staleCutoffDays`, `shiftMonths`) |     — |
+| `clock.mjs`         | Shared clock helper (reads `config.json`, applies the shift)  |     — |
+| `validate.mjs`      | Dependency-free integrity checker                             |     — |
 
 `Trip` / `Stop` / `Leg` are **runtime-produced by the planner engine** and are therefore NOT
 seeded (their shapes are defined in `schema.ts` for completeness).
@@ -34,24 +34,33 @@ node validate.mjs   # exits 1 on any error; prints a per-entity + staleness repo
 
 ## Envelope note (baked into each blob)
 
-The staged JSON currently carries **only domain fields**. In the locked MVP model the **envelope is
-baked into each per-source blob** — `tenantId` (= `demo`), `source`, `aclGroups[]`, `sensitivity`,
-plus `createdAt`/`updatedAt` — because the AI Search indexer maps those to the **filterable trim
-fields** (see `ARCHITECTURE.md` §5). The Day-1 data task adds the envelope and writes one blob per
-record per source; there is **no relational loader**.
+The staged JSON carries **only domain fields**. The envelope is **baked on at load time** and is
+pure **provenance** — `{ entityType, source }` from `applyLabels`/`deriveEnvelope`
+(`capabilities/engagements/mcp/engagements/src/retrieval/labels.ts`), plus `createdAt` from the
+seed loader (`…/src/planner/seed-loader.ts`, which stamps it with the demo `today`). `BaseEntity`
+is therefore just `{ id, createdAt, updatedAt? }`; `updatedAt` is optional and the loader does not
+set it, and `source` is the only envelope field a record may author for itself (on `Contact`) —
+otherwise it defaults per entity type (`sharepoint:contacts`, `document-intelligence:afteractions`,
+…). Regions are a public gazetteer and get no provenance envelope at all.
+
+There are **no access-control fields**: nothing in the envelope is filtered on per caller. In the
+Day-1 model the same envelope is baked into each per-source blob so the AI Search indexer can map
+`entityType` to a filterable field (that is how one index holds several record kinds — see
+`ARCHITECTURE.md` §5). The Day-1 data task writes one blob per record per source; there is **no
+relational loader**.
 
 ## Source → target ETL mapping (what we would extract from, per entity)
 
-| Target entity | Real source(s) we would ETL from |
-|---------------|----------------------------------|
-| `Leader` | SharePoint "leaders" list + Outlook (availability) |
-| `Contact` (active) | SharePoint "contacts" list |
-| `Contact` (prospect) | Conference **exhibitor directory** (e.g. AUSA) |
-| `Event` | The PowerPoint "calendar" + SharePoint events list |
-| `Engagement` | SharePoint **Kanban** board + Outlook calendar |
-| `Topic` / `Message` | Central comms / strategic-messaging library |
-| `AfterActionNote` | Uploaded **EXSUM PDFs** → Document Intelligence |
-| `Trip` / `Stop` / `Leg` | **Runtime** planner output (not extracted) |
+| Target entity           | Real source(s) we would ETL from                   |
+| ----------------------- | -------------------------------------------------- |
+| `Leader`                | SharePoint "leaders" list + Outlook (availability) |
+| `Contact` (active)      | SharePoint "contacts" list                         |
+| `Contact` (prospect)    | Conference **exhibitor directory** (e.g. AUSA)     |
+| `Event`                 | The PowerPoint "calendar" + SharePoint events list |
+| `Engagement`            | SharePoint **Kanban** board + Outlook calendar     |
+| `Topic` / `Message`     | Central comms / strategic-messaging library        |
+| `AfterActionNote`       | Uploaded **EXSUM PDFs** → Document Intelligence    |
+| `Trip` / `Stop` / `Leg` | **Runtime** planner output (not extracted)         |
 
 ## Demo clock & pre-geocoding
 
@@ -63,7 +72,7 @@ today and by the Day-1 loader later:
 - **`today`** (authored `2025-10-06`) and **`staleCutoffDays`** (`180`) → derived **stale cutoff
   `2025-04-09`**. Active contacts whose `lastInteractionDate` is before the cutoff are "stale"
   (22 of 30; the fresh actives are C7, C9, C11, C14, C15, C25, C28, C30).
-- **`shiftMonths`** relocates the *whole* demo to another year without editing any seed date. It is
+- **`shiftMonths`** relocates the _whole_ demo to another year without editing any seed date. It is
   applied **uniformly to `today` AND every date in the seed**, so all staleness / freshness /
   event-window relationships are **invariant**. Default `0` → 2025; set `12` → 2026 (e.g. to align
   with the next AUSA). Verified: both values yield the same **22 stale / 8 fresh** split.
@@ -74,7 +83,7 @@ today and by the Day-1 loader later:
 ## Choreographed demo story (why these values)
 
 - **Anchor:** L1 (industrial-base MG, home = DC) plans around **AUSA** (E-AUSA, DC, Oct 12–15;
-  topics T1+T3). AUSA is the *magnet*.
+  topics T1+T3). AUSA is the _magnet_.
 - **On-site at ~zero travel:** `E-AUSA.attendingContactIds = [C8, C10, C13, C15, C16, C19]`.
   Ranking story for a **T1** trip: **C8** (T1, stale, value 5) ★ > **C13** (T1, stale, v3) >
   **C15** (T1, but **fresh** → down-ranked) ≈ **C10/C19** (T2, off-topic to a T1 trip) >
@@ -96,7 +105,7 @@ today and by the Day-1 loader later:
 - **Message-consistency thread (C1, value 5, stale @ 2025-02-20):**
   - `EX-002` (L1, 2025-01-18) → `AA-onmsg`: on-message.
   - `EX-003` (L5, 2025-02-20) → `AA-drift`: LTG Cole signaled a **specific program-dollar figure**,
-    violating `M-T1-v2` point *"No commitments on specific program dollars"* → the drift the
+    violating `M-T1-v2` point _"No commitments on specific program dollars"_ → the drift the
     pre-brief / message-consistency check surfaces.
   - Both engagements carry `intendedMessageId = M-T1-v2`. **Simplification:** the seed does NOT
     enforce message-snapshot-by-date (M-T1-v2 `effectiveFrom` is 2025-09-01, after these dates);
@@ -111,10 +120,13 @@ Schema + JSON only for now — **no database**. On Platform Day-1 (see `ARCHITEC
    re-export from `shared/src/index.ts`.
 2. Write a small **seed script** that reads each `*.json`, applies the demo-clock shift to every date
    field via `clock.mjs` (`shiftDateByMonths(date, config.shiftMonths)`), **bakes in the envelope**
-   (`tenantId='demo'`, `source`, `aclGroups[]`, `sensitivity`, `createdAt`/`updatedAt=now`), and writes
+   (`entityType`, `source`, `createdAt`), and writes
    **one JSON blob per record** under `sources/<entity>/<id>.json` in Blob Storage.
-3. Create **one Azure AI Search index** (`engagements`) with the filterable trim fields, a
-   `contentVector`, and an **integrated-vectorization skillset** (`AzureOpenAIEmbeddingSkill`).
+3. Create **one Azure AI Search index** (`engagements`) with a filterable `entityType`/`kind` field
+   (plus the other filterable/searchable fields the capability queries), a
+   `contentVector`, and an **integrated-vectorization skillset** (`AzureOpenAIEmbeddingSkill`). The
+   index shape is declared in JSON, not hard-coded — see
+   `capabilities/engagements/mcp/engagements/index-schema.json`.
 4. Create a **per-source blob indexer** (`parsingMode: json`, `SoftDeleteColumnDeletionDetectionPolicy`
    on `IsDeleted`) per `sources/<entity>/` folder; **Run** an indexer to (re)index that source.
 5. A `geo` adapter maps our `GeoPoint {lat,lng}` to whatever coordinate key `project_map_pins`

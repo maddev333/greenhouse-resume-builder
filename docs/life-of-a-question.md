@@ -12,13 +12,12 @@
 
 ## 0. The question we trace
 
-Keep the persona on **EA · G8** and ask:
+Ask:
 
 > _I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?_
 
-The user gets three things back: a **prose answer**, a **menu of who-to-meet cards** (one
-redacted by the security trim), and a live **Azure Maps trip itinerary**. The sections below
-follow the data that produces each of them.
+The user gets three things back: a **prose answer**, a **menu of who-to-meet cards**, and a live
+**Azure Maps trip itinerary**. The sections below follow the data that produces each of them.
 
 ---
 
@@ -28,30 +27,30 @@ Four long-running service processes plus a distinct sandbox origin. The **one** 
 two clients: the Python runtime calls its **tools**; the browser reads its **`ui://trip-map` App
 resource**.
 
-| # | Component | Process / URL | Role in a question |
-|---|-----------|---------------|--------------------|
-| 1 | **Chat host UI** (M6) | Browser, `:8080` | Captures the question + persona; POSTs `/ask`; renders answer + menu; hosts the trip-map App | 
-| 2 | **Sandbox proxy** | `:8081` (distinct origin) | Isolates the `ui://trip-map` MCP App in a cross-origin sandboxed iframe |
-| 3 | **Orchestration gateway** (M5) | Node/Express, `:3020` | Preserves the HTTP/UI contract, deterministic workflows, and final response assembly |
-| 4 | **Agent runtime** | Python/FastAPI, `:3030` | Microsoft Agent Framework agent + official Agent Governance Toolkit policy, capabilities, and audit |
-| 5 | **Engagements MCP capability** | Node, `:3010/mcp` | Security trim + deterministic planner engine + `ui://trip-map` resource, exposed as MCP tools |
-| 6 | **Seed dataset** | JSON on disk | Source of record: leaders, contacts, events, topics, messages, regions (pre-geocoded) |
-| 7 | **Azure OpenAI** | cloud (optional) | Reasoning + tool selection for the LLM path; deterministic fallback when absent |
-| 8 | **Azure AI Search** | cloud (optional) | Alternate read-model backend (`RETRIEVAL_BACKEND=search`); enforces the same trim as an OData `$filter` |
-| 9 | **Azure Maps** | cloud (optional) | Tiles/styles for the trip-map App; schematic fallback without a key |
+| #   | Component                      | Process / URL             | Role in a question                                                                                                                      |
+| --- | ------------------------------ | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Chat host UI** (M6)          | Browser, `:8080`          | Captures the question + recent turns; POSTs `/ask`; renders answer + menu; hosts the trip-map App                                       |
+| 2   | **Sandbox proxy**              | `:8081` (distinct origin) | Isolates the `ui://trip-map` MCP App in a cross-origin sandboxed iframe                                                                 |
+| 3   | **Orchestration gateway** (M5) | Node/Express, `:3020`     | Preserves the HTTP/UI contract, deterministic workflows, and final response assembly                                                    |
+| 4   | **Agent runtime**              | Python/FastAPI, `:3030`   | Microsoft Agent Framework agent + official Agent Governance Toolkit policy, capabilities, and audit                                     |
+| 5   | **Engagements MCP capability** | Node, `:3010/mcp`         | Deterministic planner engine + `ui://trip-map` resource, exposed as MCP tools                                                           |
+| 6   | **Seed dataset**               | JSON on disk              | Source of record for the `memory` backend: leaders, contacts, events, topics, messages, regions (pre-geocoded)                          |
+| 7   | **Azure OpenAI**               | cloud (optional)          | Reasoning + tool selection for the LLM path; deterministic fallback when absent                                                         |
+| 8   | **Azure AI Search**            | cloud (optional)          | Alternate read-model backend — `RETRIEVAL_BACKEND=search` (an index of structured records) or `grounding` (a document/chunk RAG corpus) |
+| 9   | **Azure Maps**                 | cloud (optional)          | Tiles/styles for the trip-map App; schematic fallback without a key                                                                     |
 
 ```
  Browser chat host (:8080)                                   chat client + MCP-Apps host
    │
-   ├─ POST /ask {question, persona} ─────────►  TS gateway (:3020)
+   ├─ POST /ask {question, history?} ────────►  TS gateway (:3020)
    │  ◄─ {answer, menu[], itinerary, tripMap}      └─ Python MAF + AGT (:3030) ─┐
    │                                                                            │ governed tools/call
    │                                                                            ▼
    └─ resources/read ui://trip-map ───────────────────────────►  Engagements MCP (:3010)
-      (rendered in sandboxed iframe via :8081)                     • per-request security trim
+      (rendered in sandboxed iframe via :8081)                     • stateless: fresh server per request
                                                                    • deterministic planner engine
                                                                    • ui://trip-map App resource
-                                                                          │ seed only
+                                                                          │ RETRIEVAL_BACKEND=memory
                                                                           ▼
                                                           Seed JSON  (source of record)
 ```
@@ -67,35 +66,54 @@ Nothing is computed until asked, but the shape of the data governs everything do
   `events`, `topics`, `messages`, `regions`, `config`. All locations are **pre-geocoded at seed
   time**, so the live demo makes **no** geocoding call and cannot fail on a network blip
   (ARCHITECTURE §1).
-- **The governance envelope** is baked onto every record when the read model loads it:
-  `applyLabels` → `deriveEnvelope` attaches `{ source, aclGroups, sensitivity }`
+- **The provenance envelope** is baked onto every record when the read model loads it:
+  `applyLabels` → `deriveEnvelope` attaches `{ entityType, source }`
   ([`retrieval/labels.ts`](../capabilities/engagements/mcp/engagements/src/retrieval/labels.ts)).
-  The seed stays domain-only; the labels are the demo's need-to-know policy in one place:
-  - `C4` → `aclGroups: ['/army/g8/plans']` (a **group-ACL** beat — invisible to a basic EA).
-  - `C12` → `sensitivity: 'sensitive'` (a **sensitivity** beat — role-gated regardless of group).
+  The seed stays domain-only; the labels say _what kind of record this is and where it came from_
+  (`sharepoint:contacts`, `document-intelligence:afteractions`, …) in one place. They are
+  **provenance, not governance** — nothing downstream filters on them. The loader adds `createdAt`
+  ([`planner/seed-loader.ts`](../capabilities/engagements/mcp/engagements/src/planner/seed-loader.ts));
+  regions are a public gazetteer and get no provenance envelope at all.
 - **The read model is loaded FRESH per tool call** so a live add/update/delete/"reindex" shows
   immediately ([`readmodel.ts`](../capabilities/engagements/mcp/engagements/src/readmodel.ts)).
-  Two interchangeable backends sit behind one async contract:
-  - `memory` (default) — the in-memory `EngagementIndex`, zero cloud.
-  - `search` — Azure AI Search, selected by `RETRIEVAL_BACKEND=search` when a service is
-    configured (silently falls back to `memory` otherwise).
+  `RETRIEVAL_BACKEND` selects one of three behind one async contract:
+  - `memory` (default) — the in-memory `EngagementIndex` over the seed, zero cloud.
+  - `search` — an Azure AI Search index of **structured records**. Contacts, events, leaders,
+    topics, messages and regions all come from the index, and `today` is the **real** date rather
+    than the seed's month-shifted demo clock. It **never** opens
+    `engagement-intelligence/seed`; a kind the index does not carry reads back empty rather than
+    being substituted from the seed.
+  - `grounding` — a plain **document/chunk RAG** index. That corpus has no structured records, so
+    the deterministic planner cannot run: the capability registers **only** the `search_grounding`
+    tool and `getReadModel()` throws (`tools.ts`, `readmodel.ts`).
+  - Asking for `search` or `grounding` without `AZURE_SEARCH_SERVICE` is a **hard error**, not a
+    silent fallback to `memory` — a misconfigured deployment must never serve demo seed data as if
+    it were live.
+  - The index shapes themselves are **declared in JSON config files**, not hard-coded: a registry
+    loaded from [`index-schema.json`](../capabilities/engagements/mcp/engagements/index-schema.json)
+    (or `ENGAGEMENTS_INDEX_SCHEMAS`) both provisions the index and validates that a field is
+    `filterable` before any OData `$filter` is composed
+    ([`retrieval/index-schema.ts`](../capabilities/engagements/mcp/engagements/src/retrieval/index-schema.ts)).
 
 ---
 
 ## 3. Stage 1 — The user asks (chat host UI, `:8080`)
 
-1. The user picks a **persona** and types the question. The persona is the demo stand-in for
-   verified Keycloak claims — it drives the entire security trim.
+1. The user types the question. The UI keeps the **last 10 messages** of the thread as a `history`
+   array purely so the gateway can resolve conversational references ("add them to day 2"), plus
+   the prior grounded plan as `context` when the ask elaborates it.
 2. On submit, the UI POSTs to the orchestrator
    ([`ui/src/index.tsx`](../capabilities/engagements/ui/src/index.tsx)):
 
    ```
    POST {orchestratorUrl}/ask
-   { "question": "...AUSA...UAS/drone...", "persona": "EA_G8" }
+   { "question": "...AUSA...UAS/drone...", "history": [ { "role": "user", "text": "…" } ] }
    ```
 
+   `leaderId`, `category` and `context` are added only when the turn has them.
    `orchestratorUrl` defaults to `http://localhost:3020`
    ([`ui/src/config.ts`](../capabilities/engagements/ui/src/config.ts)).
+
 3. The UI shows a busy state and waits for a single JSON response (`PlanResult`). It does **not**
    yet talk to the MCP server — that happens later, only if a `tripMap` comes back (Stage 9).
 
@@ -113,7 +131,7 @@ and deterministic fallback:
 - `makeToolClient` calls Python `/tools/list` to validate the MCP contract, then routes every
   deterministic tool call through Python `/tools/call`.
 - The Python bridge evaluates `governance/policy.yaml`, writes AGT audit events, and only then
-  forwards `x-demo-persona` to the MCP capability for its server-side data trim.
+  forwards the call to the MCP capability.
 - `topN` defaults to 3. The first seed leader is only an emergency deterministic fallback; the
   framework does not silently select one when the user needs to make a material leader choice.
 - The Python runtime uses Streamable HTTP against `ENGAGEMENTS_MCP_URL`
@@ -165,52 +183,55 @@ picks the arguments (Microsoft Agent Framework vs. the deterministic router).
 
 ---
 
-## 6. Stage 4 — Inside the capability: security trim FIRST (`:3010`)
+## 6. Stage 4 — Inside the capability: a fresh read model per call (`:3010`)
 
-The MCP server is **stateless**: `main.ts` builds a fresh `McpServer` **and a fresh caller
-context** per HTTP request ([`mcp/engagements/src/main.ts`](../capabilities/engagements/mcp/engagements/src/main.ts)).
+The MCP server is **stateless**: `main.ts` builds a fresh `McpServer` per HTTP request and
+`createServer()` takes **no arguments** — there is no caller context to resolve
+([`mcp/engagements/src/main.ts`](../capabilities/engagements/mcp/engagements/src/main.ts),
+[`server.ts`](../capabilities/engagements/mcp/engagements/src/server.ts)).
 
-1. **Resolve the caller.** `resolveSecurityContext(req.headers)` turns the request headers into a
-   verified `SecurityContext` ([`context.ts`](../capabilities/engagements/mcp/engagements/src/context.ts)).
-   Resolution order: `x-demo-persona` → header-built claims (`x-tenant-id` / `x-user-groups` /
-   `x-user-roles` / …) → default persona. For our request, `x-demo-persona: EA_G8` resolves to
-   `{ tenantId: 'army', aclGroups: ['/army', '/army/g8/plans'] }`.
-2. **Every tool follows the same four-step contract** (`tools.ts` header comment):
-   (a) resolve the caller's claims, (b) load a **fresh** read model,
-   (c) **let the trim run server-side BEFORE any recall/scoring**, and
-   (d) report the exact `$filter` + `redactedCount` so the trim is observable on stage.
+**The capability applies no access control.** There is no tenant check, no group ACL, no
+sensitivity gate, no per-caller filter — any caller reaching `:3010/mcp` sees the entire corpus.
+The request carries no identity headers, and CORS allows only the MCP transport headers
+(`content-type`, `mcp-session-id`, `mcp-protocol-version`, `last-event-id`). The governance in
+this system lives one hop earlier, in the AGT policy of Stage 3, and governs _what the agent may
+do_, not _what a caller may see_.
 
-The trim itself is `buildEngagementSecurityFilter`
-([`retrieval/security.ts`](../capabilities/engagements/mcp/engagements/src/retrieval/security.ts)),
-which builds **both** an OData `$filter` (for Azure AI Search) and an in-memory `predicate` (for
-the memory backend) from the **same** claims so they can never diverge. Four layers, all
-server-side — the LLM only ever influences query text, never the filter:
+1. **Pick the tool surface.** `registerEngagementTools` reads `resolveBackend()` once at
+   registration. On `grounding` it registers `search_grounding` **only**; on `search` it registers
+   the nine planner tools plus `search_grounding` when a loaded index declaration carries a
+   `mapping.grounding` block; on `memory` it registers the nine planner tools
+   ([`tools.ts`](../capabilities/engagements/mcp/engagements/src/tools.ts)).
+2. **Every tool follows the same contract** (`tools.ts` header comment): load a **fresh** read
+   model with `getReadModel()`, then run the pure planner over it. Nothing is cached between
+   calls, so a live add/update/delete/"reindex" is visible on the very next tool call.
 
-| Layer | Rule | Effect on our request |
-|-------|------|-----------------------|
-| 1. **Tenant isolation** | `tenantId eq '<tid>'`; **no tenant claim ⇒ rejected (fail-closed)** | `army` rows only |
-| 2. **Group ACL** (deny-by-default) | `aclGroups/any(g: search.in(g, <caller groups>))` | EA·G8 holds `/army/g8/plans` ⇒ **`C4` is visible** |
-| 3. **Sensitivity gate** | `sensitivity eq 'unclassified'` unless a privileged role/scope | EA·G8 lacks `ClearedReviewer` ⇒ **`C12` stays hidden** |
-| 4. **Topic narrowing** | optional `topicIds/any(...)` — recall convenience, never widens access | restrict to `T3` when asked |
+Recall itself is **recall, then preference narrowing**
+([`retrieval/retrieval-index.ts`](../capabilities/engagements/mcp/engagements/src/retrieval/retrieval-index.ts)) —
+the LLM only ever influences the query text and the narrowing arguments:
 
-The read model applies the trim in the right order — **recall, then trim, then preference
-narrowing** — and returns a `TrimmedResult { items, filter, redactedCount }`
-([`retrieval/retrieval-index.ts`](../capabilities/engagements/mcp/engagements/src/retrieval/retrieval-index.ts)).
-`redactedCount = recalled − authorized` is the number the answer reports as "N contact(s)
-redacted by trim." **Authorized rows are the only thing that ever leaves the index**, so no
-scoring or prose is ever computed over data the caller may not see.
+| Step                                   | Rule                                                                                                                                                                                    | Effect on our request                     |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| 1. **Status recall** (contacts)        | `status eq 'active' \| 'prospect'` when asked                                                                                                                                           | keep prospects out of a re-engagement ask |
+| 2. **Topic recall**                    | `topicIds ∩ query.topicIds` (contacts and events)                                                                                                                                       | restrict to `T3` (UAS/drone) when asked   |
+| 3. **Text recall**                     | substring over name / org / SME areas / city / state for contacts, id / name / city / state for events — a keyword stand-in for hybrid search; the `search` backend does the real thing | match "AUSA" to the anchor event          |
+| 4. **Preference narrowing** (contacts) | `doNotMeet` ids dropped, `strategicValue ≥ seniorityFloor`                                                                                                                              | caller preferences NARROW/RANK only       |
+
+With no `query` / `topicIds` / `status` at all, `searchContacts` returns **every** contact — the
+set `suggest()` then scores. The result shape is identical on the `search` backend, so the same
+planner pipeline runs unchanged against the cloud index.
 
 ---
 
 ## 7. Stage 5 — The deterministic engine ranks and routes
 
-With an authorized candidate set in hand, `suggest_candidates` runs the pure, unit-tested planner
+With a candidate set in hand, `suggest_candidates` runs the pure, unit-tested planner
 (`runSuggest` in `tools.ts` → [`planner/`](../capabilities/engagements/mcp/engagements/src/planner/)).
 This is the "deterministic core, LLM at the edges" principle — the feasibility math is never done
 by the model.
 
-1. **Resolve the anchor** through the same trimmed event search (`resolveEvent`), so "AUSA" →
-   one authorized `EngagementEvent`.
+1. **Resolve the anchor** through the same event search any caller would get (`resolveEvent` →
+   `searchEvents`), so "AUSA" → one `EngagementEvent`.
 2. **`suggest()`** unions three candidate sources against the anchor and ranks them
    ([`planner/suggest.ts`](../capabilities/engagements/mcp/engagements/src/planner/suggest.ts)):
    - (a) event **attendees** → on-site, travel ≈ 0, `re-engage`;
@@ -249,11 +270,12 @@ All the tunable numbers (speeds, radius, cost weights, staleness span) are polic
 carries geospatial payload the host should render (`tools.ts`).
 
 It returns a `CallToolResult` with:
+
 - **`content`** — a human-readable text block (header + route line + conflicts) that becomes part
   of the prose answer; and
-- **`structuredContent`** — `{ leader, event, accepted, route, roi, conflicts, redactedCount,
-  filter, tripMap }`. The **`tripMap`** is the wire format the Azure Maps App consumes:
-  `{ title, origin, stops[], legs[], roiScore, totalMi, caller }`, built by
+- **`structuredContent`** — `{ today, leader, event, accepted, notMatched, route, duration, roi,
+conflicts, categoryCoverage, nearbyLeaders, tripMap }`. The **`tripMap`** is the wire format the
+  Azure Maps App consumes: `{ title, origin, stops[], legs[], roiScore?, totalMi? }`, built by
   `buildTripMapFromOrigin` (on-site pins are co-located with the origin so home coordinates don't
   scatter the map).
 
@@ -266,31 +288,36 @@ Back in `planTrip`, **`assemble`** reads the captured tool results and packages 
 
 ```jsonc
 {
-  "ok": true, "mode": "llm", "persona": "EA_G8",
+  "ok": true, "mode": "llm", "deterministicReason": null,
+  "question": "I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?",
   "answer":  "…prose menu + one-line itinerary…",   // model text, or rendered from tool text
   "toolCalls": [ { "name": "suggest_candidates" }, { "name": "build_itinerary" } ],
-  "menu":    [ /* candidate cards from suggest_candidates */ ],
-  "itinerary": { "leader": …, "route": …, "roi": …, "conflicts": … },
-  "tripMap": { "origin": …, "stops": …, "legs": … },   // for the host to render
-  "redactedCount": 1,                                   // trim made visible
-  "rejected": false
+  "menu":    [ /* suggest_candidates candidates — the option cards */ ],
+  "itinerary": { "leader": …, "event": …, "accepted": …, "route": …, "roi": …,
+                 "conflicts": …, "nearbyLeaders": …, "categoryCoverage": … },
+  "tripMap": { "title": …, "origin": …, "stops": …, "legs": … }   // for the host to render
 }
 ```
 
-`rejected` is `true` when the trim fail-closed (e.g. `NO_TENANT`); `redactedCount` surfaces the
-hidden rows. This single JSON object is the HTTP response to the UI's `/ask`.
+`ok` is `true` when a menu **or** an itinerary came back; `deterministicReason` is non-null only on
+the `deterministic` path and explains why the LLM loop wasn't used. The leader-first flow adds
+`stage` / `clarify` / `options` / `leaderShortlist` / `questions` to the same envelope. This single
+JSON object is the HTTP response to the UI's `/ask`.
 
 ---
 
 ## 10. Stage 8 — The UI renders answer + menu
 
 The chat host drops the response into the thread (`index.tsx`):
+
 - **`answer`** → the assistant prose bubble.
 - **`menu[]`** → the who-to-meet **cards** (`MenuCard`): name, org, city, placement, strategic
   value, staleness, score, fit flags.
-- **`redactedCount`** → the "N redacted by trim" note that changes as you switch personas.
+- **`itinerary`** → the route / ROI / conflicts summary, and the plan context the next turn
+  elaborates.
 
-If `tripMap` is `null` (e.g. a rejected persona), the flow ends here with prose + the trim beat.
+If `tripMap` is `null` (a clarify turn, or a build that produced no route), the flow ends here
+with prose + cards.
 
 ---
 
@@ -299,8 +326,8 @@ If `tripMap` is `null` (e.g. a rejected persona), the flow ends here with prose 
 When `tripMap != null`, the UI mounts **`<TripMapHost>`**, which performs the MCP-Apps host
 handshake ([`ui/src/implementation.ts`](../capabilities/engagements/ui/src/implementation.ts)):
 
-1. **Connect a second MCP client** to `:3010` — this one carrying the same `x-demo-persona` —
-   used **only** to `resources/read` the App HTML (`connectToServer` + `getUiResource`). It does
+1. **Connect a second MCP client** to `:3010` (`connectToServer` — plain Streamable HTTP, no extra
+   headers) used **only** to `resources/read` the App HTML (`getUiResource`). It does
    **not** call tools; the itinerary was already decided by the orchestrator.
 2. **Read `ui://trip-map/trip-map.html`** — the single-file Azure Maps App, plus its
    `_meta.ui.csp` declaring the `*.atlas.microsoft.com` origins the sandbox may reach
@@ -312,8 +339,8 @@ handshake ([`ui/src/implementation.ts`](../capabilities/engagements/ui/src/imple
    **leg polylines** and fits the bounds.
 
 The result the user sees — pins, colored route, ROI — is the same sandboxed App a fully compliant
-MCP host would render; the security trim that decided its contents was enforced server-side long
-before any pixels.
+MCP host would render, and the App itself never calls a tool: it only ever plots the payload the
+orchestrator already computed.
 
 ---
 
@@ -321,23 +348,23 @@ before any pixels.
 
 ```
 User        Chat host (:8080)     Orchestrator (:3020)      Engagements MCP (:3010)     Seed / Azure
- │  ask + persona  │                      │                          │                       │
+ │  ask            │                      │                          │                       │
  │────────────────►│  POST /ask           │                          │                       │
  │                 │─────────────────────►│  planTrip()              │                       │
- │                 │                      │  makeToolClient(persona) │                       │
+ │                 │                      │  makeToolClient()        │                       │
  │                 │                      │  ── MAF decision ───────► │                       │
  │                 │                      │  tools/call suggest_…    │                       │
- │                 │                      │  (x-demo-persona) ──────►│  resolveSecurityCtx   │
- │                 │                      │                          │  trim FIRST ─► recall │◄─ seed (fresh)
+ │                 │                      │  (via Python AGT) ──────►│  getReadModel()       │
+ │                 │                      │                          │  recall → narrow      │◄─ seed (fresh)
  │                 │                      │                          │  suggest()/score      │
- │                 │                      │  ◄──────── menu + filter │                       │
+ │                 │                      │  ◄─────────────── menu   │                       │
  │                 │                      │  tools/call build_… ────►│  route/roi/conflicts  │
  │                 │                      │                          │  + tripMap + _meta.ui │
  │                 │                      │  ◄──── itinerary+tripMap │                       │
  │                 │  ◄── PlanResult JSON │  assemble()              │                       │
  │  answer + menu  │◄─────────────────────│                          │                       │
  │◄────────────────│                      │                          │                       │
- │                 │  resources/read ui://trip-map (x-demo-persona) ►│  App HTML + CSP       │
+ │                 │  resources/read ui://trip-map ──────────────────►│  App HTML + CSP       │
  │                 │  sandbox iframe (:8081) ◄── AppBridge ── tripMap│                       │
  │  🗺  trip map    │◄── Azure Maps pins/route ───────────────────────────────────────────► atlas.microsoft.com
 ```
@@ -349,43 +376,43 @@ User        Chat host (:8080)     Orchestrator (:3020)      Engagements MCP (:30
 - **LLM decides:** intent, workflow, whether a grounded clarification is needed, which allowed
   tools to call and with what arguments, option recommendation, and final prose
   (system prompt + Microsoft Agent Framework).
-- **LLM never decides:** who is authorized (the security trim), the candidate scores, the route,
-  the ROI, or the conflicts — all pure deterministic functions. Turning the model off swaps in
-  the deterministic fallback behind the same UI contract.
-- **The model never sees hidden data:** the trim runs server-side before recall, and the heavy
-  map payload is stripped from the model's view.
+- **LLM never decides:** which tools it is allowed to call at all (the AGT policy), the candidate
+  scores, the route, the ROI, or the conflicts — all pure deterministic functions. Turning the
+  model off swaps in the deterministic fallback behind the same UI contract.
+- **The model never sees the heavy payload:** `makeToolClient` strips `tripMap` from the tool
+  result the model reads and keeps it in `client.captured` for final assembly.
 
 ## 14. Failure modes and fallbacks
 
-| Situation | What happens |
-|-----------|--------------|
-| Azure OpenAI absent/errors/timeout | Python `/run` fails explicitly → the TypeScript gateway runs its governed deterministic router |
-| Framework returns an incomplete planning decision | Gateway rejects it and runs the governed deterministic fallback |
-| `RETRIEVAL_BACKEND=search` but no service | Read model silently falls back to `memory` |
-| Azure Maps key absent | Trip-map App renders a schematic dots-and-routes fallback |
-| `NO_TENANT` persona | Trim fail-closes → `rejected: true`, empty menu, no map |
-| `CROSS_TENANT` persona | Tenant isolation → empty result (0 cards) |
-| Python runtime or MCP server unreachable | `planTrip` returns a dependency error; the combined agent launcher starts `:3020` and `:3030` together |
+| Situation                                                               | What happens                                                                                                                                  |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Azure OpenAI absent/errors/timeout                                      | Python `/run` fails explicitly → the TypeScript gateway runs its governed deterministic router                                                |
+| Framework returns an incomplete planning decision                       | Gateway rejects it and runs the governed deterministic fallback                                                                               |
+| `RETRIEVAL_BACKEND=search` or `grounding` but no `AZURE_SEARCH_SERVICE` | `resolveBackend()` **throws** — it will not fall back to `memory` and serve the demo seed as if it were live                                  |
+| `RETRIEVAL_BACKEND=grounding`                                           | Only `search_grounding` is registered; `getReadModel()` throws, because a document/chunk corpus carries no structured records for the planner |
+| `RETRIEVAL_BACKEND` set to anything else                                | `resolveBackend()` throws naming the three valid values                                                                                       |
+| Azure Maps key absent                                                   | Trip-map App renders a schematic dots-and-routes fallback                                                                                     |
+| Python runtime or MCP server unreachable                                | `planTrip` returns a dependency error; the combined agent launcher starts `:3020` and `:3030` together                                        |
 
 ---
 
 ## 15. Citation index (follow the code)
 
-| Stage | File |
-|-------|------|
-| UI submit `/ask`, render menu + map | `capabilities/engagements/ui/src/index.tsx`, `.../config.ts` |
-| MCP-Apps host handshake | `capabilities/engagements/ui/src/implementation.ts` |
-| Orchestrator entry / HTTP routes | `capabilities/engagements/agent/src/main.ts` |
-| `planTrip`, `agentDecisionToPlanResult`, deterministic fallback | `capabilities/engagements/agent/src/orchestrator.ts` |
-| TypeScript governed-runtime client | `capabilities/engagements/agent/src/python-runtime.ts`, `.../tools.ts` |
-| Seed roster/topic grounding | `capabilities/engagements/agent/src/catalog.ts` |
-| Microsoft Agent Framework runtime | `capabilities/engagements/agent/engagements_agent/runtime.py` |
-| AGT policy, middleware, audit | `capabilities/engagements/agent/engagements_agent/governance.py`, `governance/policy.yaml` |
-| Governed MCP bridge | `capabilities/engagements/agent/engagements_agent/mcp_client.py` |
-| MCP server (stateless, per-request ctx) | `capabilities/engagements/mcp/engagements/src/main.ts`, `.../server.ts` |
-| Caller claims from headers/persona | `capabilities/engagements/mcp/engagements/src/context.ts` |
-| Tool handlers + `ui://trip-map` resource | `capabilities/engagements/mcp/engagements/src/tools.ts` |
-| Read-model backends (memory / search) | `capabilities/engagements/mcp/engagements/src/readmodel.ts` |
-| Security trim (filter + predicate) | `capabilities/engagements/mcp/engagements/src/retrieval/security.ts`, `.../personas.ts` |
-| Trim-first recall | `capabilities/engagements/mcp/engagements/src/retrieval/retrieval-index.ts`, `.../labels.ts` |
-| Ranking / route / ROI / weights | `capabilities/engagements/mcp/engagements/src/planner/{suggest,score,route,roi,distance,weights}.ts` |
+| Stage                                                           | File                                                                                                 |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| UI submit `/ask`, render menu + map                             | `capabilities/engagements/ui/src/index.tsx`, `.../config.ts`                                         |
+| MCP-Apps host handshake                                         | `capabilities/engagements/ui/src/implementation.ts`                                                  |
+| Orchestrator entry / HTTP routes                                | `capabilities/engagements/agent/src/main.ts`                                                         |
+| `planTrip`, `agentDecisionToPlanResult`, deterministic fallback | `capabilities/engagements/agent/src/orchestrator.ts`                                                 |
+| TypeScript governed-runtime client                              | `capabilities/engagements/agent/src/python-runtime.ts`, `.../tools.ts`                               |
+| Seed roster/topic grounding                                     | `capabilities/engagements/agent/src/catalog.ts`                                                      |
+| Microsoft Agent Framework runtime                               | `capabilities/engagements/agent/engagements_agent/runtime.py`                                        |
+| AGT policy, middleware, audit                                   | `capabilities/engagements/agent/engagements_agent/governance.py`, `governance/policy.yaml`           |
+| Governed MCP bridge                                             | `capabilities/engagements/agent/engagements_agent/mcp_client.py`                                     |
+| MCP server (stateless, fresh server per request)                | `capabilities/engagements/mcp/engagements/src/main.ts`, `.../server.ts`                              |
+| Tool handlers + `ui://trip-map` resource                        | `capabilities/engagements/mcp/engagements/src/tools.ts`                                              |
+| Read-model backends (memory / search / grounding)               | `capabilities/engagements/mcp/engagements/src/readmodel.ts`                                          |
+| Azure AI Search queries + provisioning                          | `capabilities/engagements/mcp/engagements/src/retrieval/search-backend.ts`                           |
+| Index-shape registry (JSON config)                              | `capabilities/engagements/mcp/engagements/index-schema.json`, `.../src/retrieval/index-schema.ts`    |
+| Recall + preference narrowing, provenance labels                | `capabilities/engagements/mcp/engagements/src/retrieval/retrieval-index.ts`, `.../labels.ts`         |
+| Ranking / route / ROI / weights                                 | `capabilities/engagements/mcp/engagements/src/planner/{suggest,score,route,roi,distance,weights}.ts` |
