@@ -110,11 +110,18 @@ Each index is described by its own JSON config file declaring `id`, `indexName`,
 code change. The declarations are also the query guard: a `filterable` mismatch fails with a readable
 message naming the field and the file, instead of an opaque Azure HTTP 400.
 
-| Var                         | Takes                                                                                                                                                                                    |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ENGAGEMENTS_INDEX_SCHEMAS` | Comma/semicolon-separated **file and/or directory** paths. A directory contributes every `*.json` in it, sorted by filename, **skipping `*.example.json`**. Wins over the singular form. |
-| `ENGAGEMENTS_INDEX_SCHEMA`  | One file (the original single-index knob).                                                                                                                                               |
-| _(neither set)_             | The packaged/checked-in `index-schema.json`.                                                                                                                                             |
+| Var                         | Takes                                                                                                                                                                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ENGAGEMENTS_INDEX_SCHEMAS` | Comma/semicolon-separated **file and/or directory** paths. A directory contributes every `*.json` in it, sorted by filename, **skipping `*.example.json`**. Wins over the singular form.                                                                                  |
+| `ENGAGEMENTS_INDEX_SCHEMA`  | One file (the original single-index knob).                                                                                                                                                                                                                                |
+| _(neither set)_             | The checked-in default for the backend: [`config/rag-index.json`](./config/rag-index.json) when `RETRIEVAL_BACKEND=grounding`, else [`index-schema.json`](./index-schema.json). Taken from the process working directory when a deployed copy is there, else from source. |
+
+**Grounding needs no path configuration.** `RETRIEVAL_BACKEND=grounding` serves exactly one index —
+the customer RAG corpus — so its default is `config/rag-index.json`, the single file to edit.
+`engagements-mcp.zip` packages that same file at `config/rag-index.json` beside the running process,
+so the identical declaration loads locally and on App Service. (Defaulting grounding to the
+structured `index-schema.json`, which carries no `mapping.grounding` block, would fail every
+grounded query.)
 
 Roles resolve **by content, not by order**:
 
@@ -123,13 +130,15 @@ Roles resolve **by content, not by order**:
   events may live in **different** indexes, one index may hold everything, or one index per kind.
 
 Validation rejects duplicate `id`s, more than one `mapping.grounding` block, the same record kind
-claimed by two declarations, and an empty registry — each error naming the offending files.
+claimed by two declarations, an `indexName` left as an unedited `<placeholder>`, and an empty
+registry — each error naming the offending files.
 
 Examples to copy: [`index-schema.json`](./index-schema.json) (the demo index),
 [`index-schema.structured.example.json`](./index-schema.structured.example.json) (a customer index of
 structured records with unknown field names), and
-[`index-schema.grounding.example.json`](./index-schema.grounding.example.json) (a plain
-document/chunk RAG index).
+[`index-schema.grounding.example.json`](./index-schema.grounding.example.json) (the annotated
+reference for a plain document/chunk RAG index — for an actual grounding deployment edit
+[`config/rag-index.json`](./config/rag-index.json) instead, since that is the one loaded by default).
 
 Two caveats worth knowing:
 

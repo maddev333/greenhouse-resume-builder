@@ -11,7 +11,8 @@
  *   npm run provision:search -w ... -- delete contact C4                                              # delete one record (demo beat)
  *
  * The index shapes come from the schema REGISTRY: ENGAGEMENTS_INDEX_SCHEMAS (files and/or
- * directories) wins, then ENGAGEMENTS_INDEX_SCHEMA (one file), then the packaged index-schema.json.
+ * directories) wins, then ENGAGEMENTS_INDEX_SCHEMA (one file), then the checked-in default for the
+ * backend — config/rag-index.json under RETRIEVAL_BACKEND=grounding, else index-schema.json.
  *
  * Auth: uses AZURE_SEARCH_API_KEY when set (see repo-root .env), else DefaultAzureCredential (az login).
  */

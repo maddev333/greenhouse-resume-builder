@@ -33,7 +33,12 @@
     "to reshape it and `sync` would push demo seed records into it."
   ],
   "id": "customer-records",
-  "indexName": "<customer-records-index-name>",
+
+  "//indexName": [
+    "A SAMPLE name - replace it with the real index name. An unedited `<placeholder>` here is",
+    "rejected at load rather than sent to Azure as a literal index name."
+  ],
+  "indexName": "customer-records-index",
 
   "//fields": [
     "Describes the index EXACTLY as it exists in Azure. `filterable`/`searchable` are checked here",

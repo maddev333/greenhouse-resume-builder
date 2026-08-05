@@ -2,6 +2,10 @@
   "//": [
     "EXAMPLE: a plain document/chunk RAG index (Option B - grounding only).",
     "",
+    "For a normal grounding deployment you do NOT need this file: edit config/rag-index.json, which",
+    "RETRIEVAL_BACKEND=grounding loads by default. This copy stays as the annotated reference and",
+    "as the fixture the grounding tests point at.",
+    "",
     "These field names match what Azure AI Search's 'Import and vectorize data' wizard produces.",
     "Change them to match the customer index, then point at this file:",
     "  ENGAGEMENTS_INDEX_SCHEMA=./capabilities/engagements/mcp/engagements/index-schema.grounding.example.json",
@@ -27,7 +31,12 @@
     "to reshape it and `sync` would push demo records into it. `validate` is offline and safe."
   ],
   "id": "grounding",
-  "indexName": "<customer-index-name>",
+
+  "//indexName": [
+    "A SAMPLE name - replace it with the real index name. An unedited `<placeholder>` here is",
+    "rejected at load rather than sent to Azure as a literal index name."
+  ],
+  "indexName": "customer-rag-index",
 
   "fields": [
     {

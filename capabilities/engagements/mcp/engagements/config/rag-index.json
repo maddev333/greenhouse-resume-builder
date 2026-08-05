@@ -1,13 +1,27 @@
 {
   "//": [
-    "Customer-editable declaration for an existing document/chunk Azure AI Search index.",
-    "This file is packaged into engagements-mcp.zip as config/rag-index.json.",
-    "Update indexName, fields, and mapping to match the deployed customer index.",
-    "Remove vector or semanticConfiguration when the index does not provide those features.",
-    "Never run provision:search ensure, sync, or reindex against a customer-owned index."
+    "THE grounding index. Customer-editable declaration for an existing document/chunk Azure AI",
+    "Search index. With RETRIEVAL_BACKEND=grounding this file is loaded BY DEFAULT - no",
+    "ENGAGEMENTS_INDEX_SCHEMA path is needed - both from the repo and from engagements-mcp.zip,",
+    "which packages it as config/rag-index.json next to the running process.",
+    "",
+    "Edit indexName and fields to match the deployed customer index. The field names below are what",
+    "Azure AI Search's 'Import and vectorize data' wizard produces; change them if yours differ.",
+    "Check it offline before any Azure call:",
+    "  npm run provision:search -w @greenhouse-resume-builder/cap-engagements-mcp-engagements -- validate",
+    "",
+    "Never run provision:search ensure, sync, or reindex against a customer-owned index - `ensure`",
+    "would reshape it and `sync` would push demo records into it."
   ],
   "id": "customer-rag",
+
+  "//indexName": [
+    "REQUIRED. The name of the existing index, exactly as it appears in the search service.",
+    "Left as the <placeholder> the server refuses to load this file, rather than sending the",
+    "placeholder to Azure and surfacing an opaque 404."
+  ],
   "indexName": "<customer-index-name>",
+
   "fields": [
     {
       "name": "chunk_id",
@@ -41,15 +55,37 @@
       "retrievable": false
     }
   ],
+
+  "//mapping": [
+    "No `entityType` block: this corpus holds text, not structured contact/event records, so it",
+    "cannot drive the deterministic trip planner. RETRIEVAL_BACKEND=grounding therefore registers",
+    "only the search_grounding tool, and nothing is read from engagement-intelligence/seed."
+  ],
   "mapping": {
     "key": "chunk_id",
+
+    "//grounding": [
+      "content  REQUIRED, must be `searchable` - the passage text an answer is grounded in.",
+      "title    optional citation label.",
+      "url      optional citation link.",
+      "parentId optional, must be `filterable` - collapses many chunks of one document to its best",
+      "         passage, so a long PDF cannot occupy every result slot.",
+      "vector   optional, must be Collection(Edm.Single) - turns recall hybrid (BM25 + kNN + RRF).",
+      "         The index needs a VECTORIZER on its vector profile, because queries pass raw text.",
+      "         Set it to null when the index has no vectors, or vectors but no vectorizer; recall",
+      "         then falls back to keyword search.",
+      "semanticConfiguration null here on purpose: naming one that does not exist on the index",
+      "         fails EVERY query with an HTTP 400. Set it to the index's semantic configuration",
+      "         (the wizard names it <index-name>-semantic-configuration) to add the L2 reranker.",
+      "         Requires Basic tier or above."
+    ],
     "grounding": {
       "content": "chunk",
       "title": "title",
       "url": "url",
       "parentId": "parent_id",
       "vector": "text_vector",
-      "semanticConfiguration": "default"
+      "semanticConfiguration": null
     }
   }
 }

@@ -9,13 +9,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   declarationForKind,
   entityKinds,
   groundingDeclaration,
+  indexSchemaPath,
   indexSchemaPaths,
   loadIndexRegistry,
   reloadIndexRegistry,
@@ -133,6 +134,29 @@ function withFixture(
   }
 }
 
+/** Run `fn` with the given variables set, restoring them AND the cached registry afterwards. */
+function withEnv(
+  vars: Record<string, string | undefined>,
+  fn: () => void,
+): void {
+  const saved = new Map(
+    Object.keys(vars).map((k) => [k, process.env[k]] as const),
+  );
+  for (const [k, v] of Object.entries(vars)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    fn();
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    reloadIndexRegistry();
+  }
+}
+
 // ── Discovery ──────────────────────────────────────────────────────────────
 
 test("a directory contributes every declaration, ordered by filename", () => {
@@ -190,6 +214,78 @@ test("a registry with no config files is rejected", () => {
       /No index schema declarations found/,
     );
   });
+});
+
+test("grounding mode defaults to the ONE checked-in RAG declaration", () => {
+  // Grounding answers from a single customer corpus. Defaulting it to the structured
+  // `index-schema.json` (no `mapping.grounding`) would fail every query, so the default is
+  // config/rag-index.json and no path has to be configured locally or on App Service.
+  withEnv(
+    {
+      RETRIEVAL_BACKEND: "grounding",
+      ENGAGEMENTS_INDEX_SCHEMA: undefined,
+      ENGAGEMENTS_INDEX_SCHEMAS: undefined,
+    },
+    () => {
+      const paths = indexSchemaPaths();
+      assert.equal(paths.length, 1, "grounding reads exactly one declaration");
+      assert.equal(paths[0], indexSchemaPath());
+      assert.equal(
+        paths[0].endsWith(join("config", "rag-index.json")),
+        true,
+        `expected the checked-in RAG config, got ${paths[0]}`,
+      );
+
+      const declaration = JSON.parse(readFileSync(paths[0], "utf8"));
+      assert.equal(
+        declaration.mapping.grounding.content,
+        "chunk",
+        "the default grounding declaration must map passage text",
+      );
+      assert.equal(
+        declaration.mapping.entityType,
+        undefined,
+        "a RAG corpus carries no structured planner records",
+      );
+    },
+  );
+});
+
+test("grounding mode still honours an explicit ENGAGEMENTS_INDEX_SCHEMA", () => {
+  const dir = fixtureDir({ "other-rag.json": RAG });
+  try {
+    withEnv(
+      {
+        RETRIEVAL_BACKEND: "grounding",
+        ENGAGEMENTS_INDEX_SCHEMA: join(dir, "other-rag.json"),
+        ENGAGEMENTS_INDEX_SCHEMAS: undefined,
+      },
+      () => {
+        assert.equal(indexSchemaPath(), join(dir, "other-rag.json"));
+        assert.equal(reloadIndexRegistry()[0].id, "rag");
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unedited <placeholder> indexName is rejected, naming the file", () => {
+  // Otherwise the placeholder is sent to Azure verbatim and comes back as an opaque 404.
+  withFixture(
+    { "a-rag.json": { ...RAG, indexName: "<customer-index-name>" } },
+    (dir) => {
+      assert.throws(
+        () => reloadIndexRegistry(),
+        (err: unknown) => {
+          const msg = (err as Error).message;
+          assert.match(msg, /still the placeholder "<customer-index-name>"/);
+          assert.ok(msg.includes(join(dir, "a-rag.json")), "names the file");
+          return true;
+        },
+      );
+    },
+  );
 });
 
 // ── Per-kind / grounding resolution ────────────────────────────────────────

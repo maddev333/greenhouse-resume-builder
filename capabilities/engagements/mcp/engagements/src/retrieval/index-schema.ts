@@ -23,7 +23,10 @@
  *      order. Files whose basename ends with `.example.json` are skipped, so the shipped examples
  *      are never loaded by accident.
  *   2. `ENGAGEMENTS_INDEX_SCHEMA` — a single file (the original single-index knob).
- *   3. The packaged/source `index-schema.json`.
+ *   3. The checked-in default for the backend: `config/rag-index.json` when
+ *      `RETRIEVAL_BACKEND=grounding` (the one customer RAG corpus), else `index-schema.json` (the
+ *      structured planner records). Each is taken from the process working directory when a
+ *      deployed copy is there, else from source.
  *
  * Pointing at a customer's EXISTING index therefore means describing that index in a config file —
  * not re-provisioning over it.
@@ -37,24 +40,44 @@ import type { SearchField, SearchIndex } from "@azure/search-documents";
 /** Shipped examples are documentation, not configuration — never auto-loaded from a directory. */
 const EXAMPLE_SUFFIX = ".example.json";
 
-/** The checked-in declaration, resolved relative to this module. */
-function sourceSchemaPath(): string {
-  return resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    "../../index-schema.json",
-  );
+/** The structured-records declaration — the default for the planner (`RETRIEVAL_BACKEND=search`). */
+const RECORDS_CONFIG = "index-schema.json";
+
+/**
+ * The customer-editable RAG declaration — the default for `RETRIEVAL_BACKEND=grounding`. It is
+ * checked in at `config/rag-index.json` and packaged into engagements-mcp.zip at the same relative
+ * path, so the SAME file is found locally and on App Service with no path configuration.
+ */
+const RAG_CONFIG = join("config", "rag-index.json");
+
+/** A checked-in declaration, resolved relative to this module (project root is two levels up). */
+function sourceSchemaPath(file: string): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "../..", file);
+}
+
+/** The deployed copy sitting next to the process, else the checked-in one. */
+function defaultSchemaPath(file: string): string {
+  const packaged = resolve(process.cwd(), file);
+  return existsSync(packaged) ? packaged : sourceSchemaPath(file);
 }
 
 /**
  * Location of the single-file declaration (`ENGAGEMENTS_INDEX_SCHEMA` wins, then packaged, then
  * source). Every path is resolved lazily on each call so the environment variable AND the working
  * directory are honoured whenever they are set, not just at import.
+ *
+ * The default depends on the backend, because the two serve different indexes: `grounding` answers
+ * from the ONE customer RAG corpus (`config/rag-index.json`), while `search`/`memory` describe the
+ * structured planner records (`index-schema.json`). Defaulting grounding to the structured
+ * declaration — which carries no `mapping.grounding` block — would fail every grounded query, so
+ * grounding gets its own default instead of demanding a path in two more places.
  */
 export function indexSchemaPath(): string {
   const override = process.env.ENGAGEMENTS_INDEX_SCHEMA?.trim();
   if (override) return resolve(override);
-  const packaged = resolve(process.cwd(), "index-schema.json");
-  return existsSync(packaged) ? packaged : sourceSchemaPath();
+  const grounding =
+    process.env.RETRIEVAL_BACKEND?.trim().toLowerCase() === "grounding";
+  return defaultSchemaPath(grounding ? RAG_CONFIG : RECORDS_CONFIG);
 }
 
 /** Expand one `ENGAGEMENTS_INDEX_SCHEMAS` entry (a file or a directory) into config file paths. */
@@ -206,6 +229,17 @@ function validate(raw: unknown, path: string): IndexSchema {
     id: parsed.data.id ?? basename(path, extname(path)),
     sourcePath: path,
   };
+  // `<placeholder>` is the style the shipped declarations use for values only the customer knows.
+  // Left unedited it reaches Azure as a literal index name and returns an opaque 404, so name the
+  // file and the field here instead.
+  if (/[<>]/.test(schema.indexName)) {
+    fail(
+      `Invalid index schema: "indexName" is still the placeholder "${schema.indexName}". Set it to ` +
+        "the name of the Azure AI Search index this declaration describes.",
+      path,
+    );
+  }
+
   const byName = new Map(schema.fields.map((f) => [f.name, f]));
   if (byName.size !== schema.fields.length) {
     fail("Invalid index schema: duplicate field names in `fields`.", path);
