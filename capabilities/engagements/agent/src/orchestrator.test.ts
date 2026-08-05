@@ -653,8 +653,10 @@ test(
       // The seed roster/topics describe DEMO people; against a customer index they are exactly the
       // "grounded" catalog a model reaches for when the real tools come back empty.
       assert.doesNotMatch(prompt, /Whitfield/);
+      assert.doesNotMatch(prompt, /\bL1\b/);
       assert.doesNotMatch(prompt, /Leader roster/);
       assert.doesNotMatch(prompt, /Topic catalog/);
+      assert.doesNotMatch(prompt, /Emergency fallback leader/);
       assert.match(prompt, /NO local leader roster or topic catalog/);
       assert.match(prompt, /MUST come\nfrom a tool result in THIS turn/);
       assert.ok(prompt.includes("You own intent classification"));

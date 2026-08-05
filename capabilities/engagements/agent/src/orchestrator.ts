@@ -182,15 +182,16 @@ const DEFAULT_TOPN = (): number => {
 };
 
 export function buildSystemPrompt(
-  defaultLeaderId: string,
+  defaultLeaderId: string | null,
   topN: number,
   groundingAvailable = false,
 ): string {
   const window = defaultWindow();
+  const seedCatalog = isSeedCatalog();
   // The roster/topic catalogs come from the demo seed. They are only legitimate grounding when the
   // capability serves that same seed; against a customer index they are demo records the model would
   // otherwise present as real people.
-  const catalogs = isSeedCatalog()
+  const catalogs = seedCatalog
     ? [
         "Leader roster (always use an id; engagement categories constrain who is a credible recommendation):",
         rosterForPrompt(),
@@ -213,7 +214,11 @@ export function buildSystemPrompt(
     "provided tools and any grounded catalogs in this prompt.",
     "",
     `Default planning window: ${window.start} through ${window.end}.`,
-    `Emergency fallback leader: "${defaultLeaderId}" (do not silently use it when a material leader choice is missing).`,
+    ...(seedCatalog && defaultLeaderId
+      ? [
+          `Emergency fallback leader: "${defaultLeaderId}" (do not silently use it when a material leader choice is missing).`,
+        ]
+      : []),
     "",
     ...catalogs,
     "",
@@ -2059,7 +2064,7 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
           system: groundingOnly
             ? buildGroundingSystemPrompt()
             : buildSystemPrompt(
-                resolveDefaultLeaderId(),
+                isSeedCatalog() ? resolveDefaultLeaderId() : null,
                 topN,
                 capability.tools.includes(GROUNDING_TOOL_NAME),
               ),
