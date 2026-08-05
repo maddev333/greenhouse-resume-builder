@@ -68,6 +68,47 @@ Open **http://localhost:8080**. Press `Ctrl+C` to stop.
 Full run details, the manual three-terminal path, config, and troubleshooting live in
 [`capabilities/engagements/ui/README.md`](capabilities/engagements/ui/README.md).
 
+## Consuming this repo as an upstream
+
+If you fork this repo to build on top of it, set it up so upstream releases replay **under** your
+work instead of colliding with it. Merge conflicts come from overlapping edits, not from the pull
+command — so keep `main` a read-only mirror and do your work on a branch.
+
+```powershell
+git remote add upstream https://github.com/maddev333/greenhouse-resume-builder
+git config pull.rebase true
+git config rerere.enabled true     # auto-reuses past conflict resolutions
+
+# never commit on main:
+git checkout main
+git fetch upstream
+git reset --hard upstream/main     # main is a read-only mirror
+git push origin main
+
+# your work lives on a branch that replays on top of upstream:
+git checkout customer/main
+git rebase upstream/main
+```
+
+Rebasing replays your commits on top of the new upstream history, so a conflict surfaces once per
+commit instead of accumulating into one large merge; `rerere` then auto-applies any resolution you
+have already made the next time the same hunk conflicts.
+
+To avoid conflicts entirely, **configure rather than edit**. Every customization point below lives
+outside the tracked tree, so upstream can change those files freely:
+
+| To change            | Do this — no tracked file is touched                               |
+| -------------------- | ------------------------------------------------------------------ |
+| Any setting / secret | Root `.env` (gitignored; copy from `.env.example`)                 |
+| Seed dataset         | `ENGAGEMENTS_SEED_DIR=<your-path>`                                 |
+| Governance policy    | `AGT_POLICY_PATH` (or `GOVERNANCE_POLICY_PATH`)                    |
+| Index declarations   | `ENGAGEMENTS_INDEX_SCHEMAS=<your-path>` — see the next section     |
+| New behavior         | A new folder under `capabilities/`, which upstream never writes to |
+
+Additive files in new directories cost nothing at merge time; edits to existing files cost you a
+conflict on every release. If you need behavior the repo does not expose, ask for an extension
+point upstream rather than patching in place.
+
 ## Onboarding a customer's own data
 
 The Quickstart above runs on the bundled demo seed. To point the stack at a customer's **existing**
@@ -181,7 +222,12 @@ structured contact/event records required by the trip planner.
      "id": "customer-rag",
      "indexName": "customer-documents",
      "fields": [
-       { "name": "chunk_id", "type": "Edm.String", "key": true, "filterable": true },
+       {
+         "name": "chunk_id",
+         "type": "Edm.String",
+         "key": true,
+         "filterable": true
+       },
        { "name": "parent_id", "type": "Edm.String", "filterable": true },
        { "name": "chunk", "type": "Edm.String", "searchable": true },
        { "name": "title", "type": "Edm.String", "searchable": true },
