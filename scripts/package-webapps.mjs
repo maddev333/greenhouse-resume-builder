@@ -32,6 +32,11 @@ const MCP_PROJECT_DIR = join(
   "mcp",
   "engagements",
 );
+const MCP_RAG_INDEX_CONFIG = join(
+  MCP_PROJECT_DIR,
+  "config",
+  "rag-index.json",
+);
 const UI_PROJECT_DIR = join(REPO_ROOT, "capabilities", "engagements", "ui");
 const SHARED_ENTRY = join(REPO_ROOT, "shared", "src", "index.ts");
 const ZIP_DATE = new Date("2000-01-01T00:00:00.000Z");
@@ -261,6 +266,8 @@ async function buildMcp(stage) {
     join(MCP_PROJECT_DIR, "dist"),
     join(stage, "capabilities", "engagements", "mcp", "engagements", "dist"),
   );
+  await mkdir(join(stage, "config"), { recursive: true });
+  await copyFile(MCP_RAG_INDEX_CONFIG, join(stage, "config", "rag-index.json"));
   await writeJson(join(stage, "package.json"), {
     name: "engagements-mcp-webapp",
     private: true,
@@ -396,6 +403,7 @@ async function packageArtifact(name) {
     await buildMcp(stage);
     await requireFiles(stage, [
       "package.json",
+      "config/rag-index.json",
       "capabilities/engagements/mcp/engagements/src/main.mjs",
       "capabilities/engagements/mcp/engagements/dist/trip-map.html",
       "engagement-intelligence/seed/config.json",

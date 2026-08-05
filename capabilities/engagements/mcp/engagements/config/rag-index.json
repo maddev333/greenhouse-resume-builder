@@ -1,0 +1,55 @@
+{
+  "//": [
+    "Customer-editable declaration for an existing document/chunk Azure AI Search index.",
+    "This file is packaged into engagements-mcp.zip as config/rag-index.json.",
+    "Update indexName, fields, and mapping to match the deployed customer index.",
+    "Remove vector or semanticConfiguration when the index does not provide those features.",
+    "Never run provision:search ensure, sync, or reindex against a customer-owned index."
+  ],
+  "id": "customer-rag",
+  "indexName": "<customer-index-name>",
+  "fields": [
+    {
+      "name": "chunk_id",
+      "type": "Edm.String",
+      "key": true,
+      "filterable": true,
+      "sortable": true
+    },
+    {
+      "name": "parent_id",
+      "type": "Edm.String",
+      "filterable": true
+    },
+    {
+      "name": "chunk",
+      "type": "Edm.String",
+      "searchable": true
+    },
+    {
+      "name": "title",
+      "type": "Edm.String",
+      "searchable": true
+    },
+    {
+      "name": "url",
+      "type": "Edm.String"
+    },
+    {
+      "name": "text_vector",
+      "type": "Collection(Edm.Single)",
+      "retrievable": false
+    }
+  ],
+  "mapping": {
+    "key": "chunk_id",
+    "grounding": {
+      "content": "chunk",
+      "title": "title",
+      "url": "url",
+      "parentId": "parent_id",
+      "vector": "text_vector",
+      "semanticConfiguration": "default"
+    }
+  }
+}

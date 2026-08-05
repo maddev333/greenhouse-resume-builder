@@ -205,17 +205,18 @@ structured contact/event records required by the trip planner.
    engagements MCP server the **Search Index Data Reader** role. For local development, run
    `az login`; alternatively, set `AZURE_SEARCH_API_KEY` to a query key.
 
-3. **Copy the grounding declaration** to a customer-specific path and rename it so it does not end in
-   `.example.json`:
+3. **Edit the checked-in grounding declaration:**
 
-   ```powershell
-   Copy-Item `
-     capabilities\engagements\mcp\engagements\index-schema.grounding.example.json `
-     C:\customer-config\rag-index.json
+   ```text
+   capabilities\engagements\mcp\engagements\config\rag-index.json
    ```
 
-4. **Describe the real index fields** in `rag-index.json`. Replace the example names with the names
-   and capabilities from the existing index:
+   This file is included in `engagements-mcp.zip` as `config/rag-index.json`, so changes are carried
+   by the next package and redeploy. It contains no credentials and is safe to keep in source
+   control.
+
+4. **Describe the real index fields** in that file. Replace the example names with the names and
+   capabilities from the existing index:
 
    ```json
    {
@@ -263,7 +264,7 @@ structured contact/event records required by the trip planner.
    RETRIEVAL_BACKEND=grounding
    AZURE_SEARCH_SERVICE=https://<search-service>.search.windows.net
    AZURE_SEARCH_API_KEY=
-   ENGAGEMENTS_INDEX_SCHEMA=C:\customer-config\rag-index.json
+   ENGAGEMENTS_INDEX_SCHEMA=<repo-root>\capabilities\engagements\mcp\engagements\config\rag-index.json
 
    AZURE_OPENAI_ENDPOINT=https://<openai-resource>.openai.azure.com/
    AZURE_OPENAI_DEPLOYMENT=<chat-deployment-name>
@@ -293,9 +294,14 @@ structured contact/event records required by the trip planner.
    `search_grounding`, retrieves ranked passages, collapses duplicate chunks by parent document, and
    generates a cited answer from those results.
 
-8. **Deploy the same configuration to Azure.** Add the environment values as App Service application
-   settings. Deploy or mount `rag-index.json` where the MCP Web App can read it, then set
-   `ENGAGEMENTS_INDEX_SCHEMA` to that file's absolute runtime path.
+8. **Deploy the same configuration to Azure.** Rebuild and deploy `engagements-mcp.zip`, then add this
+   App Service application setting to the engagements MCP Web App:
+
+   ```text
+   ENGAGEMENTS_INDEX_SCHEMA=/home/site/wwwroot/config/rag-index.json
+   ```
+
+   The file is already in the ZIP; no storage mount or separate upload is required.
 
 > **Production security:** grounding currently applies no tenant, group, ACL, or sensitivity trim.
 > Every caller can search the entire configured index. Add server-side authorization filtering before
@@ -328,9 +334,10 @@ App Service build automation with `SCM_DO_BUILD_DURING_DEPLOYMENT=true` so Oryx 
 dependencies during ZIP deployment. Configure the Python Web App startup command as
 `bash startup.sh`. App settings and `.env` files are deliberately not included in any archive.
 
-`engagements-mcp.zip` does **not** carry an index schema config file. That only matters for
-`RETRIEVAL_BACKEND=search` / `grounding`, which need `ENGAGEMENTS_INDEX_SCHEMA(S)` pointed at an
-absolute path anyway; the default `memory` backend never loads the registry.
+`engagements-mcp.zip` carries the editable grounding declaration at `config/rag-index.json`. For a
+grounding deployment, set `ENGAGEMENTS_INDEX_SCHEMA=/home/site/wwwroot/config/rag-index.json` on the
+MCP Web App. Other customer index declarations can still be supplied through
+`ENGAGEMENTS_INDEX_SCHEMA(S)`; the default `memory` backend never loads the registry.
 
 Build only one artifact with `npm run package:webapp:gateway`,
 `npm run package:webapp:runtime`, `npm run package:webapp:mcp`, or
