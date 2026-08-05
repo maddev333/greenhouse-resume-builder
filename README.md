@@ -147,6 +147,114 @@ Azure AI Search index instead:
    orchestrator detects the corpus from the registered tools, answers through `search_grounding` with
    citations, and requires Azure OpenAI (there is no deterministic planner for a document corpus).
 
+### Step-by-step: use an existing RAG index for grounding
+
+Use this path when the customer's Azure AI Search index contains document chunks rather than the
+structured contact/event records required by the trip planner.
+
+1. **Confirm the index has the fields needed for grounding.** It needs a unique key and a searchable
+   passage-text field. Citation metadata (`title`, `url`, and a filterable parent-document id) is
+   optional but recommended. A vector field is optional; without one, grounding uses keyword search.
+
+   Hybrid search additionally requires the vector field to use an Azure AI Search vector profile
+   with a vectorizer that accepts text queries. Semantic ranking requires an existing semantic
+   configuration.
+
+2. **Grant the application read access.** Prefer managed identity and assign the identity running the
+   engagements MCP server the **Search Index Data Reader** role. For local development, run
+   `az login`; alternatively, set `AZURE_SEARCH_API_KEY` to a query key.
+
+3. **Copy the grounding declaration** to a customer-specific path and rename it so it does not end in
+   `.example.json`:
+
+   ```powershell
+   Copy-Item `
+     capabilities\engagements\mcp\engagements\index-schema.grounding.example.json `
+     C:\customer-config\rag-index.json
+   ```
+
+4. **Describe the real index fields** in `rag-index.json`. Replace the example names with the names
+   and capabilities from the existing index:
+
+   ```json
+   {
+     "id": "customer-rag",
+     "indexName": "customer-documents",
+     "fields": [
+       { "name": "chunk_id", "type": "Edm.String", "key": true, "filterable": true },
+       { "name": "parent_id", "type": "Edm.String", "filterable": true },
+       { "name": "chunk", "type": "Edm.String", "searchable": true },
+       { "name": "title", "type": "Edm.String", "searchable": true },
+       { "name": "url", "type": "Edm.String" },
+       {
+         "name": "text_vector",
+         "type": "Collection(Edm.Single)",
+         "retrievable": false
+       }
+     ],
+     "mapping": {
+       "key": "chunk_id",
+       "grounding": {
+         "content": "chunk",
+         "title": "title",
+         "url": "url",
+         "parentId": "parent_id",
+         "vector": "text_vector",
+         "semanticConfiguration": "default"
+       }
+     }
+   }
+   ```
+
+   Remove `vector` when the index has no compatible vector field. Remove
+   `semanticConfiguration` when semantic ranking is not configured. The `content` field must be
+   searchable, and `parentId` must be filterable when supplied.
+
+5. **Configure the repo-root `.env`.** Grounding mode requires Azure OpenAI because a document corpus
+   has no deterministic planning path:
+
+   ```dotenv
+   RETRIEVAL_BACKEND=grounding
+   AZURE_SEARCH_SERVICE=https://<search-service>.search.windows.net
+   AZURE_SEARCH_API_KEY=
+   ENGAGEMENTS_INDEX_SCHEMA=C:\customer-config\rag-index.json
+
+   AZURE_OPENAI_ENDPOINT=https://<openai-resource>.openai.azure.com/
+   AZURE_OPENAI_DEPLOYMENT=<chat-deployment-name>
+   AZURE_OPENAI_API_VERSION=2024-10-21
+   AZURE_OPENAI_API_KEY=
+   ```
+
+   Blank API-key values select `DefaultAzureCredential`, which uses `az login` locally and managed
+   identity when deployed to Azure.
+
+6. **Validate the declaration without calling Azure:**
+
+   ```powershell
+   npm run provision:search -w @greenhouse-resume-builder/cap-engagements-mcp-engagements -- validate
+   ```
+
+   Confirm that the reported index name and grounding field match the customer index. Do not run
+   `ensure`, `sync`, or `reindex` against an existing customer index.
+
+7. **Start the application** and open the chat host:
+
+   ```powershell
+   npm run demo -w @greenhouse-resume-builder/cap-engagements-ui
+   ```
+
+   Open `http://localhost:8080` and ask a question about the indexed documents. The agent calls
+   `search_grounding`, retrieves ranked passages, collapses duplicate chunks by parent document, and
+   generates a cited answer from those results.
+
+8. **Deploy the same configuration to Azure.** Add the environment values as App Service application
+   settings. Deploy or mount `rag-index.json` where the MCP Web App can read it, then set
+   `ENGAGEMENTS_INDEX_SCHEMA` to that file's absolute runtime path.
+
+> **Production security:** grounding currently applies no tenant, group, ACL, or sensitivity trim.
+> Every caller can search the entire configured index. Add server-side authorization filtering before
+> exposing an index containing restricted customer data.
+
 Details of the registry, its validation rules and the two caveats worth knowing are in
 [`capabilities/engagements/mcp/engagements/README.md`](capabilities/engagements/mcp/engagements/README.md).
 
