@@ -42,20 +42,16 @@ export interface ToolClient {
   close: () => Promise<void>;
 }
 
-/** Open a governed Python tool gateway bound to one demo persona. */
-export async function makeToolClient(
-  url: string,
-  persona: string,
-): Promise<ToolClient> {
+/** Open a governed Python tool gateway. */
+export async function makeToolClient(url: string): Promise<ToolClient> {
   const discoveryMcpUrl = DISCOVERY_URL();
-  await discoverGovernedTools({ mcpUrl: url, persona, discoveryMcpUrl });
+  await discoverGovernedTools({ mcpUrl: url, discoveryMcpUrl });
   const captured: CapturedCall[] = [];
   const traceId = randomUUID();
 
   const callTool = async (name: string, args: any): Promise<unknown> => {
     const call = await callGovernedTool({
       mcpUrl: url,
-      persona,
       traceId,
       discoveryMcpUrl,
       name,

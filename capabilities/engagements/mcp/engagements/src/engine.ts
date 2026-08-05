@@ -9,11 +9,11 @@
  * Everything else in this capability imports the engine ONLY from here, so the wiring lives in one file.
  */
 
-import * as plannerNs from './planner/index.js';
-import * as retrievalNs from './retrieval/index.js';
+import * as plannerNs from "./planner/index.js";
+import * as retrievalNs from "./retrieval/index.js";
 
-type PlannerNs = typeof import('./planner/index.js');
-type RetrievalNs = typeof import('./retrieval/index.js');
+type PlannerNs = typeof import("./planner/index.js");
+type RetrievalNs = typeof import("./retrieval/index.js");
 
 const planner = plannerNs as unknown as PlannerNs;
 const retrieval = retrievalNs as unknown as RetrievalNs;
@@ -60,15 +60,33 @@ export const {
   SEED_DIR,
 } = planner;
 
-// ── Retrieval shim + security trim (values) ──────────────────────────────
+// ── Retrieval shim (values) ────────────────────────────────────
 export const {
   EngagementIndex,
-  buildEngagementSecurityFilter,
-  canReadSensitive,
   odataEscapeLiteral,
-  PERSONAS,
   applyLabels,
-  // Azure AI Search backend (M4) — the cloud swap-in behind the SAME TrimmedResult contract.
+  // Declarative index shapes (the index-schema REGISTRY) — drive provisioning + query guarding.
+  indexSchemaPath,
+  indexSchemaPaths,
+  loadIndexRegistry,
+  reloadIndexRegistry,
+  loadIndexSchema,
+  reloadIndexSchema,
+  groundingDeclaration,
+  declarationForKind,
+  ENTITY_KINDS,
+  indexName,
+  searchableFields,
+  filterableField,
+  payloadField,
+  entityKinds,
+  groundingMapping,
+  isGroundingConfigured,
+  isPlannerConfigured,
+  toSearchIndex,
+  // Grounded passage retrieval over a document/chunk RAG index.
+  searchGrounding,
+  // Azure AI Search backend (M4) — the cloud swap-in behind the SAME result contract.
   isSearchConfigured,
   ensureEngagementIndex,
   syncEngagementDocs,
@@ -77,6 +95,7 @@ export const {
   deleteEngagementDoc,
   searchEngagementContacts,
   searchEngagementEvents,
+  searchEngagementRecords,
 } = retrieval;
 
 // ── Planner engine (types) ───────────────────────────────────────────────
@@ -91,23 +110,27 @@ export type {
   RouteLeg,
   RoiResult,
   ScoreFactors,
-} from './planner/types.js';
-export type { AreaInput, ResolvedArea } from './planner/area.js';
-export type { TopicInArea, TopicsInAreaInput } from './planner/topics.js';
+} from "./planner/types.js";
+export type { AreaInput, ResolvedArea } from "./planner/area.js";
+export type { TopicInArea, TopicsInAreaInput } from "./planner/topics.js";
 export type {
   StaleContact,
   StaleContactsInput,
   AreaEvent,
   AreaEventStatus,
   EventsInAreaInput,
-} from './planner/area-intel.js';
-export type { LeaderOption, LeaderFactors, SuggestLeadersInput } from './planner/leaders.js';
+} from "./planner/area-intel.js";
+export type {
+  LeaderOption,
+  LeaderFactors,
+  SuggestLeadersInput,
+} from "./planner/leaders.js";
 export type {
   NearbyLeader,
   NearbyLeadersInput,
   NearbyReason,
   NearbyReasonType,
-} from './planner/co-location.js';
+} from "./planner/co-location.js";
 export type {
   DurationEstimate,
   DurationOption,
@@ -118,30 +141,27 @@ export type {
   AreaCandidatesInput,
   PlanOptionsInput,
   PlanOptionsResult,
-} from './planner/plan.js';
-export type { RadiusPlanInput, RadiusPlanResult } from './planner/radius.js';
-export type { CategoryCoverage, CategoryContactRef } from './planner/categories.js';
-export type { Dataset } from './planner/seed-loader.js';
-export type { PlannerWeights } from './planner/weights.js';
+} from "./planner/plan.js";
+export type { RadiusPlanInput, RadiusPlanResult } from "./planner/radius.js";
+export type {
+  CategoryCoverage,
+  CategoryContactRef,
+} from "./planner/categories.js";
+export type { Dataset } from "./planner/seed-loader.js";
+export type { PlannerWeights } from "./planner/weights.js";
 
-// ── Retrieval shim + security trim (types) ───────────────────────────────
+// ── Retrieval shim (types) ────────────────────────────────────
+export type { ContactQuery, EventQuery } from "./retrieval/retrieval-index.js";
+export type { Labeled, LabeledDataset, EntityType } from "./retrieval/types.js";
 export type {
-  SecurityContext,
-  SecurityDecision,
-  RetrievalNarrowing,
-} from './retrieval/security.js';
-export type {
-  ContactQuery,
-  EventQuery,
-} from './retrieval/retrieval-index.js';
-export type {
-  TrimmedResult,
-  Labeled,
-  LabeledDataset,
-  EntityType,
-  Sensitivity,
-} from './retrieval/types.js';
-export type { PersonaName } from './retrieval/personas.js';
+  IndexSchema,
+  IndexFieldDeclaration,
+  IndexFieldType,
+  IndexMapping,
+  IndexEntityKind,
+  FieldRole,
+} from "./retrieval/index-schema.js";
+export type { GroundingHit, GroundingQuery } from "./retrieval/grounding.js";
 
 // ── Canonical domain schema (types) — one source, re-exported for the tools ──
 export type {
@@ -155,11 +175,11 @@ export type {
   GeoPoint,
   DateRange,
   EngagementCategory,
-} from '@greenhouse-resume-builder/shared';
+} from "@greenhouse-resume-builder/shared";
 
 // ── Engagement-category taxonomy (values) — audience roll-up used by the tools ──
 export {
   categoryForSector,
   CATEGORY_LABEL,
   ENGAGEMENT_CATEGORIES,
-} from '@greenhouse-resume-builder/shared';
+} from "@greenhouse-resume-builder/shared";

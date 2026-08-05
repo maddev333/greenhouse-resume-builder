@@ -1,0 +1,78 @@
+{
+  "//": [
+    "EXAMPLE: a plain document/chunk RAG index (Option B - grounding only).",
+    "",
+    "These field names match what Azure AI Search's 'Import and vectorize data' wizard produces.",
+    "Change them to match the customer index, then point at this file:",
+    "  ENGAGEMENTS_INDEX_SCHEMA=./capabilities/engagements/mcp/engagements/index-schema.grounding.example.json",
+    "  RETRIEVAL_BACKEND=grounding",
+    "",
+    "Or load it alongside a structured-records declaration (see index-schema.structured.example.json):",
+    "  ENGAGEMENTS_INDEX_SCHEMAS=C:\\path\\to\\index-config-dir",
+    "  RETRIEVAL_BACKEND=search",
+    "Exactly ONE declaration in the registry may carry `mapping.grounding` - it is the corpus the",
+    "`search_grounding` tool answers questions from.",
+    "",
+    "NOTE files named *.example.json are SKIPPED when a directory is expanded, so copy this file to",
+    "a new name (e.g. rag-index.json) before dropping it into a config directory.",
+    "",
+    "Check it before running anything against Azure:",
+    "  npm run provision:search -w @greenhouse-resume-builder/cap-engagements-mcp-engagements -- validate",
+    "",
+    "NOTE there is no `mapping.entityType` and no `mapping.payload`. This corpus holds text, not",
+    "structured contact/event/leader records, so on its own it cannot drive the deterministic trip",
+    "planner and only the `search_grounding` tool is registered. NOTHING is read from the demo seed.",
+    "",
+    "NEVER run `provision:search ensure|sync|reindex` against a customer index - `ensure` would try",
+    "to reshape it and `sync` would push demo records into it. `validate` is offline and safe."
+  ],
+  "id": "grounding",
+  "indexName": "<customer-index-name>",
+
+  "fields": [
+    {
+      "name": "chunk_id",
+      "type": "Edm.String",
+      "key": true,
+      "filterable": true,
+      "sortable": true
+    },
+    { "name": "parent_id", "type": "Edm.String", "filterable": true },
+    { "name": "chunk", "type": "Edm.String", "searchable": true },
+    {
+      "name": "title",
+      "type": "Edm.String",
+      "searchable": true,
+      "filterable": true
+    },
+    { "name": "url", "type": "Edm.String" },
+    {
+      "name": "text_vector",
+      "type": "Collection(Edm.Single)",
+      "retrievable": false
+    }
+  ],
+
+  "mapping": {
+    "key": "chunk_id",
+
+    "//grounding": [
+      "content  REQUIRED, must be `searchable` - the passage text an answer is grounded in.",
+      "title    optional citation label.",
+      "url      optional citation link.",
+      "parentId optional, must be `filterable` - collapses many chunks of one document to its best",
+      "         passage, so a long PDF cannot occupy every result slot.",
+      "vector   optional, must be Collection(Edm.Single) - turns recall hybrid (BM25 + kNN + RRF).",
+      "         The index needs a vectorizer on its vector profile so queries can pass raw text.",
+      "semanticConfiguration optional - adds the semantic L2 reranker. Requires Basic tier or above."
+    ],
+    "grounding": {
+      "content": "chunk",
+      "title": "title",
+      "url": "url",
+      "parentId": "parent_id",
+      "vector": "text_vector",
+      "semanticConfiguration": "default"
+    }
+  }
+}

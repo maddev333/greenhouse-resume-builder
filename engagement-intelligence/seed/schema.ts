@@ -12,16 +12,15 @@
  * (source of record) and indexed into one Azure AI Search index — no Postgres.
  *
  * ENVELOPE NOTE: each record carries an envelope the AI Search indexer maps to
- * filterable trim fields — `tenantId`, `source`, `aclGroups[]`, `sensitivity`
- * (plus `createdAt`/`updatedAt`) — baked into the blob (no separate relational loader).
- * The staged `*.json` here still carry only DOMAIN fields; the Day-1 data task bakes in
- * the envelope and writes one blob per record per source (see README.md).
+ * filterable fields — `source` (plus `createdAt`/`updatedAt`) — baked into the blob (no
+ * separate relational loader). The staged `*.json` here still carry only DOMAIN fields; the
+ * Day-1 data task bakes in the envelope and writes one blob per record per source (see README.md).
  */
 
 // ── Shared scalars ──────────────────────────────────────────────────────
 
-export type Domain = 'technical' | 'non-technical';
-export type Level = 'L1' | 'L2' | 'L3' | 'L4';
+export type Domain = "technical" | "non-technical";
+export type Level = "L1" | "L2" | "L3" | "L4";
 
 /**
  * Coarse entity sector for a {@link Contact} — powers the "meet this industry / academic / political
@@ -29,14 +28,14 @@ export type Level = 'L1' | 'L2' | 'L3' | 'L4';
  * `type` (individual/company/org), which is the legal form, not the sector.
  */
 export type Sector =
-  | 'industry' // defense primes, startups, commercial vendors
-  | 'academic' // universities, labs, FFRDCs, think tanks
-  | 'congressional' // Congress: member offices + HASC/SASC & appropriations committee staff
-  | 'political' // other legislative / policy / elected offices & staff
-  | 'army-internal' // internal Army: HQDA staff, ACOMs, PEOs, installations, RDECs/labs
-  | 'government' // other federal / state / local government
-  | 'nonprofit' // associations, NGOs, foundations
-  | 'international'; // foreign government / multinational / allied partners
+  | "industry" // defense primes, startups, commercial vendors
+  | "academic" // universities, labs, FFRDCs, think tanks
+  | "congressional" // Congress: member offices + HASC/SASC & appropriations committee staff
+  | "political" // other legislative / policy / elected offices & staff
+  | "army-internal" // internal Army: HQDA staff, ACOMs, PEOs, installations, RDECs/labs
+  | "government" // other federal / state / local government
+  | "nonprofit" // associations, NGOs, foundations
+  | "international"; // foreign government / multinational / allied partners
 
 /**
  * Coarse engagement CATEGORY — the four strategic stakeholder audiences a trip's options are reported
@@ -44,7 +43,12 @@ export type Sector =
  * {@link Sector}; the canonical mapping + `categoryForSector()` live in
  * `@greenhouse-resume-builder/shared` (engagements.ts), which is what runtime code imports.
  */
-export type EngagementCategory = 'congressional' | 'academia' | 'industry' | 'army-internal' | 'other';
+export type EngagementCategory =
+  | "congressional"
+  | "academia"
+  | "industry"
+  | "army-internal"
+  | "other";
 
 /** Pre-geocoded point. `lat/lng` are populated at ETL time by the Azure Maps geocoder. */
 export interface GeoPoint {
@@ -63,7 +67,6 @@ export interface DateRange {
 /** Loader-applied envelope (NOT present in the staged JSON). */
 export interface BaseEntity {
   id: string;
-  tenantId: string;
   createdAt: string; // ISO-8601
   updatedAt?: string; // ISO-8601
 }
@@ -97,7 +100,7 @@ export interface Topic extends BaseEntity {
 export interface Message extends BaseEntity {
   topicId: string;
   version: number;
-  status: 'draft' | 'approved';
+  status: "draft" | "approved";
   intendedPoints: string[];
   effectiveFrom?: string; // ISO date
   approvedBy?: string;
@@ -129,7 +132,7 @@ export interface Leader extends BaseEntity {
  */
 export interface Contact extends BaseEntity {
   name: string;
-  type: 'individual' | 'company' | 'org';
+  type: "individual" | "company" | "org";
   sector?: Sector; // coarse entity sector (industry/academic/political/…) — see {@link Sector}
   org?: string;
   domain: Domain;
@@ -139,7 +142,7 @@ export interface Contact extends BaseEntity {
   location: GeoPoint;
   relationshipOwnerLeaderIds: string[];
   strategicValue: number; // 1–5 (5 = enterprise priority)
-  status: 'active' | 'prospect';
+  status: "active" | "prospect";
   source?: string; // provenance, e.g. 'sharepoint:contacts' | 'exhibitor-directory:ausa-2026'
   lastInteractionDate?: string; // ISO date; ABSENT for prospects
   /**
@@ -154,7 +157,7 @@ export interface Contact extends BaseEntity {
 /** A travel anchor AND an attendee/exhibitor magnet (people/prospects gather here). */
 export interface Event extends BaseEntity {
   name: string;
-  type: 'conference' | 'convention' | 'function';
+  type: "conference" | "convention" | "function";
   location: GeoPoint;
   start: string; // ISO date
   end: string; // ISO date
@@ -173,7 +176,7 @@ export interface Engagement extends BaseEntity {
   intendedMessageId?: string; // snapshot of the approved message governing this meeting
   date: string; // ISO date (held date or window start)
   location?: GeoPoint;
-  status: 'scheduled' | 'held' | 'followup';
+  status: "scheduled" | "held" | "followup";
   tripId?: string;
   anchorEventId?: string;
   summary?: string;
@@ -192,7 +195,7 @@ export interface AfterActionNote extends BaseEntity {
   commitments?: string[];
   sentiment?: string;
   /** 'document-intelligence' when parsed live; 'seed' when pre-extracted (demo fallback). */
-  ingestedVia?: 'document-intelligence' | 'seed';
+  ingestedVia?: "document-intelligence" | "seed";
 }
 
 // ── Recency & cadence (scale: stateless agents, state as labels — ARCHITECTURE.md §16) ──
@@ -210,7 +213,7 @@ export interface Interaction extends BaseEntity {
   leaderIds: string[];
   topicId?: string;
   occurredAt: string; // ISO date/datetime — immutable
-  kind: 'meeting' | 'call' | 'email' | 'event-touch';
+  kind: "meeting" | "call" | "email" | "event-touch";
   outcome?: string;
   engagementId?: string; // link back when this touch corresponds to a full Engagement
 }
@@ -224,7 +227,7 @@ export interface Interaction extends BaseEntity {
 export interface CadencePolicy extends BaseEntity {
   appliesTo: {
     minStrategicValue?: number; // e.g. 5
-    contactType?: 'individual' | 'company' | 'org';
+    contactType?: "individual" | "company" | "org";
     topicId?: string;
   };
   cooldownDays: number; // e.g. value-5 → 90, value-2 → 270
@@ -239,12 +242,12 @@ export interface CadencePolicy extends BaseEntity {
  */
 export interface Preferences {
   leaderId?: string;
-  topicFocus?: string[];        // topicIds to boost in ranking
-  seniorityFloor?: number;      // drop contacts below this strategicValue (1–5)
-  doNotMeet?: string[];         // contactIds to exclude from menus
+  topicFocus?: string[]; // topicIds to boost in ranking
+  seniorityFloor?: number; // drop contacts below this strategicValue (1–5)
+  doNotMeet?: string[]; // contactIds to exclude from menus
   blackoutDates?: { from: string; to: string }[]; // ISO ranges the leader is unavailable
-  maxDaysAway?: number;         // trip-length budget the nudge respects
-  homeBaseId?: string;          // origin leader id/location for distance + ETA
+  maxDaysAway?: number; // trip-length budget the nudge respects
+  homeBaseId?: string; // origin leader id/location for distance + ETA
 }
 
 // ── Planner core (RUNTIME-PRODUCED — not seeded) ─────────────────────────
@@ -261,15 +264,15 @@ export interface Trip extends BaseEntity {
   legIds: string[];
   estCost?: number;
   roiScore?: number;
-  status: 'draft' | 'proposed' | 'approved' | 'complete';
+  status: "draft" | "proposed" | "approved" | "complete";
 }
 
 export interface Stop {
   id: string;
   tripId: string;
-  refType: 'engagement' | 'event' | 'contact';
+  refType: "engagement" | "event" | "contact";
   refId: string;
-  kind: 'on-site' | 'off-site'; // on-site = at the event venue (no travel leg)
+  kind: "on-site" | "off-site"; // on-site = at the event venue (no travel leg)
   location: GeoPoint;
   arrive?: string;
   depart?: string;
@@ -282,7 +285,7 @@ export interface Leg {
   tripId: string;
   fromStopId: string;
   toStopId: string;
-  mode: 'air' | 'ground';
+  mode: "air" | "ground";
   distanceMi: number;
   estTravelMins: number;
   cost?: number;
@@ -290,5 +293,5 @@ export interface Leg {
 
 // ── Suggestion tagging (engine output shape, for reference) ──────────────
 
-export type SuggestionKind = 're-engage' | 'initiate';
-export type SuggestionPlacement = 'on-site' | 'off-site';
+export type SuggestionKind = "re-engage" | "initiate";
+export type SuggestionPlacement = "on-site" | "off-site";

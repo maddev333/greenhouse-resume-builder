@@ -10,7 +10,7 @@
  *     `tripMap` payload. The host connects to the engagements MCP server ONLY to read the app's
  *     UI resource (ui://trip-map/trip-map.html), then hands the orchestrator's tripMap to the
  *     sandboxed app as a synthetic tool result. The app is the SAME sandboxed ui://trip-map App a
- *     compliant host would render; the security trim was enforced server-side by the orchestrator.
+ *     compliant host would render.
  */
 import {
   RESOURCE_MIME_TYPE,
@@ -42,31 +42,36 @@ export interface UiResourceData {
 }
 
 /**
- * Connect an MCP client to the engagements capability, carrying the demo persona on every request
- * (the server enforces the security trim from this header). Used only to read the UI resource.
+ * Connect an MCP client to the engagements capability. Used only to read the UI resource.
  */
-export async function connectToServer(serverUrl: string, persona: string): Promise<Client> {
-  log.info("Connecting to engagements MCP:", serverUrl, "persona:", persona);
+export async function connectToServer(serverUrl: string): Promise<Client> {
+  log.info("Connecting to engagements MCP:", serverUrl);
   const client = new Client(IMPLEMENTATION);
-  const transport = new StreamableHTTPClientTransport(new URL(serverUrl), {
-    requestInit: { headers: { "x-demo-persona": persona } },
-  });
+  const transport = new StreamableHTTPClientTransport(new URL(serverUrl));
   await client.connect(transport);
   return client;
 }
 
 /** Read the MCP App's HTML + CSP/permission metadata (content-level `_meta.ui`). */
-export async function getUiResource(client: Client, uri: string): Promise<UiResourceData> {
+export async function getUiResource(
+  client: Client,
+  uri: string,
+): Promise<UiResourceData> {
   log.info("Reading UI resource:", uri);
   const resource = await client.readResource({ uri });
   if (!resource || resource.contents.length !== 1) {
     throw new Error(`Unexpected resource contents for ${uri}`);
   }
-  const content = resource.contents[0] as Record<string, unknown> & { mimeType?: string };
+  const content = resource.contents[0] as Record<string, unknown> & {
+    mimeType?: string;
+  };
   if (content.mimeType !== RESOURCE_MIME_TYPE) {
-    throw new Error(`Unsupported MIME type: ${content.mimeType} (expected ${RESOURCE_MIME_TYPE})`);
+    throw new Error(
+      `Unsupported MIME type: ${content.mimeType} (expected ${RESOURCE_MIME_TYPE})`,
+    );
   }
-  const html = "blob" in content ? atob(content.blob as string) : (content.text as string);
+  const html =
+    "blob" in content ? atob(content.blob as string) : (content.text as string);
   const contentMeta = (content._meta as any) || (content.meta as any);
   const uiMeta = contentMeta?.ui;
   return { html, csp: uiMeta?.csp, permissions: uiMeta?.permissions };
@@ -90,7 +95,10 @@ export function loadSandboxProxy(
 
   const readyPromise = new Promise<boolean>((resolve) => {
     const listener = ({ source, data }: MessageEvent) => {
-      if (source === iframe.contentWindow && data?.method === PROXY_READY_NOTIFICATION) {
+      if (
+        source === iframe.contentWindow &&
+        data?.method === PROXY_READY_NOTIFICATION
+      ) {
         window.removeEventListener("message", listener);
         resolve(true);
       }
@@ -105,7 +113,10 @@ export function loadSandboxProxy(
 }
 
 /** Build the host-side AppBridge with theme/style host context and the handlers the app may call. */
-export function newAppBridge(client: Client, iframe: HTMLIFrameElement): AppBridge {
+export function newAppBridge(
+  client: Client,
+  iframe: HTMLIFrameElement,
+): AppBridge {
   const serverCapabilities = client.getServerCapabilities();
   const appBridge = new AppBridge(
     client,
@@ -128,12 +139,16 @@ export function newAppBridge(client: Client, iframe: HTMLIFrameElement): AppBrid
     },
   );
 
-  const disposeTheme = onThemeChange((theme) => appBridge.sendHostContextChange({ theme }));
+  const disposeTheme = onThemeChange((theme) =>
+    appBridge.sendHostContextChange({ theme }),
+  );
 
   const iframeResizeObserver = new ResizeObserver(([entry]) => {
     const width = Math.round(entry.contentRect.width);
     if (width > 0) {
-      appBridge.sendHostContextChange({ containerDimensions: { width, maxHeight: 6000 } });
+      appBridge.sendHostContextChange({
+        containerDimensions: { width, maxHeight: 6000 },
+      });
     }
   });
   iframeResizeObserver.observe(iframe);
@@ -187,19 +202,39 @@ export interface RenderTripMapOptions {
  * load sandbox proxy → connect AppBridge → deliver app HTML → deliver the tripMap as a tool result.
  * Returns the AppBridge so the caller can close() it on unmount.
  */
-export async function renderTripMapApp(opts: RenderTripMapOptions): Promise<AppBridge> {
-  const { client, iframe, sandboxProxyBaseUrl, resource, tripMap, answer, toolInput } = opts;
+export async function renderTripMapApp(
+  opts: RenderTripMapOptions,
+): Promise<AppBridge> {
+  const {
+    client,
+    iframe,
+    sandboxProxyBaseUrl,
+    resource,
+    tripMap,
+    answer,
+    toolInput,
+  } = opts;
 
-  await loadSandboxProxy(iframe, sandboxProxyBaseUrl, resource.csp, resource.permissions);
+  await loadSandboxProxy(
+    iframe,
+    sandboxProxyBaseUrl,
+    resource.csp,
+    resource.permissions,
+  );
 
   const appBridge = newAppBridge(client, iframe);
   const initializedPromise = hookInitialized(appBridge);
 
   // Pass iframe.contentWindow as BOTH target and source so this bridge only accepts messages from
   // its specific sandbox iframe.
-  await appBridge.connect(new PostMessageTransport(iframe.contentWindow!, iframe.contentWindow!));
+  await appBridge.connect(
+    new PostMessageTransport(iframe.contentWindow!, iframe.contentWindow!),
+  );
 
-  log.info("Sending UI resource HTML to sandbox", resource.csp ? `(CSP: ${JSON.stringify(resource.csp)})` : "");
+  log.info(
+    "Sending UI resource HTML to sandbox",
+    resource.csp ? `(CSP: ${JSON.stringify(resource.csp)})` : "",
+  );
   await appBridge.sendSandboxResourceReady({
     html: resource.html,
     csp: resource.csp,

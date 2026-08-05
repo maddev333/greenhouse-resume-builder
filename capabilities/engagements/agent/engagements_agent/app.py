@@ -72,10 +72,7 @@ def create_app(
     @app.post("/tools/list", response_model=ToolListResponse)
     async def list_tools(request: ToolListRequest) -> ToolListResponse:
         try:
-            tools = await configured_mcp.list_tools(
-                mcp_url=request.mcp_url,
-                persona=request.persona,
-            )
+            tools = await configured_mcp.list_tools(mcp_url=request.mcp_url)
             available = {item.name for item in tools}
             missing = sorted(ENGAGEMENTS_TOOL_NAMES - available)
             if missing:
@@ -92,10 +89,7 @@ def create_app(
         discovery_url = request.discovery_mcp_url or configured_settings.discovery_mcp_url
         if discovery_url:
             try:
-                discovered = await configured_mcp.list_tools(
-                    mcp_url=discovery_url,
-                    persona=request.persona,
-                )
+                discovered = await configured_mcp.list_tools(mcp_url=discovery_url)
                 selected.extend(
                     item for item in discovered if item.name in DISCOVERY_TOOL_NAMES
                 )
@@ -118,7 +112,6 @@ def create_app(
         try:
             return await configured_mcp.call_tool(
                 mcp_url=mcp_url,
-                persona=request.persona,
                 name=request.name,
                 arguments=request.args,
                 trace_id=request.trace_id or str(uuid4()),

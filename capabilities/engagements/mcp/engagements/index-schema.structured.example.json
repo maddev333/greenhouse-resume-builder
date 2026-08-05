@@ -1,0 +1,123 @@
+{
+  "//": [
+    "EXAMPLE: a customer index of STRUCTURED RECORDS whose field names we do not know in advance.",
+    "",
+    "Every field name below (record_id, record_type, display_name, payload_json, ...) is a",
+    "PLACEHOLDER. Replace each one with the real column name in the customer index; the `mapping`",
+    "block is what tells this capability which physical field plays which logical role, so nothing",
+    "in the code has to know the customer's naming.",
+    "",
+    "Load it as part of a registry, alongside the RAG index declaration:",
+    "  ENGAGEMENTS_INDEX_SCHEMAS=C:\\path\\to\\index-config-dir",
+    "  RETRIEVAL_BACKEND=search",
+    "or as a comma/semicolon separated list of explicit files:",
+    "  ENGAGEMENTS_INDEX_SCHEMAS=C:\\cfg\\rag-index.json,C:\\cfg\\records-index.json",
+    "",
+    "ONE INDEX FOR EVERYTHING vs ONE INDEX PER KIND - both work:",
+    "  - one index for all record kinds: keep every kind in `mapping.entityType` below, in ONE file.",
+    "  - one index per kind: copy this file per index, set a distinct `id` and `indexName`, and set",
+    "    the kinds that index does NOT hold to null. A record kind may be claimed by at most one",
+    "    declaration; claiming it twice is a hard error naming both files. So a contacts index sets",
+    "    \"contact\": \"<value>\", \"event\": null and an events index does the reverse.",
+    "  `contact` and `event` must always be PRESENT (possibly null) so the split is deliberate; the",
+    "  reference kinds may simply be omitted.",
+    "",
+    "NOTE files named *.example.json are SKIPPED when a directory is expanded, so copy this file to",
+    "a new name (e.g. records-index.json) before dropping it into a config directory.",
+    "",
+    "Check it before running anything against Azure - `validate` is offline and prints every",
+    "declaration in the registry:",
+    "  npm run provision:search -w @greenhouse-resume-builder/cap-engagements-mcp-engagements -- validate",
+    "",
+    "NEVER run `provision:search ensure|sync|reindex` against a customer index - `ensure` would try",
+    "to reshape it and `sync` would push demo seed records into it."
+  ],
+  "id": "customer-records",
+  "indexName": "<customer-records-index-name>",
+
+  "//fields": [
+    "Describes the index EXACTLY as it exists in Azure. `filterable`/`searchable` are checked here",
+    "BEFORE an OData $filter is emitted, so a mismatch fails with a readable message instead of an",
+    "opaque HTTP 400. Declare a field only if the real index has it.",
+    "type: Edm.String | Edm.Int32 | Edm.Int64 | Edm.Double | Edm.Boolean |",
+    "      Edm.DateTimeOffset | Edm.GeographyPoint | Collection(Edm.String) |",
+    "      Collection(Edm.Single)"
+  ],
+  "fields": [
+    {
+      "name": "record_id",
+      "type": "Edm.String",
+      "key": true,
+      "filterable": true,
+      "sortable": true
+    },
+    { "name": "record_type", "type": "Edm.String", "filterable": true },
+    {
+      "name": "subject_ids",
+      "type": "Collection(Edm.String)",
+      "filterable": true
+    },
+    { "name": "record_state", "type": "Edm.String", "filterable": true },
+    { "name": "display_name", "type": "Edm.String", "searchable": true },
+    { "name": "organisation", "type": "Edm.String", "searchable": true },
+    { "name": "expertise_text", "type": "Edm.String", "searchable": true },
+    {
+      "name": "city_name",
+      "type": "Edm.String",
+      "searchable": true,
+      "filterable": true
+    },
+    {
+      "name": "state_code",
+      "type": "Edm.String",
+      "searchable": true,
+      "filterable": true
+    },
+    { "name": "payload_json", "type": "Edm.String", "retrievable": true }
+  ],
+
+  "//mapping": [
+    "Every value here must name a field declared in `fields` above.",
+    "",
+    "key       REQUIRED. The index key field. Must be the one field with \"key\": true.",
+    "",
+    "entityType  The discriminator that separates record kinds inside one index.",
+    "  .field    REQUIRED (when entityType is present), must be `filterable` - the column holding",
+    "            the kind, e.g. record_type.",
+    "  .contact  REQUIRED key - the VALUE stored in that column for contact rows, or null when this",
+    "            index holds no contacts (another declaration must then claim them).",
+    "  .event    REQUIRED key - the VALUE stored for event rows, or null as above.",
+    "  .leader / .topic / .message / .region",
+    "            OPTIONAL - the VALUE for each reference kind. Omit one (or set it null) and that",
+    "            record set reads back EMPTY; it is NEVER substituted from the demo seed.",
+    "  Omit the whole entityType block for a document/chunk RAG index (see the grounding example).",
+    "",
+    "topicIds  OPTIONAL, must be `filterable` and a Collection(Edm.String) - the tags used to narrow",
+    "          recall to a subject area. Omitted => topic narrowing is skipped, not faked.",
+    "status    OPTIONAL, must be `filterable` - the relationship state (active / prospect).",
+    "          Omitted => the status filter is skipped.",
+    "payload   OPTIONAL but needed by the planner - a field holding the FULL record as a JSON",
+    "          string. Reads reconstruct domain objects from it. When it is absent, read queries",
+    "          fail with a clear message rather than returning half-populated records.",
+    "grounding OPTIONAL and NOT set here - this declaration is structured records only. Put the",
+    "          grounding block on the RAG index declaration; at most one declaration may carry it.",
+    "",
+    "Free-text search targets every field declared `searchable` in THIS declaration, so add the",
+    "customer's name/org/expertise/location columns above to make them reachable by query text."
+  ],
+  "mapping": {
+    "key": "record_id",
+    "entityType": {
+      "field": "record_type",
+      "contact": "<value-for-contact-rows>",
+      "event": "<value-for-event-rows>",
+      "leader": "<value-for-leader-rows>",
+      "topic": "<value-for-topic-rows>",
+      "message": "<value-for-message-rows>",
+      "region": "<value-for-region-rows>"
+    },
+    "topicIds": "subject_ids",
+    "status": "record_state",
+    "payload": "payload_json"
+  }
+}

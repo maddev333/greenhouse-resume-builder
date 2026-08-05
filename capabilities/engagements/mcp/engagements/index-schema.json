@@ -1,0 +1,81 @@
+{
+  "$schema": "./index-schema.schema.json",
+  "id": "engagements",
+  "indexName": "engagements",
+
+  "//id": [
+    "Stable handle for this declaration inside the registry. Optional - it defaults to this",
+    "file's basename without the extension. It must be unique across every loaded config file.",
+    "Load several declarations at once with ENGAGEMENTS_INDEX_SCHEMAS (comma/semicolon separated",
+    "file and/or directory paths); a directory contributes every *.json in it except *.example.json."
+  ],
+
+  "//fields": [
+    "Declares the Azure AI Search index shape. Used two ways:",
+    "  1. `provision:search ensure` builds createOrUpdateIndex from this list.",
+    "  2. Query building checks `filterable`/`searchable` here BEFORE emitting an OData",
+    "     $filter, so a mismatch fails with a clear message instead of an opaque HTTP 400.",
+    "When pointing at a customer's existing index, describe that index here - do not",
+    "provision over it. Set ENGAGEMENTS_INDEX_SCHEMA to use a different file.",
+    "type: Edm.String | Edm.Int32 | Edm.Int64 | Edm.Double | Edm.Boolean |",
+    "      Edm.DateTimeOffset | Edm.GeographyPoint | Collection(Edm.String) |",
+    "      Collection(Edm.Single)"
+  ],
+  "fields": [
+    {
+      "name": "id",
+      "type": "Edm.String",
+      "key": true,
+      "filterable": true,
+      "sortable": true
+    },
+    { "name": "kind", "type": "Edm.String", "filterable": true },
+    {
+      "name": "topicIds",
+      "type": "Collection(Edm.String)",
+      "filterable": true
+    },
+    { "name": "status", "type": "Edm.String", "filterable": true },
+    { "name": "name", "type": "Edm.String", "searchable": true },
+    { "name": "org", "type": "Edm.String", "searchable": true },
+    { "name": "smeText", "type": "Edm.String", "searchable": true },
+    {
+      "name": "city",
+      "type": "Edm.String",
+      "searchable": true,
+      "filterable": true
+    },
+    {
+      "name": "state",
+      "type": "Edm.String",
+      "searchable": true,
+      "filterable": true
+    },
+    { "name": "json", "type": "Edm.String", "retrievable": true }
+  ],
+
+  "//mapping": [
+    "Maps the logical fields this capability needs onto whatever they are called in the",
+    "index above. Every value must name a field in `fields`.",
+    "`payload` names a field holding the full JSON record; when it is null the backend",
+    "cannot losslessly reconstruct domain objects and read queries will report that.",
+    "entityType.contact/event are REQUIRED. leader/topic/message/region are optional:",
+    "omit one (or set it null) and that record set reads back EMPTY - it is never",
+    "substituted from the demo seed."
+  ],
+  "mapping": {
+    "key": "id",
+    "entityType": {
+      "field": "kind",
+      "contact": "contact",
+      "event": "event",
+      "leader": "leader",
+      "topic": "topic",
+      "message": "message",
+      "region": "region"
+    },
+    "topicIds": "topicIds",
+    "status": "status",
+    "payload": "json"
+  }
+}

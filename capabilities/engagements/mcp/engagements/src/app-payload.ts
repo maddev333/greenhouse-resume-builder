@@ -7,7 +7,7 @@
  * only — the mapping from engine results into this shape lives server-side in `tools.ts`.
  */
 
-export type TripMapPointKind = 'origin' | 'on-site' | 'off-site';
+export type TripMapPointKind = "origin" | "on-site" | "off-site";
 
 /** A plottable point: the anchor venue (`origin`) or a stop (a contact to meet). */
 export interface TripMapPoint {
@@ -26,7 +26,7 @@ export interface TripMapLeg {
   fromLng: number;
   toLat: number;
   toLng: number;
-  mode: 'air' | 'ground';
+  mode: "air" | "ground";
   distanceMi?: number;
 }
 
@@ -42,6 +42,4 @@ export interface TripMapPayload {
   roiScore?: number;
   overBudget?: boolean;
   totalMi?: number;
-  /** Persona/label of the caller whose security trim produced this itinerary. */
-  caller?: string;
 }

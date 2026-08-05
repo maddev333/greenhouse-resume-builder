@@ -1,31 +1,41 @@
 # Area-First, Optioned Engagement Planning — Design
 
+> **Status note (2026-08-05).** This document records the design as originally specified. Since then
+> the claims-based security trim (`tenantId` / `aclGroups` / `sensitivity`, `redactedCount`, and the
+> demo personas) has been **removed** from the implementation, and retrieval has moved to a
+> multi-index schema registry with an added grounding-only mode. Sections below describing the
+> security trim no longer reflect the code. See [`README.md`](../README.md) and
+> [`life-of-a-question.md`](life-of-a-question.md) for current behaviour.
+
 ## Status
+
 Phases 0–3 implemented (schema/data, geo anchor + survey, leader selection, duration + extension
 options), plus **engagement-category coverage** (identification across the four strategic audiences —
 Congressional, Academia, Industry, Army-internal — with explicit gaps) and a **category-first `/ask`
 chat flow** (pick the engagement category → build a single-audience itinerary → recommend the best
-senior leader; the leader is the *output*, §H). Phases 4–5 proposed. See "Implementation Roadmap" for
+senior leader; the leader is the _output_, §H). Phases 4–5 proposed. See "Implementation Roadmap" for
 the shipped vs. pending breakdown.
 
 ## Purpose
-Today the planner runs **one** direction: given a **leader** and an **event anchor**, it ranks *who*
+
+Today the planner runs **one** direction: given a **leader** and an **event anchor**, it ranks _who_
 to meet. This design adds the **inverse, area-first** direction and makes the whole planner
 **optioned along multiple axes**:
 
 1. **Geo anchor** — start from a **geographic area** (city / state / named region + a date window),
    with **no event required**.
-2. **Topics-in-area** — survey *what topics are present* in that area for the caller.
-3. **Leader selection** — recommend *which senior leader should go* (ranked, not an input).
-4. **Duration** — recommend *how long* the trip should be, derived from the actual stops.
-5. **Extension options** — *"extend by 1 day and you can also meet this **industry / academic /
-   political** entity on this topic — here are the Army talking points."*
+2. **Topics-in-area** — survey _what topics are present_ in that area for the caller.
+3. **Leader selection** — recommend _which senior leader should go_ (ranked, not an input).
+4. **Duration** — recommend _how long_ the trip should be, derived from the actual stops.
+5. **Extension options** — _"extend by 1 day and you can also meet this **industry / academic /
+   political** entity on this topic — here are the Army talking points."_
 
 Because the answer depends on many competing factors, the planner **always returns options**, never a
-single forced plan — consistent with the repo's *"advisor, not optimizer; the human decides"*
+single forced plan — consistent with the repo's _"advisor, not optimizer; the human decides"_
 principle (`engagement-intelligence/ARCHITECTURE.md` §1, §6).
 
 ## Relationship to the existing repo
+
 This is **additive** — it reuses the deterministic engine primitives and the server-side security
 trim, and it keeps the existing event-anchored flow intact:
 
@@ -42,14 +52,16 @@ trim, and it keeps the existing event-anchored flow intact:
   (`engagement-intelligence/seed/{topics,messages}.json`).
 
 ### Two current limitations this design removes
+
 1. **Event-only anchoring.** `runSuggest` (`.../mcp/engagements/src/tools.ts`) always resolves an
-   event (`resolveEvent` → `anchorFromEvent`) and errors *"No authorized anchor event matched"* when
+   event (`resolveEvent` → `anchorFromEvent`) and errors _"No authorized anchor event matched"_ when
    none is given. There is no geo/region anchor and no region→coordinate resolver.
 2. **Duration is a fixed echo of the event window.** `build_itinerary` computes
    `days = daysBetween(event.start, event.end) + 1` — the anchor **event's** length. Off-site stops
-   never extend it, and no duration is *recommended*.
+   never extend it, and no duration is _recommended_.
 
 ## Goals
+
 - Anchor planning on a **geographic area + window** with no event required.
 - Return, for that area, a **topic survey**, **ranked leader options**, **recommended duration
   option(s)**, and **marginal "+N-day" extension options** — each with transparent, tunable factors.
@@ -61,16 +73,18 @@ trim, and it keeps the existing event-anchored flow intact:
   ARCHITECTURE.md §1).
 
 ## Non-Goals
+
 - No route optimizer beyond the existing greedy nearest-neighbor (`planRoute`); a 2-opt pass remains
   future work.
 - No change to the shared security model or the tenant/ACL/sensitivity trim.
 - No live Microsoft Graph / calendar personalization — that is the separate
   [`personal-context-and-engagement-intelligence-design.md`](personal-context-and-engagement-intelligence-design.md)
-  (the two compose: personal context re-ranks *within* the options this design produces, never
+  (the two compose: personal context re-ranks _within_ the options this design produces, never
   widening access).
 - No removal of the existing leader+event flow; area-first is an added path.
 
 ## Design Principles
+
 1. **Advisor, not optimizer.** Every axis returns ranked **options** with visible factors; the human
    picks. Fit/duration/leader are **advisory**, never hard filters (mirrors `detectFit` = soft).
 2. **Deterministic core, LLM at the edges.** Area resolution, topic aggregation, leader scoring,
@@ -86,24 +100,25 @@ trim, and it keeps the existing event-anchored flow intact:
 ## Schema Additions
 
 ### 1. `Contact.sector` (new) — the industry/academic/political label
+
 `Contact.type` today is only `company | individual | org` (`engagement-intelligence/seed/schema.ts`),
 which can't express "industry vs academic vs political." Add a structured, optional enum (shipped in
 `shared/src/engagements.ts`):
 
 ```ts
 export type Sector =
-  | 'industry'       // defense primes, startups, commercial vendors
-  | 'academic'       // universities, labs, FFRDCs, think tanks
-  | 'congressional'  // Congress: member offices + HASC/SASC & appropriations committee staff
-  | 'political'      // other legislative / policy / elected offices & staff
-  | 'army-internal'  // internal Army: HQDA staff, ACOMs, PEOs, installations, RDECs/labs
-  | 'government'     // other federal/state/local government
-  | 'nonprofit'      // associations, NGOs, foundations
-  | 'international';  // foreign gov / multinational / allied partners
+  | "industry" // defense primes, startups, commercial vendors
+  | "academic" // universities, labs, FFRDCs, think tanks
+  | "congressional" // Congress: member offices + HASC/SASC & appropriations committee staff
+  | "political" // other legislative / policy / elected offices & staff
+  | "army-internal" // internal Army: HQDA staff, ACOMs, PEOs, installations, RDECs/labs
+  | "government" // other federal/state/local government
+  | "nonprofit" // associations, NGOs, foundations
+  | "international"; // foreign gov / multinational / allied partners
 
 export interface Contact extends BaseEntity {
   // …existing fields…
-  sector?: Sector;  // NEW — drives the "meet this <sector> entity" option label + optional filter
+  sector?: Sector; // NEW — drives the "meet this <sector> entity" option label + optional filter
 }
 ```
 
@@ -112,11 +127,17 @@ export interface Contact extends BaseEntity {
   so a caller can optionally narrow "show me academic partners on zero-trust."
 
 ### 1a. `EngagementCategory` (new) — the four-audience reporting roll-up
+
 `Sector` is fine-grained; leaders think in **four strategic audiences** they must balance on one trip.
 `EngagementCategory` is the coarse reporting layer over `Sector` (`shared/src/engagements.ts`):
 
 ```ts
-export type EngagementCategory = 'congressional' | 'academia' | 'industry' | 'army-internal' | 'other';
+export type EngagementCategory =
+  | "congressional"
+  | "academia"
+  | "industry"
+  | "army-internal"
+  | "other";
 
 // SECTOR_TO_CATEGORY: industry→industry, academic→academia, congressional+political→congressional,
 // army-internal+government→army-internal, nonprofit+international→other.
@@ -129,16 +150,17 @@ export function categoryForSector(sector?: Sector): EngagementCategory; // total
   Industry, and Army-internal** in any surveyed area.
 
 ### 2. Area gazetteer (new, seed-time) — offline geo anchoring
+
 To keep the demo offline (ARCHITECTURE.md §1, "pre-geocoded once at seed time"), add a small
 `regions.json` mapping named areas + cities/states to a pre-resolved centroid + default radius:
 
 ```ts
 export interface Region extends BaseEntity {
-  id: string;                 // e.g. "R-NCR"
-  name: string;               // "National Capital Region"
-  aliases?: string[];         // ["NCR", "DC metro", "Washington DC"]
-  centroid: GeoPoint;         // pre-resolved lat/lng
-  defaultRadiusKm: number;    // e.g. 120
+  id: string; // e.g. "R-NCR"
+  name: string; // "National Capital Region"
+  aliases?: string[]; // ["NCR", "DC metro", "Washington DC"]
+  centroid: GeoPoint; // pre-resolved lat/lng
+  defaultRadiusKm: number; // e.g. 120
 }
 ```
 
@@ -146,13 +168,15 @@ A city/state anchor with no matching region resolves to that city's `GeoPoint` (
 contacts/events) + a default radius.
 
 ### 3. (Data) Approved messages for T3 & T4
+
 T3 (innovation) and T4 (STEM) have `approvedMessageId: null`, so the talking-points slot is empty for
-them. Either add approved `Message`s or let the option degrade to *"no approved message — coordinate
-with `{Topic.ownerOrg}`."* (Open Question.)
+them. Either add approved `Message`s or let the option degrade to _"no approved message — coordinate
+with `{Topic.ownerOrg}`."_ (Open Question.)
 
 ## New / Changed Capabilities
 
 ### A. Geo anchor (area-first)
+
 - **New:** `anchorFromArea(area, window)` alongside `anchorFromEvent`, producing the existing
   event-optional `Anchor { location, window, topicIds? }`.
 - **Area resolution:** `resolveArea(input)` → `{ centroid, radiusKm, window }` from a region id/alias,
@@ -166,14 +190,16 @@ with `{Topic.ownerOrg}`."* (Open Question.)
   `leaderId` becomes **optional** here (see Leader selection).
 
 ### B. Topics-in-area (the "what's here" survey)
+
 - **New:** `topicsInArea({ centroid, radiusKm, window, contacts, events, ctx })` → for each topic
   present among the caller's **authorized** contacts/events in range:
   `{ topicId, name, domain, contactCount, prospectCount, sumStrategicValue, staleCount,
-     hasApprovedMessage, ownerOrg }`, ranked by opportunity (Σ strategic value × staleness).
+   hasApprovedMessage, ownerOrg }`, ranked by opportunity (Σ strategic value × staleness).
 - **Tool:** `survey_area` → returns the **topic menu** for the area ("here's what you'd go for").
 - Fully security-trimmed: only authorized records are counted.
 
 ### C. Leader selection (recommend who should go)
+
 - **New:** `suggestLeaders({ area, topicIds, window, leaders, contacts })` → ranks the caller's leader
   roster by a transparent `leaderFitScore` = weighted sum of:
   | Factor | Source | Intent |
@@ -186,9 +212,10 @@ with `{Topic.ownerOrg}`."* (Open Question.)
 - Returns **ranked leader options** with per-factor breakdown (show-your-math). **Advisory** — a
   domain/level mismatch is a soft badge (reuse `fitFlags`/`detectFit`), never an exclusion.
 - **Tool:** `suggest_leaders`. When `leaderId` is omitted from `suggest_candidates`, the top-ranked
-  leader is used as the default *and* the alternatives are returned as options.
+  leader is used as the default _and_ the alternatives are returned as options.
 
 ### D. Duration recommendation (how long)
+
 - **Replace** `days = event-window` with a **stop-derived** estimate:
   `estimateDuration(route, onSiteEventDays, dwellPerStopMins)` — on-site/conference days +
   off-site legs (`route.totalTravelMins`) + per-stop dwell, bucketed to whole days.
@@ -199,6 +226,7 @@ with `{Topic.ownerOrg}`."* (Open Question.)
 - Each option: `{ days, stops[], roi, conflicts[], overBudget }`.
 
 ### E. Extension options ("+1 day unlocks…")
+
 - **New:** `extensionOptions(basePlan, { window, radiusKm, contacts, events, ctx })` — marginal
   analysis: for each additional day (and/or wider reachable radius), compute the **newly feasible**
   stops (diff vs the base set), ranked by **marginal ROI** = added Σ score − added cost.
@@ -206,15 +234,16 @@ with `{Topic.ownerOrg}`."* (Open Question.)
   `{ extraDays, contact: { name, sector }, topic, talkingPoints, marginalRoi, conflicts[] }`
   where `talkingPoints` = `Topic.approvedMessageId` → `Message.intendedPoints`, or the graceful
   "coordinate with `{ownerOrg}`" fallback.
-- This is exactly the requested surface: *"extend 1 day → meet this **industry/academic/political**
-  entity on this topic; here are the approved talking points."*
+- This is exactly the requested surface: _"extend 1 day → meet this **industry/academic/political**
+  entity on this topic; here are the approved talking points."_
 
 ### F. Engagement-category coverage (the four-audience identification)
+
 - **New:** `categoryBreakdown({ centroid, radiusMi, contacts, itineraryContactIds })`
   (`.../mcp/engagements/src/planner/categories.ts`) — rolls every in-area, security-trimmed contact
   up into the four audiences (+ `other`) via `categoryForSector`, and reports **per audience**:
   `{ category, label, total, activeCount, prospectCount, staleCount, onItineraryCount, covered,
-  reason, contactIds[], contacts[] }`. The four targets are always emitted, so a **coverage gap** ("no Congressional
+reason, contactIds[], contacts[] }`. The four targets are always emitted, so a **coverage gap** ("no Congressional
   engagement on this trip") is explicit; `covered = onItineraryCount > 0`. `contactIds[]` is **every**
   in-area contact for that audience (not just the `topN` shown in `contacts[]`) — the seam the agent uses
   to build a **single-audience** itinerary.
@@ -225,6 +254,7 @@ with `{Topic.ownerOrg}`."* (Open Question.)
   renders a **"🎯 Engagement coverage"** panel (green = covered, amber = gap, red = none in area).
 
 ### G. Itinerary options GROUPED BY engagement category (leader-dependent)
+
 - The Stage-2 area builder (`buildAreaItineraryOptions`, `.../agent/src/orchestrator.ts`) offers **one
   fully-built, SINGLE-AUDIENCE itinerary per engagement category** — never a blended trip. Which
   audience a leader would meet on a trip **depends on the leader's billet**, so each `Leader` carries an
@@ -242,16 +272,17 @@ with `{Topic.ownerOrg}`."* (Open Question.)
   Academia}**, **L3 → {Industry, Army-internal}** — same area, different single-audience menus per leader.
 
 ### H. Category-first `/ask` — pick the audience, THEN recommend the leader (the default chat flow)
+
 - **Inversion.** In the chat `/ask` flow the leader is the **output, not the first question**. A bare
-  known-region ask ("*Plan a trip to Boston — who should go, how long, and what's worth doing there?*")
+  known-region ask ("_Plan a trip to Boston — who should go, how long, and what's worth doing there?_")
   now routes **category-first**: `planTrip` (`.../agent/src/orchestrator.ts`) runs the area/category
   branch **before** the event branch, so a city that also names an event (Boston = both `R-BOSTON` and
   the `E-BOSTON` forum) is treated as an **area**, not an event anchor.
 - **Stage 1 — clarify the engagement category.** `categoryClarifyQuestion(categoryBreakdown)` emits a
   single-select menu of the audiences **present in the area** (`total > 0`, never `other`), the
   hottest by `strategicValueSum` pre-selected/recommended. The reply reuses the §F area briefing
-  (hot topics, stale contacts, events, per-audience coverage) so the human picks *what to anchor on*.
-  If the ask already names an audience (`categoryFromQuestion` — "*industry* trip", "*congressional*
+  (hot topics, stale contacts, events, per-audience coverage) so the human picks _what to anchor on_.
+  If the ask already names an audience (`categoryFromQuestion` — "_industry_ trip", "_congressional_
   visit") Stage 1 is skipped. Envelope: `stage:'clarify'`, `clarify:'category'`, `category:null`.
 - **Stage 2 — build the single-audience trip, then recommend WHO.** With a category chosen,
   `buildCategoryPlan` forces that audience's `categoryBreakdown[].contactIds` through
@@ -260,27 +291,28 @@ with `{Topic.ownerOrg}`."* (Open Question.)
   ranks WHO should go: it keeps only leaders whose authored `engagementCategories` include the chosen
   audience, best composite-score first (recommended), the rest as alternates; when **none** engage the
   audience it falls back to the best-fit leader overall (`fellBack`). Because the stops are forced, the
-  leader affects **ROI / availability only** — it never changes *which* audience is met. Envelope:
+  leader affects **ROI / availability only** — it never changes _which_ audience is met. Envelope:
   `stage:'plan'`, `category:<chosen>`, `leaderShortlist:[{ …, why, recommended }]`. The chat UI renders
   the recommended-leader panel; the CLI accepts `--category <id>` to drive Stage 2.
 - **Event-anchored flow preserved.** An explicitly-named event that is **not** a known region (e.g.
-  "*Plan a trip to AUSA*" — `areaAskAnchor` returns null) still hits the leader-first event path (§G),
+  "_Plan a trip to AUSA_" — `areaAskAnchor` returns null) still hits the leader-first event path (§G),
   where conferences are intentionally mixed-audience. The `/plan-options` guided panel is unchanged.
 
 ## The Optioned Result — `PlanOptions`
+
 A single envelope the agent renders as menus along each axis (the model narrates; it does **not**
 compute these):
 
 ```ts
 interface PlanOptions {
   area: { name; centroid; radiusKm; window };
-  areaSurvey: TopicInArea[];        // B — what's here
-  leaderOptions: LeaderOption[];     // C — who should go (ranked, with factors)
+  areaSurvey: TopicInArea[]; // B — what's here
+  leaderOptions: LeaderOption[]; // C — who should go (ranked, with factors)
   durationOptions: DurationOption[]; // D — core vs extended (days, ROI, conflicts)
   extensionOptions: ExtensionOption[]; // E — marginal "+N day" unlocks w/ talking points
   categoryBreakdown: CategoryCoverage[]; // F — the four-audience footprint + coverage/gaps
-  filter: string;                    // the security $filter that ran (audit)
-  redactedCount: number;             // trimmed-out count (fail-closed transparency)
+  filter: string; // the security $filter that ran (audit)
+  redactedCount: number; // trimmed-out count (fail-closed transparency)
 }
 ```
 
@@ -288,8 +320,9 @@ Every list is **ranked and non-empty-by-design where possible**, so the caller a
 options rather than accepting a single plan.
 
 ## Worked Example
-> *"I want to send someone to the National Capital Region in the third week of October — what are my
-> options?"*
+
+> _"I want to send someone to the National Capital Region in the third week of October — what are my
+> options?"_
 
 1. **Resolve area** → `R-NCR` centroid + 120 km, window `2025-10-13…2025-10-19`; auto-absorb any
    in-area authorized events.
@@ -299,27 +332,29 @@ options rather than accepting a single plan.
    available, budget 10d); **LTG Cole (L5)** #2 (DC, strategy). Both returned as options.
 4. **Duration** → **Core = 2 days** (2 on-site + 1 nearby stale prime), ROI shown; **Extended = 3
    days**.
-5. **Extension** → *"**+1 day** → meet **Meridian Robotics (industry)** on **T1**; talking points:
+5. **Extension** → _"**+1 day** → meet **Meridian Robotics (industry)** on **T1**; talking points:
    'Multi-year contracting stability is coming; prioritize munitions onshoring; no program-dollar
-   commitments.'"*
-6. **Audience coverage** → *"This area holds **Industry ×3, Academia ×1, Congressional ×2,
+   commitments.'"_
+6. **Audience coverage** → _"This area holds **Industry ×3, Academia ×1, Congressional ×2,
    Army-internal ×2**. The recommended 2-day trip reaches Industry + Army-internal; **Congressional is
-   a gap** (2 stale HASC/appropriations contacts here) — extend a day to close it."* This is the
+   a gap** (2 stale HASC/appropriations contacts here) — extend a day to close it."_ This is the
    four-audience "identification" outcome, with the gap called out explicitly.
 
 ## Alignment with Existing Architecture
-| This design | Reuses / relates to |
-| ----------- | ------------------- |
-| Geo anchor | event-optional `Anchor` + `suggest()` no-event path (`planner/{types,suggest}.ts`); offline seed-time geo (ARCHITECTURE.md §1) |
-| Topics-in-area | `Contact.topicIds` / `Event.topicIds`, `haversineKm`, security trim (`mcp-core/security.ts`) |
-| Leader selection | `Leader.{smeAreas,domain,homeBase,availability,daysAwayBudget,level}`; `fitFlags`/`detectFit` as soft badges |
-| Duration | `planRoute`, `tripRoi`, `detectAvailabilityBudget` (replaces the event-window `days`) |
-| Extension options | `suggestionScore` deltas + `tripRoi` marginal; `Topic.approvedMessageId`→`Message.intendedPoints` |
-| `PlanOptions` (always options) | "advisor, not optimizer" (ARCHITECTURE.md §1, §6); the existing candidate "menu" pattern, generalized to more axes |
-| `sector` facet | AI Search filterable envelope (ARCHITECTURE.md §16.3) |
-| Composes with personal context | `personal-context-and-engagement-intelligence-design.md` re-ranks within these options, never widening access |
+
+| This design                    | Reuses / relates to                                                                                                            |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Geo anchor                     | event-optional `Anchor` + `suggest()` no-event path (`planner/{types,suggest}.ts`); offline seed-time geo (ARCHITECTURE.md §1) |
+| Topics-in-area                 | `Contact.topicIds` / `Event.topicIds`, `haversineKm`, security trim (`mcp-core/security.ts`)                                   |
+| Leader selection               | `Leader.{smeAreas,domain,homeBase,availability,daysAwayBudget,level}`; `fitFlags`/`detectFit` as soft badges                   |
+| Duration                       | `planRoute`, `tripRoi`, `detectAvailabilityBudget` (replaces the event-window `days`)                                          |
+| Extension options              | `suggestionScore` deltas + `tripRoi` marginal; `Topic.approvedMessageId`→`Message.intendedPoints`                              |
+| `PlanOptions` (always options) | "advisor, not optimizer" (ARCHITECTURE.md §1, §6); the existing candidate "menu" pattern, generalized to more axes             |
+| `sector` facet                 | AI Search filterable envelope (ARCHITECTURE.md §16.3)                                                                          |
+| Composes with personal context | `personal-context-and-engagement-intelligence-design.md` re-ranks within these options, never widening access                  |
 
 ## Implementation Roadmap
+
 - **Phase 0 — Schema & data:** ✅ **Done.** Added `Contact.sector` (backfilled on every seed contact)
   and the `regions.json` gazetteer. (The event-window `days` → stop-derived duration fix was deferred
   to Phase 3.)
@@ -346,10 +381,11 @@ options rather than accepting a single plan.
   existing `*.test.ts` suites, optional 2-opt route pass.
 
 ## Open Design Questions
+
 - **Leader factor weights** — what's the default priority (proximity vs SME match vs seniority)? Start
   from equal weights in `weights.ts` and tune?
 - **Extension granularity** — whole-day increments only, and cap tiers at +2 days?
-- **Area sourcing** — should an area anchor auto-absorb *all* in-radius events as sub-anchors, or only
+- **Area sourcing** — should an area anchor auto-absorb _all_ in-radius events as sub-anchors, or only
   the top-K by topic relevance?
 - **Sector backfill** — confirm the default `sector` for each seed contact (e.g. CSIS→academic,
   TechCorp Defense→industry, Capital Defense Angels→industry/nonprofit?).
@@ -358,6 +394,7 @@ options rather than accepting a single plan.
 - **Duration model** — fixed dwell-per-stop, or per-`sector`/`level` dwell?
 
 ## Recommended Next Steps
+
 1. Approve the `sector` enum + `regions.json` shapes and land them in `shared`/seed.
 2. Prototype `topicsInArea` and `suggestLeaders` (pure functions + tests) — they unlock the demo value
    with no cloud dependency.
@@ -366,6 +403,7 @@ options rather than accepting a single plan.
 5. Review alongside `engagement-intelligence/ARCHITECTURE.md` §6 (planner) and §16 (labeling).
 
 ## Summary
+
 This design inverts and generalizes the planner: anchor on a **geographic area**, survey the **topics**
 there, recommend **which leader** should go and **for how long**, and always present **options** —
 including marginal **"+1 day"** extensions that unlock a specific **industry/academic/political** entity

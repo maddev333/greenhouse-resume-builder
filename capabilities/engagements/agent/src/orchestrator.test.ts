@@ -264,31 +264,23 @@ test("conversation history is bounded and strips malformed entries", () => {
 test("standalone day-by-day follow-up requests prior context without searching for a new event", async () => {
   const result = await planTrip({
     question: "give me a day by day break down",
-    persona: "EA_G8",
     serverUrl: "http://127.0.0.1:1/mcp",
   });
   assert.equal(result.deterministicReason, "contextual-follow-up");
   assert.match(result.answer ?? "", /need the prior grounded itinerary/i);
   assert.deepEqual(result.toolCalls, []);
-  assert.doesNotMatch(
-    result.answer ?? "",
-    /No authorized anchor event matched/i,
-  );
+  assert.doesNotMatch(result.answer ?? "", /No anchor event matched/i);
 });
 
 test("standalone leader-fit follow-up requests prior context without event discovery", async () => {
   const result = await planTrip({
     question: "which leader will this work best for?",
-    persona: "EA_G8",
     serverUrl: "http://127.0.0.1:1/mcp",
   });
   assert.equal(result.deterministicReason, "contextual-follow-up");
   assert.match(result.answer ?? "", /need the prior grounded itinerary/i);
   assert.deepEqual(result.toolCalls, []);
-  assert.doesNotMatch(
-    result.answer ?? "",
-    /No authorized anchor event matched/i,
-  );
+  assert.doesNotMatch(result.answer ?? "", /No anchor event matched/i);
 });
 
 test(
@@ -323,8 +315,6 @@ test(
         const modelResult =
           body.name === "search_contacts"
             ? {
-                rejected: false,
-                redactedCount: 1,
                 contacts: [
                   {
                     id: "C-STEM-1",
@@ -349,8 +339,6 @@ test(
                 ],
               }
             : {
-                rejected: false,
-                redactedCount: 2,
                 events: [
                   {
                     id: "E-STEM",
@@ -391,7 +379,6 @@ test(
     const staleContext = {
       version: 1 as const,
       kind: "event" as const,
-      persona: "EA_G8",
       leaderId: "L5",
       eventId: "E-AUSA",
       contactIds: ["P2", "C4"],
@@ -401,7 +388,6 @@ test(
       for (const context of [undefined, staleContext]) {
         const result = await planTrip({
           question,
-          persona: "EA_G8",
           serverUrl: "http://mcp.invalid/mcp",
           context,
         });
@@ -417,7 +403,6 @@ test(
         assert.match(result.answer ?? "", /Dr\. Ada Lovelace/);
         assert.match(result.answer ?? "", /Boston, MA \(1 contact, 1 event\)/);
         assert.match(result.answer ?? "", /approved message is cataloged/i);
-        assert.match(result.answer ?? "", /3 results were redacted/i);
         assert.doesNotMatch(result.answer ?? "", /prior grounded itinerary/i);
       }
       const runs = requests.filter((request) => request.path === "/run");
@@ -442,32 +427,27 @@ test(
   },
 );
 
-test("event follow-up context is persona-bound, deduplicated, and validated", () => {
+test("event follow-up context is deduplicated and validated", () => {
   const context = {
     version: 1,
     kind: "event",
-    persona: "EA_G8",
     leaderId: "L1",
     eventId: "E-AUSA",
     contactIds: ["P2", "C4", "P2", ""],
     topicIds: ["T3", "T3"],
     dayAssignments: { P2: 3, C4: 5, C3: 2, bad: 99 },
   };
-  assert.deepEqual(normalizeEventPlanContext(context, "EA_G8"), {
+  assert.deepEqual(normalizeEventPlanContext(context), {
     version: 1,
     kind: "event",
-    persona: "EA_G8",
     leaderId: "L1",
     eventId: "E-AUSA",
     contactIds: ["P2", "C4"],
     topicIds: ["T3"],
     dayAssignments: { P2: 3, C4: 5 },
   });
-  assert.equal(normalizeEventPlanContext(context, "EA_BASIC"), null);
-  assert.equal(
-    normalizeEventPlanContext({ ...context, contactIds: [] }, "EA_G8"),
-    null,
-  );
+  assert.equal(normalizeEventPlanContext({ ...context, contactIds: [] }), null);
+  assert.equal(normalizeEventPlanContext({ ...context, kind: "area" }), null);
 });
 
 test("event day-by-day rendering uses event dates and route order without inventing meetings", () => {
@@ -665,15 +645,12 @@ test("agent decision projects grounded category clarification into the chat cont
   const base = {
     ok: false,
     mode: "deterministic",
-    persona: "EA_G8",
     question: "Plan a trip to Boston",
     answer: null,
     toolCalls: [],
     menu: null,
     itinerary: null,
     tripMap: null,
-    redactedCount: null,
-    rejected: false,
     stage: "plan",
     clarify: null,
   } as any;
@@ -710,7 +687,6 @@ test("agent decision projects grounded category clarification into the chat cont
               reason: "2 industry engagements",
             },
           ],
-          redactedCount: 1,
         },
       },
     ],
@@ -721,22 +697,18 @@ test("agent decision projects grounded category clarification into the chat cont
   assert.equal(result.clarify, "category");
   assert.equal(result.questions?.[0].choices[0].value, "industry");
   assert.equal(result.area?.name, "Boston");
-  assert.equal(result.redactedCount, 1);
 });
 
-test("agent decision preserves lookup stage, topic scope, and aggregate redactions", () => {
+test("agent decision preserves lookup stage and topic scope", () => {
   const base = {
     ok: false,
     mode: "deterministic",
-    persona: "EA_G8",
     question: "What's the engagement picture on Talent / STEM?",
     answer: null,
     toolCalls: [],
     menu: null,
     itinerary: null,
     tripMap: null,
-    redactedCount: null,
-    rejected: false,
     stage: "plan",
     clarify: null,
   } as any;
@@ -756,13 +728,13 @@ test("agent decision preserves lookup stage, topic scope, and aggregate redactio
         name: "search_contacts",
         args: { topicIds: ["T4"] },
         text: "contacts",
-        result: { contacts: [], redactedCount: 1, rejected: false },
+        result: { contacts: [] },
       },
       {
         name: "search_events",
         args: { topicIds: ["T4"] },
         text: "events",
-        result: { events: [], redactedCount: 2, rejected: false },
+        result: { events: [] },
       },
     ],
   );
@@ -770,22 +742,18 @@ test("agent decision preserves lookup stage, topic scope, and aggregate redactio
   assert.equal(result.ok, true);
   assert.equal(result.stage, "answer");
   assert.deepEqual(result.topicIds, ["T4"]);
-  assert.equal(result.redactedCount, 3);
 });
 
 test("agent decision projects a built itinerary without TypeScript routing", () => {
   const base = {
     ok: false,
     mode: "deterministic",
-    persona: "EA_G8",
     question: "Plan AUSA for L1",
     answer: null,
     toolCalls: [],
     menu: null,
     itinerary: null,
     tripMap: null,
-    redactedCount: null,
-    rejected: false,
     stage: "plan",
     clarify: null,
   } as any;
@@ -813,7 +781,6 @@ test("agent decision projects a built itinerary without TypeScript routing", () 
           roi: { roiScore: 1.2 },
           conflicts: [],
           tripMap: { title: "AUSA" },
-          redactedCount: 0,
         },
       },
     ],
@@ -830,15 +797,12 @@ test("agent decision projects multiple framework-built event options", () => {
   const base = {
     ok: false,
     mode: "deterministic",
-    persona: "EA_G8",
     question: "Plan AUSA for L1",
     answer: null,
     toolCalls: [],
     menu: null,
     itinerary: null,
     tripMap: null,
-    redactedCount: null,
-    rejected: false,
     stage: "plan",
     clarify: null,
   } as any;
@@ -851,7 +815,6 @@ test("agent decision projects multiple framework-built event options", () => {
     roi: { roiScore: days, overBudget: false },
     conflicts: [],
     tripMap: { days },
-    redactedCount: 0,
   });
   const result = agentDecisionToPlanResult(
     base,
@@ -962,8 +925,6 @@ test("optionsToPlanResult renders an AREA options envelope (no event) — area n
     menu: null,
     itinerary: null,
     tripMap: null,
-    redactedCount: null,
-    rejected: false,
     stage: "plan",
     clarify: null,
   } as any;
@@ -1016,8 +977,6 @@ test("optionsToPlanResult renders an AREA options envelope (no event) — area n
       },
     ],
     recommendedOptionId: "5d",
-    redactedCount: 0,
-    rejected: false,
   } as any;
 
   const pr = optionsToPlanResult(base, opts, null);
@@ -1095,8 +1054,6 @@ test("optionsToPlanResult narrates SINGLE-AUDIENCE options grouped by engagement
     menu: null,
     itinerary: null,
     tripMap: null,
-    redactedCount: null,
-    rejected: false,
     stage: "plan",
     clarify: null,
   } as any;
@@ -1151,8 +1108,6 @@ test("optionsToPlanResult narrates SINGLE-AUDIENCE options grouped by engagement
       },
     ],
     recommendedOptionId: "industry",
-    redactedCount: 0,
-    rejected: false,
   } as any;
 
   const pr = optionsToPlanResult(base, opts, null);

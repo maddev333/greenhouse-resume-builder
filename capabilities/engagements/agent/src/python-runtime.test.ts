@@ -31,7 +31,6 @@ test("callGovernedTool preserves the Python capture contract", async (t) => {
 
   const result = await callGovernedTool({
     mcpUrl: "http://mcp.test/mcp",
-    persona: "EA_G8",
     traceId: "trace-ts",
     name: "search_contacts",
     args: { query: "cyber" },
@@ -46,15 +45,14 @@ test("Python runtime HTTP status is preserved for the gateway", async (t) => {
     globalThis.fetch = originalFetch;
   });
   globalThis.fetch = (async () =>
-    new Response(
-      JSON.stringify({ detail: "Denied by governance." }),
-      { status: 403, headers: { "content-type": "application/json" } },
-    )) as typeof fetch;
+    new Response(JSON.stringify({ detail: "Denied by governance." }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
 
   await assert.rejects(
     callGovernedTool({
       mcpUrl: "http://mcp.test/mcp",
-      persona: "EA_G8",
       traceId: "trace-denied",
       name: "search_contacts",
       args: { query: "blocked" },

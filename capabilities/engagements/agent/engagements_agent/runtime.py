@@ -178,7 +178,6 @@ class AgentRuntime:
                 try:
                     result = await self.mcp_client.call_tool(
                         mcp_url=mcp_url or request.mcp_url,
-                        persona=request.persona,
                         name=name,
                         arguments={
                             key: value

@@ -1,5 +1,5 @@
 /**
- * Chat host UI (M6). A chat window + persona selector that calls the M5 orchestrator (/ask) and
+ * Chat host UI (M6). A chat window that calls the M5 orchestrator (/ask) and
  * renders its answer, its option menu (candidate cards), and — when the orchestrator returns a
  * `tripMap` — the sandboxed ui://trip-map MCP App via <TripMapHost> (see ./implementation).
  */
@@ -17,39 +17,6 @@ import { getTheme, toggleTheme, onThemeChange, type Theme } from "./theme";
 import "./global.css";
 
 const TRIP_MAP_RESOURCE_URI = "ui://trip-map/trip-map.html";
-
-interface Persona {
-  id: string;
-  label: string;
-  hint: string;
-}
-
-// The demo personas the engagements MCP server understands (x-demo-persona). The trim differs:
-// EA_G8 sees the G8-scoped contact (C4) that EA_BASIC does not; NO_TENANT is fail-closed;
-// CROSS_TENANT is isolated (empty).
-const PERSONAS: Persona[] = [
-  {
-    id: "EA_G8",
-    label: "EA · G8 staff",
-    hint: "Full G8 trim — sees the extra financial-liaison contact",
-  },
-  {
-    id: "EA_BASIC",
-    label: "EA · basic",
-    hint: "Baseline EA — one more contact redacted",
-  },
-  { id: "ADMIN", label: "Admin", hint: "Elevated — widest visibility" },
-  {
-    id: "CROSS_TENANT",
-    label: "Cross-tenant",
-    hint: "Different tenant — isolation returns nothing",
-  },
-  {
-    id: "NO_TENANT",
-    label: "No tenant",
-    hint: "Missing tenant claim — access is rejected (fail-closed)",
-  },
-];
 
 const SAMPLE_QUESTION =
   "I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?";
@@ -192,15 +159,12 @@ interface PlanResult {
   mode?: string;
   /** When mode === 'deterministic', WHY the LLM path wasn't used (surfaced as a hoverable "why" chip). */
   deterministicReason?: string | null;
-  persona?: string;
   question?: string;
   answer?: string;
   toolCalls?: { name: string }[];
   menu?: MenuItem[] | null;
   itinerary?: ItineraryDetail | null;
   tripMap?: unknown;
-  redactedCount?: number | null;
-  rejected?: boolean;
   error?: string;
 
   // Leader-first, multi-option `/ask` envelope (additive; absent on the legacy single-plan path).
@@ -244,7 +208,6 @@ interface PlanResult {
 interface EventPlanContext {
   version: 1;
   kind: "event";
-  persona: string;
   leaderId: string;
   eventId: string;
   contactIds: string[];
@@ -257,18 +220,19 @@ interface ConversationHistoryMessage {
   text: string;
 }
 
-/** Reduce the last rendered plan to ids only; the gateway re-authorizes every id before follow-up use. */
+/** Reduce the last rendered plan to ids only; the gateway re-resolves every id before follow-up use. */
 function eventPlanContextFromResult(
   result: PlanResult,
-  persona: string,
   selectedOption?: AskOption,
 ): EventPlanContext | null {
-  if (result.conversationContext?.persona === persona) {
+  if (result.conversationContext) {
     return result.conversationContext;
   }
   const recommended =
     selectedOption ??
-    result.options?.find((option) => option.id === result.recommendedOptionId) ??
+    result.options?.find(
+      (option) => option.id === result.recommendedOptionId,
+    ) ??
     result.options?.find((option) => option.recommended) ??
     null;
   const itinerary = recommended?.itinerary ?? result.itinerary ?? null;
@@ -288,7 +252,6 @@ function eventPlanContextFromResult(
   return {
     version: 1,
     kind: "event",
-    persona,
     leaderId,
     eventId,
     contactIds,
@@ -414,7 +377,6 @@ interface CategoryCoverageRef {
 interface OptionsResult {
   ok?: boolean;
   stage?: "clarify" | "options";
-  persona?: string;
   answer?: string | null;
   area?: {
     id?: string;
@@ -431,8 +393,6 @@ interface OptionsResult {
   areaEvents?: AreaEventRef[];
   categoryBreakdown?: CategoryCoverageRef[];
   absorbedEventIds?: string[];
-  redactedCount?: number | null;
-  rejected?: boolean;
   questions?: OptionQuestion[];
   error?: string;
 }
@@ -441,7 +401,6 @@ interface ChatMessage {
   id: number;
   role: "user" | "assistant";
   text?: string;
-  persona?: string;
   result?: PlanResult;
   options?: OptionsResult;
   error?: string;
@@ -463,12 +422,10 @@ let nextId = 1;
 // ============================================================================================
 function TripMapHost({
   config,
-  persona,
   tripMap,
   answer,
 }: {
   config: HostConfig;
-  persona: string;
   tripMap: unknown;
   answer?: string;
 }) {
@@ -496,7 +453,7 @@ function TripMapHost({
 
     (async () => {
       try {
-        client = await connectToServer(config.engagementsMcpUrl, persona);
+        client = await connectToServer(config.engagementsMcpUrl);
         const resource = await getUiResource(client, TRIP_MAP_RESOURCE_URI);
         if (disposed) return;
         bridge = await renderTripMapApp({
@@ -737,12 +694,10 @@ function AreaBriefing({
 
 function OptionsBubble({
   config,
-  persona,
   options,
   onPickRegion,
 }: {
   config: HostConfig;
-  persona: string;
   options: OptionsResult;
   onPickRegion: (regionId: string, label: string) => void;
 }) {
@@ -785,7 +740,6 @@ function OptionsBubble({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          persona,
           regionId: options.area?.id,
           window: options.window ?? undefined,
           leaderId,
@@ -814,7 +768,6 @@ function OptionsBubble({
     return (
       <div className="bubble assistant">
         <div className="meta-row">
-          <span className="chip chip-persona">{persona}</span>
           <span className="chip">clarify</span>
         </div>
         {options.answer && <div className="answer">{options.answer}</div>}
@@ -834,7 +787,6 @@ function OptionsBubble({
     );
   }
 
-  const rejected = options.rejected;
   const survey = options.areaSurvey ?? [];
   const staleContacts = options.staleContacts ?? [];
   const areaEvents = options.areaEvents ?? [];
@@ -843,15 +795,7 @@ function OptionsBubble({
   return (
     <div className="bubble assistant">
       <div className="meta-row">
-        <span className="chip chip-persona">{persona}</span>
         <span className="chip chip-mode">options</span>
-        {rejected && <span className="chip chip-reject">access rejected</span>}
-        {typeof options.redactedCount === "number" &&
-          options.redactedCount > 0 && (
-            <span className="chip chip-redact">
-              🔒 {options.redactedCount} redacted
-            </span>
-          )}
       </div>
 
       {options.area && (
@@ -876,96 +820,78 @@ function OptionsBubble({
         categoryBreakdown={categoryBreakdown}
       />
 
-      {rejected ? (
-        <div className="answer error">
-          Access rejected — no records are visible for this persona.
-        </div>
-      ) : (
-        <>
-          {leaderQ && (
-            <OptGroup q={leaderQ}>
-              {leaderQ.choices.map((c) => (
-                <label
-                  key={c.value}
-                  className={`opt-row ${leaderId === c.value ? "opt-sel" : ""}`}
-                >
-                  <input
-                    type="radio"
-                    name={`leader-${areaKey}`}
-                    checked={leaderId === c.value}
-                    onChange={() => setLeaderId(c.value)}
-                  />
-                  <span className="opt-label">
-                    {c.label}
-                    {c.recommended && (
-                      <span className="opt-badge">top pick</span>
-                    )}
-                  </span>
-                  {c.detail && (
-                    <span className="opt-detail muted">{c.detail}</span>
-                  )}
-                </label>
-              ))}
-            </OptGroup>
-          )}
-
-          {durationQ && (
-            <OptGroup q={durationQ}>
-              {durationQ.choices.map((c) => (
-                <label
-                  key={c.value}
-                  className={`opt-row ${durationTier === c.value ? "opt-sel" : ""}`}
-                >
-                  <input
-                    type="radio"
-                    name={`dur-${areaKey}`}
-                    checked={durationTier === c.value}
-                    onChange={() => setDurationTier(c.value)}
-                  />
-                  <span className="opt-label">
-                    {c.label}
-                    {c.recommended && (
-                      <span className="opt-badge">suggested</span>
-                    )}
-                  </span>
-                  {c.detail && (
-                    <span className="opt-detail muted">{c.detail}</span>
-                  )}
-                </label>
-              ))}
-            </OptGroup>
-          )}
-
-          {extQ && (
-            <OptGroup q={extQ}>
-              {extQ.choices.map((c) => (
-                <label
-                  key={c.value}
-                  className={`opt-row ${exts.has(c.value) ? "opt-sel" : ""}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={exts.has(c.value)}
-                    onChange={() => toggleExt(c.value)}
-                  />
-                  <span className="opt-label">{c.label}</span>
-                  {c.detail && (
-                    <span className="opt-detail muted">{c.detail}</span>
-                  )}
-                </label>
-              ))}
-            </OptGroup>
-          )}
-
-          <button
-            className="opt-build"
-            onClick={build}
-            disabled={building || !leaderId}
-          >
-            {building ? "Building…" : "Build itinerary ▸"}
-          </button>
-        </>
+      {leaderQ && (
+        <OptGroup q={leaderQ}>
+          {leaderQ.choices.map((c) => (
+            <label
+              key={c.value}
+              className={`opt-row ${leaderId === c.value ? "opt-sel" : ""}`}
+            >
+              <input
+                type="radio"
+                name={`leader-${areaKey}`}
+                checked={leaderId === c.value}
+                onChange={() => setLeaderId(c.value)}
+              />
+              <span className="opt-label">
+                {c.label}
+                {c.recommended && <span className="opt-badge">top pick</span>}
+              </span>
+              {c.detail && <span className="opt-detail muted">{c.detail}</span>}
+            </label>
+          ))}
+        </OptGroup>
       )}
+
+      {durationQ && (
+        <OptGroup q={durationQ}>
+          {durationQ.choices.map((c) => (
+            <label
+              key={c.value}
+              className={`opt-row ${durationTier === c.value ? "opt-sel" : ""}`}
+            >
+              <input
+                type="radio"
+                name={`dur-${areaKey}`}
+                checked={durationTier === c.value}
+                onChange={() => setDurationTier(c.value)}
+              />
+              <span className="opt-label">
+                {c.label}
+                {c.recommended && <span className="opt-badge">suggested</span>}
+              </span>
+              {c.detail && <span className="opt-detail muted">{c.detail}</span>}
+            </label>
+          ))}
+        </OptGroup>
+      )}
+
+      {extQ && (
+        <OptGroup q={extQ}>
+          {extQ.choices.map((c) => (
+            <label
+              key={c.value}
+              className={`opt-row ${exts.has(c.value) ? "opt-sel" : ""}`}
+            >
+              <input
+                type="checkbox"
+                checked={exts.has(c.value)}
+                onChange={() => toggleExt(c.value)}
+              />
+              <span className="opt-label">{c.label}</span>
+              {c.detail && <span className="opt-detail muted">{c.detail}</span>}
+            </label>
+          ))}
+        </OptGroup>
+      )}
+
+      <button
+        className="opt-build"
+        onClick={build}
+        disabled={building || !leaderId}
+      >
+        {building ? "Building…" : "Build itinerary ▸"}
+      </button>
 
       {buildErr && <div className="answer error">{buildErr}</div>}
       {built?.answer && <div className="answer">{built.answer}</div>}
@@ -979,7 +905,6 @@ function OptionsBubble({
       {built?.tripMap != null && (
         <TripMapHost
           config={config}
-          persona={persona}
           tripMap={built.tripMap}
           answer={built.answer}
         />
@@ -994,11 +919,9 @@ function OptionsBubble({
 function OptionDetail({
   option,
   config,
-  persona,
 }: {
   option: AskOption;
   config: HostConfig;
-  persona: string;
 }) {
   const [showMap, setShowMap] = useState(false);
   const it = option.itinerary ?? undefined;
@@ -1154,7 +1077,6 @@ function OptionDetail({
           {showMap && (
             <TripMapHost
               config={config}
-              persona={persona}
               tripMap={option.tripMap}
               answer={option.answer ?? undefined}
             />
@@ -1193,7 +1115,6 @@ function AssistantBubble({
       </div>
     );
   }
-  const persona = msg.persona || r.persona || "";
   const menu = r.menu ?? [];
   const tools = r.toolCalls?.map((t) => t.name) ?? [];
   const leaderQ = r.questions?.find((q) => q.id === "leader");
@@ -1205,7 +1126,6 @@ function AssistantBubble({
   return (
     <div className="bubble assistant">
       <div className="meta-row">
-        <span className="chip chip-persona">{persona}</span>
         {r.mode && (
           <span
             className={`chip chip-mode chip-${r.mode}`}
@@ -1229,14 +1149,6 @@ function AssistantBubble({
             </span>
           )}
         {r.stage && <span className="chip chip-mode">{r.stage}</span>}
-        {r.rejected && (
-          <span className="chip chip-reject">access rejected</span>
-        )}
-        {typeof r.redactedCount === "number" && r.redactedCount > 0 && (
-          <span className="chip chip-redact">
-            🔒 {r.redactedCount} redacted
-          </span>
-        )}
       </div>
 
       {r.error && <div className="answer error">{r.error}</div>}
@@ -1389,7 +1301,7 @@ function AssistantBubble({
                   onClick={() => {
                     setSelectedOptionId(selected ? null : o.id);
                     if (!selected) {
-                      const context = eventPlanContextFromResult(r, persona, o);
+                      const context = eventPlanContextFromResult(r, o);
                       if (context) onPlanContext(context);
                     }
                   }}
@@ -1421,9 +1333,7 @@ function AssistantBubble({
                     🎯 {o.categoryMix}
                   </div>
                 )}
-                {selected && (
-                  <OptionDetail option={o} config={config} persona={persona} />
-                )}
+                {selected && <OptionDetail option={o} config={config} />}
               </div>
             );
           })}
@@ -1440,12 +1350,7 @@ function AssistantBubble({
       )}
 
       {!isOptions && r.tripMap != null && (
-        <TripMapHost
-          config={config}
-          persona={persona}
-          tripMap={r.tripMap}
-          answer={r.answer}
-        />
+        <TripMapHost config={config} tripMap={r.tripMap} answer={r.answer} />
       )}
 
       {tools.length > 0 && (
@@ -1461,7 +1366,6 @@ function AssistantBubble({
 function App() {
   const [config, setConfig] = useState<HostConfig | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [persona, setPersona] = useState<string>("EA_G8");
   const [input, setInput] = useState<string>(SAMPLE_QUESTION);
   const [busy, setBusy] = useState(false);
   const [theme, setThemeState] = useState<Theme>(getTheme());
@@ -1481,17 +1385,13 @@ function App() {
     });
   }, [messages, busy]);
 
-  // Hot topics are persona-trimmed, so refetch whenever the caller (persona) changes. A rejected
-  // persona (e.g. NO_TENANT) yields none — the same security-trim beat as the rest of the demo.
   useEffect(() => {
     if (!config) return;
     let cancelled = false;
-    fetch(
-      `${config.orchestratorUrl}/topics?persona=${encodeURIComponent(persona)}`,
-    )
+    fetch(`${config.orchestratorUrl}/topics`)
       .then((r) => r.json())
       .then((d) => {
-        if (!cancelled) setHotTopics(d?.rejected ? [] : (d?.topics ?? []));
+        if (!cancelled) setHotTopics(d?.topics ?? []);
       })
       .catch(() => {
         if (!cancelled) setHotTopics([]);
@@ -1499,7 +1399,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [config, persona]);
+  }, [config]);
 
   // Free-form ask — the primary interaction. `qOverride` lets a chip fire a starter question
   // without clearing whatever the user has typed. `leaderId` re-asks the SAME question once the EA
@@ -1513,13 +1413,11 @@ function App() {
   ) {
     const question = (qOverride ?? input).trim();
     if (!question || busy || !config) return;
-    const usedPersona = persona;
     const context =
-      qOverride === undefined && planContextRef.current?.persona === usedPersona
-        ? planContextRef.current
+      qOverride === undefined
+        ? (planContextRef.current ?? undefined)
         : undefined;
     const history: ConversationHistoryMessage[] = messages
-      .filter((message) => message.persona === usedPersona)
       .reduce<ConversationHistoryMessage[]>((items, message) => {
         if (message.role === "user" && message.text) {
           items.push({ role: "user", text: message.text });
@@ -1537,7 +1435,6 @@ function App() {
         id: nextId++,
         role: "user",
         text: userEcho ?? question,
-        persona: usedPersona,
       },
     ]);
     if (qOverride === undefined) setInput("");
@@ -1548,7 +1445,6 @@ function App() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           question,
-          persona: usedPersona,
           ...(leaderId ? { leaderId } : {}),
           ...(category ? { category } : {}),
           ...(context ? { context } : {}),
@@ -1556,19 +1452,15 @@ function App() {
         }),
       });
       const result = (await res.json()) as PlanResult;
-      const nextContext = eventPlanContextFromResult(result, usedPersona);
+      const nextContext = eventPlanContextFromResult(result);
       if (nextContext) planContextRef.current = nextContext;
-      setMessages((m) => [
-        ...m,
-        { id: nextId++, role: "assistant", persona: usedPersona, result },
-      ]);
+      setMessages((m) => [...m, { id: nextId++, role: "assistant", result }]);
     } catch (e) {
       setMessages((m) => [
         ...m,
         {
           id: nextId++,
           role: "assistant",
-          persona: usedPersona,
           error: e instanceof Error ? e.message : String(e),
         },
       ]);
@@ -1585,14 +1477,10 @@ function App() {
     label?: string;
   }) {
     if (busy || !config) return;
-    const usedPersona = persona;
     const userText = opts.label
       ? `Plan a trip · ${opts.label}`
       : opts.question || "Plan a trip";
-    setMessages((m) => [
-      ...m,
-      { id: nextId++, role: "user", text: userText, persona: usedPersona },
-    ]);
+    setMessages((m) => [...m, { id: nextId++, role: "user", text: userText }]);
     if (opts.question !== undefined) setInput("");
     setBusy(true);
     try {
@@ -1602,21 +1490,16 @@ function App() {
         body: JSON.stringify({
           question: opts.question,
           regionId: opts.regionId,
-          persona: usedPersona,
         }),
       });
       const options = (await res.json()) as OptionsResult;
-      setMessages((m) => [
-        ...m,
-        { id: nextId++, role: "assistant", persona: usedPersona, options },
-      ]);
+      setMessages((m) => [...m, { id: nextId++, role: "assistant", options }]);
     } catch (e) {
       setMessages((m) => [
         ...m,
         {
           id: nextId++,
           role: "assistant",
-          persona: usedPersona,
           error: e instanceof Error ? e.message : String(e),
         },
       ]);
@@ -1635,8 +1518,6 @@ function App() {
       `Plan a trip to ${label} — who should go, how long, and what's worth doing there?`,
     );
 
-  const activePersona = PERSONAS.find((p) => p.id === persona);
-
   return (
     <div className="app">
       <header className="topbar">
@@ -1646,29 +1527,10 @@ function App() {
             <div className="brand-title">
               Strategic Engagements — Trip Planner
             </div>
-            <div className="brand-sub muted">
-              chat host · MCP Apps · persona-trimmed retrieval
-            </div>
+            <div className="brand-sub muted">chat host · MCP Apps</div>
           </div>
         </div>
         <div className="controls">
-          <label className="persona-select">
-            <span className="muted">persona</span>
-            <select
-              value={persona}
-              onChange={(e) => {
-                planContextRef.current = null;
-                setPersona(e.target.value);
-              }}
-              disabled={busy}
-            >
-              {PERSONAS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </label>
           <button
             className="icon-btn"
             onClick={() => setThemeState(toggleTheme())}
@@ -1678,10 +1540,6 @@ function App() {
           </button>
         </div>
       </header>
-
-      {activePersona && (
-        <div className="persona-hint muted">{activePersona.hint}</div>
-      )}
 
       <div className="messages" ref={listRef}>
         {messages.length === 0 && (
@@ -1744,7 +1602,6 @@ function App() {
                 (m.options ? (
                   <OptionsBubble
                     config={config}
-                    persona={m.persona || m.options.persona || persona}
                     options={m.options}
                     onPickRegion={onPickRegion}
                   />

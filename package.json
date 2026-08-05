@@ -6,7 +6,8 @@
     "package:webapps": "node scripts/package-webapps.mjs",
     "package:webapp:gateway": "node scripts/package-webapps.mjs gateway",
     "package:webapp:runtime": "node scripts/package-webapps.mjs runtime",
-    "package:webapp:mcp": "node scripts/package-webapps.mjs mcp"
+    "package:webapp:mcp": "node scripts/package-webapps.mjs mcp",
+    "package:webapp:ui": "node scripts/package-webapps.mjs ui"
   },
   "workspaces": [
     "shared",

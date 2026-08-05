@@ -1,15 +1,11 @@
 /**
  * The orchestrator — the "chat brain" (MVP-PLAN M5).
  *
- * Turns a natural-language trip question into a security-trimmed engagement plan by composing
- * the engagements capability's MCP tools. Primary path is Microsoft Agent Framework running
- * in the governed Python service; when the model is not configured/reachable it falls back to
- * a deterministic router so the demo always works offline. Either way it returns the ranked
- * option menu, the itinerary, and the `ui://trip-map` payload for the chat host to render.
- *
- * Auth boundary: the caller's persona is passed to the capability as `x-demo-persona`, which
- * stands in for verified Keycloak claims. The capability enforces the trim server-side; the
- * orchestrator only ever sees authorized rows.
+ * Turns a natural-language trip question into an engagement plan by composing the engagements
+ * capability's MCP tools. Primary path is Microsoft Agent Framework running in the governed
+ * Python service; when the model is not configured/reachable it falls back to a deterministic
+ * router so the demo always works offline. Either way it returns the ranked option menu, the
+ * itinerary, and the `ui://trip-map` payload for the chat host to render.
  */
 import {
   makeToolClient,
@@ -50,8 +46,6 @@ function throwIfGovernanceDenied(error: unknown): void {
 
 export interface PlanRequest {
   question: string;
-  /** Demo persona → security trim. EA_BASIC | EA_G8 | ADMIN | CROSS_TENANT | NO_TENANT. */
-  persona?: string;
   /** Leader whose time is planned; defaults to ENGAGEMENTS_DEFAULT_LEADER or the first leader. */
   leaderId?: string;
   /** How many top candidates to route into the itinerary. */
@@ -67,7 +61,7 @@ export interface PlanRequest {
   days?: number;
   /** Prior event plan supplied by the chat host for grounded conversational follow-ups. */
   context?: EventPlanContext;
-  /** Recent same-persona transcript used only to resolve conversational references. */
+  /** Recent transcript used only to resolve conversational references. */
   history?: ConversationHistoryMessage[];
   /** Engagements MCP endpoint; defaults to ENGAGEMENTS_MCP_URL or http://localhost:3010/mcp. */
   serverUrl?: string;
@@ -85,7 +79,6 @@ export interface ConversationHistoryMessage {
 export interface EventPlanContext {
   version: 1;
   kind: "event";
-  persona: string;
   leaderId: string;
   eventId: string;
   contactIds: string[];
@@ -119,7 +112,6 @@ export interface PlanResult {
   mode: "llm" | "deterministic";
   /** When `mode === 'deterministic'`, WHY the LLM path wasn't taken (null/absent on the LLM path). */
   deterministicReason?: DeterministicReason | null;
-  persona: string;
   question: string;
   /** Final narrative for the chat surface (model composed, or rendered from tool text). */
   answer: string | null;
@@ -130,8 +122,6 @@ export interface PlanResult {
   itinerary: any | null;
   /** The ui://trip-map App payload for the host to render. */
   tripMap: any | null;
-  redactedCount: number | null;
-  rejected: boolean;
   error?: string;
 
   // ── Leader-first, multi-option `/ask` envelope (additive; absent on the legacy single-plan path) ──
@@ -183,8 +173,6 @@ const DEFAULT_TOPN = (): number => {
   const n = Number(process.env.ENGAGEMENTS_TOP_N);
   return Number.isFinite(n) && n > 0 ? n : 3;
 };
-const DEFAULT_PERSONA = (): string =>
-  process.env.ENGAGEMENTS_DEMO_PERSONA || "EA_BASIC";
 
 export function buildSystemPrompt(
   defaultLeaderId: string,
@@ -247,16 +235,15 @@ export function buildSystemPrompt(
     "6. Area discovery — only when the user asks what ELSE is in the area, who they are missing, or for",
     "   organizations they do not already track: call search_businesses with the area anchor and a focus",
     "   (industry / manufacturing / technology / research / academia / government / venues). Its results are",
-    "   PUBLIC place data from a separate capability — they carry no relationship history and no security",
-    "   trim. You MUST then call search_contacts for the same area and report a business as a new lead ONLY",
-    "   when its name matches no authorized contact organization. Present these as awareness items, never as",
+    "   PUBLIC place data from a separate capability — they carry no relationship history. You MUST then call",
+    "   search_contacts for the same area and report a business as a new lead ONLY",
+    "   when its name matches no known contact organization. Present these as awareness items, never as",
     "   existing relationships, and never place one into an itinerary: build_itinerary routes authorized",
     "   contact ids only, so an undiscovered business cannot become a stop until it is onboarded as a contact.",
     "   An awareness sweep is informational, so return intent=lookup and stage=answer — NOT intent=area,",
     "   which is reserved for actually building a trip. Only switch to intent=area if the user then asks to",
     "   plan travel around what you surfaced.",
-    "7. Never invent contacts, events, ids, attributes, choices, or metrics. The capability applies the",
-    "   security trim; expose its redactedCount and access-rejection result honestly.",
+    "7. Never invent contacts, events, ids, attributes, choices, or metrics.",
     "8. Keep answer concise and EA-ready. The structured decision fields control the host UI.",
   ].join("\n");
 }
@@ -295,7 +282,7 @@ function buildAgentUserPrompt(
   if (history.length > 0) {
     sections.push(
       "",
-      "Recent same-persona conversation (referential context only; verify factual claims with tools):",
+      "Recent conversation (referential context only; verify factual claims with tools):",
       ...history.map(
         (message) =>
           `${message.role === "user" ? "User" : "Assistant"}: ${message.text}`,
@@ -458,10 +445,6 @@ function lastCapture(
   return undefined;
 }
 
-function isRejected(result: any): boolean {
-  return !!result?.rejected;
-}
-
 /** True when the user is asking to expand the current itinerary into a daily view. */
 export function isDayByDayFollowUp(question: string): boolean {
   const q = question.trim().toLowerCase();
@@ -607,19 +590,17 @@ export function isContextualFollowUpQuestion(question: string): boolean {
 }
 
 /**
- * Validate untrusted chat context and bind it to the current persona. The subsequent MCP calls
- * independently re-authorize the event and every contact id.
+ * Validate untrusted chat context. The subsequent MCP calls independently re-resolve the event
+ * and every contact id.
  */
 export function normalizeEventPlanContext(
   value: unknown,
-  persona: string,
 ): EventPlanContext | null {
   if (!value || typeof value !== "object") return null;
   const context = value as Record<string, unknown>;
   if (
     context.version !== 1 ||
     context.kind !== "event" ||
-    context.persona !== persona ||
     typeof context.leaderId !== "string" ||
     !context.leaderId.trim() ||
     typeof context.eventId !== "string" ||
@@ -669,7 +650,6 @@ export function normalizeEventPlanContext(
   return {
     version: 1,
     kind: "event",
-    persona,
     leaderId: context.leaderId.trim(),
     eventId: context.eventId.trim(),
     contactIds,
@@ -1276,32 +1256,15 @@ async function buildEventContextualFollowUp(
   });
   const suggest =
     lastCapture(client.captured, "suggest_candidates")?.result ?? {};
-  if (isRejected(suggest)) {
-    return {
-      ...base,
-      deterministicReason: "contextual-follow-up",
-      rejected: true,
-      answer:
-        "Access to the prior itinerary is no longer authorized for this persona.",
-      toolCalls: client.captured.map((call) => ({
-        name: call.name,
-        args: call.args,
-      })),
-      redactedCount: suggest.redactedCount ?? null,
-    };
-  }
   if (!suggest.event || suggest.error) {
     return {
       ...base,
       deterministicReason: "contextual-follow-up",
-      answer:
-        suggest.error ??
-        "The prior anchor event is no longer available to this persona.",
+      answer: suggest.error ?? "The prior anchor event is no longer available.",
       toolCalls: client.captured.map((call) => ({
         name: call.name,
         args: call.args,
       })),
-      redactedCount: suggest.redactedCount ?? null,
     };
   }
 
@@ -1326,22 +1289,18 @@ async function buildEventContextualFollowUp(
   });
 
   const build = lastCapture(client.captured, "build_itinerary")?.result ?? {};
-  const rejected = isRejected(build);
   const itinerary = extractItinerary(build);
   const kind = contextualEventQuestionKind(question);
   const acceptedIds: string[] = (build?.accepted ?? [])
     .map((contact: any) => contact?.contactId)
     .filter((id: unknown): id is string => typeof id === "string");
   const refreshedContext =
-    normalizeEventPlanContext(
-      {
-        ...context,
-        leaderId: build?.leader?.id ?? context.leaderId,
-        eventId: build?.event?.id ?? context.eventId,
-        contactIds: acceptedIds.length ? acceptedIds : context.contactIds,
-      },
-      context.persona,
-    ) ?? context;
+    normalizeEventPlanContext({
+      ...context,
+      leaderId: build?.leader?.id ?? context.leaderId,
+      eventId: build?.event?.id ?? context.eventId,
+      contactIds: acceptedIds.length ? acceptedIds : context.contactIds,
+    }) ?? context;
   let leaders: any[] = [];
   let broaderContacts: any[] = [];
   if (
@@ -1379,7 +1338,7 @@ async function buildEventContextualFollowUp(
   const answer = build.error
     ? build.error
     : !itinerary
-      ? "The prior itinerary could not be rebuilt from the currently authorized contacts."
+      ? "The prior itinerary could not be rebuilt from the current contacts."
       : scheduleEdit
         ? scheduleEdit.answer
         : kind === "day-by-day"
@@ -1403,7 +1362,7 @@ async function buildEventContextualFollowUp(
                           : renderEventOverview(build);
   return {
     ...base,
-    ok: !rejected && !build.error && itinerary != null,
+    ok: !build.error && itinerary != null,
     deterministicReason: "contextual-follow-up",
     answer,
     toolCalls: client.captured.map((call) => ({
@@ -1413,8 +1372,6 @@ async function buildEventContextualFollowUp(
     menu: null,
     itinerary,
     tripMap: null,
-    redactedCount: build.redactedCount ?? suggest.redactedCount ?? null,
-    rejected,
     stage: "plan",
     clarify: null,
     leaderId: build.leader?.id ?? context.leaderId,
@@ -1448,7 +1405,6 @@ async function deterministicPlan(
     if (radiusAsk.company) planArgs.company = radiusAsk.company;
     else if (radiusAsk.city) planArgs.city = radiusAsk.city;
     const plan: any = await client.callTool("plan_radius", planArgs);
-    if (isRejected(plan)) return;
     if (!plan?.error && (plan?.stops?.length ?? 0) > 0) {
       const buildArgs = radiusBuildArgsFromPlan(plan, leaderId);
       if (buildArgs) {
@@ -1467,7 +1423,6 @@ async function deterministicPlan(
     eventQuery: anchor,
     ...(topicIds.length ? { topicIds } : {}),
   });
-  if (isRejected(suggest)) return;
 
   // Widen if the topic filter zeroed the menu.
   if ((suggest?.candidates?.length ?? 0) === 0 && topicIds.length) {
@@ -1502,21 +1457,6 @@ async function buildTopicLandscape(
     topicIds,
   });
   const eventsRes: any = await client.callTool("search_events", { topicIds });
-  const redactedCount =
-    Number(contactsRes?.redactedCount ?? 0) +
-    Number(eventsRes?.redactedCount ?? 0);
-  if (contactsRes?.rejected || eventsRes?.rejected) {
-    return {
-      ...base,
-      ok: false,
-      stage: "answer",
-      answer:
-        "Access to that engagement footprint was rejected for this persona.",
-      topicIds,
-      redactedCount,
-      rejected: true,
-    };
-  }
 
   const contacts = [...(contactsRes?.contacts ?? [])].sort(
     (a: any, b: any) =>
@@ -1557,7 +1497,7 @@ async function buildTopicLandscape(
             `${contact.city}, ${contact.state}; ${contact.status}; strategic value ${contact.strategicValue}.`,
         )
         .join("\n")
-    : "No authorized contacts are currently visible for this topic.";
+    : "No contacts are currently visible for this topic.";
   const locationText = activeLocations.length
     ? activeLocations
         .slice(0, 5)
@@ -1567,7 +1507,7 @@ async function buildTopicLandscape(
             `${location.events} event${location.events === 1 ? "" : "s"})`,
         )
         .join("; ")
-    : "No authorized contact or event locations are currently visible.";
+    : "No contact or event locations are currently visible.";
   const messageText =
     approved.length === topics.length && topics.length > 0
       ? `Yes — an approved message is cataloged for ${topicName}.`
@@ -1581,15 +1521,11 @@ async function buildTopicLandscape(
     stage: "answer",
     deterministicReason: "topic-landscape",
     answer:
-      `Current authorized engagement picture for ${topicName}:\n\n` +
+      `Current engagement picture for ${topicName}:\n\n` +
       `Who to meet\n${meetingText}\n\n` +
       `Most active locations\n${locationText}\n\n` +
-      `Approved message\n${messageText}` +
-      (redactedCount > 0
-        ? `\n\n${redactedCount} result${redactedCount === 1 ? " was" : "s were"} redacted by access trim.`
-        : ""),
+      `Approved message\n${messageText}`,
     topicIds,
-    redactedCount,
     toolCalls: client.captured.map((call) => ({
       name: call.name,
       args: call.args,
@@ -1620,16 +1556,14 @@ function assemble(
 ): PlanResult {
   const suggest = lastCapture(captured, "suggest_candidates")?.result;
   const build = lastCapture(captured, "build_itinerary")?.result;
-  const rejected = isRejected(suggest) || isRejected(build);
 
   const menu: any[] | null = suggest?.candidates ?? null;
   const itinerary = extractItinerary(build);
   const tripMap = build?.tripMap ?? null;
-  const redactedCount = build?.redactedCount ?? suggest?.redactedCount ?? null;
 
   return {
     ...base,
-    ok: !rejected && (menu != null || itinerary != null),
+    ok: menu != null || itinerary != null,
     mode,
     deterministicReason: mode === "deterministic" ? deterministicReason : null,
     answer,
@@ -1637,8 +1571,6 @@ function assemble(
     menu,
     itinerary,
     tripMap,
-    redactedCount,
-    rejected,
   };
 }
 
@@ -1728,9 +1660,7 @@ export function agentDecisionToPlanResult(
   const suggest = lastCapture(captured, "suggest_candidates")?.result;
   const successfulBuildCalls = captured.filter(
     (call) =>
-      call.name === "build_itinerary" &&
-      isCompleteBuildResult(call.result) &&
-      !isRejected(call.result),
+      call.name === "build_itinerary" && isCompleteBuildResult(call.result),
   );
   const build = successfulBuildCalls.at(-1)?.result;
   const event = firstCapturedEvent(captured);
@@ -1748,40 +1678,6 @@ export function agentDecisionToPlanResult(
       }),
     ),
   ];
-  const lookupRedactionCounts = lookupCalls
-    .map((call) => call.result?.redactedCount)
-    .filter((count): count is number => typeof count === "number");
-  const lookupRedactedCount = lookupRedactionCounts.length
-    ? lookupRedactionCounts.reduce((sum, count) => sum + count, 0)
-    : null;
-  const rejected = captured.some((call) => isRejected(call.result));
-  const redactedCount =
-    build?.redactedCount ??
-    plan?.redactedCount ??
-    radius?.redactedCount ??
-    survey?.redactedCount ??
-    leadersResult?.redactedCount ??
-    suggest?.redactedCount ??
-    lookupRedactedCount ??
-    null;
-
-  if (rejected) {
-    return {
-      ...base,
-      mode: "llm",
-      deterministicReason: null,
-      answer: decision.answer,
-      toolCalls,
-      rejected: true,
-      redactedCount,
-      stage: decision.stage === "clarify" ? "clarify" : "plan",
-      clarify: decision.stage === "clarify" ? decision.clarify : null,
-      category: decision.category,
-      leaderId: decision.leaderId,
-      event,
-      area: source?.area ?? build?.area ?? null,
-    };
-  }
 
   if (decision.stage === "options") {
     if (successfulBuildCalls.length < 2) {
@@ -1858,7 +1754,6 @@ export function agentDecisionToPlanResult(
       menu: recommendedBuild?.accepted ?? null,
       itinerary: recommended.itinerary,
       tripMap: recommended.tripMap,
-      redactedCount: recommendedBuild?.redactedCount ?? redactedCount,
     };
   }
 
@@ -1889,7 +1784,6 @@ export function agentDecisionToPlanResult(
         staleContacts: plan?.staleContacts ?? [],
         areaEvents: plan?.areaEvents ?? [],
         categoryBreakdown: plan?.categoryBreakdown ?? [],
-        redactedCount,
       };
     }
 
@@ -1919,7 +1813,6 @@ export function agentDecisionToPlanResult(
         questions: [
           leaderClarifyQuestion(leaders, leaders[0]?.leaderId ?? null),
         ],
-        redactedCount,
       };
     }
 
@@ -1977,10 +1870,9 @@ export function agentDecisionToPlanResult(
   return {
     ...projected,
     ok:
-      !rejected &&
-      (decision.stage === "answer"
+      decision.stage === "answer"
         ? decision.answer.trim().length > 0
-        : itinerary != null),
+        : itinerary != null,
     deterministicReason: null,
     stage: decision.stage === "answer" ? "answer" : "plan",
     clarify: null,
@@ -2000,33 +1892,28 @@ export function agentDecisionToPlanResult(
     menu,
     itinerary,
     tripMap: build?.tripMap ?? null,
-    redactedCount,
   };
 }
 
 export async function planTrip(req: PlanRequest): Promise<PlanResult> {
-  const persona = req.persona || DEFAULT_PERSONA();
   const topN = req.topN ?? DEFAULT_TOPN();
   const url = req.serverUrl || DEFAULT_URL();
 
   const base: PlanResult = {
     ok: false,
     mode: "deterministic",
-    persona,
     question: req.question,
     answer: null,
     toolCalls: [],
     menu: null,
     itinerary: null,
     tripMap: null,
-    redactedCount: null,
-    rejected: false,
     stage: "plan",
     clarify: null,
   };
 
   const contextualQuestion = isContextualFollowUpQuestion(req.question);
-  const suppliedEventContext = normalizeEventPlanContext(req.context, persona);
+  const suppliedEventContext = normalizeEventPlanContext(req.context);
   const eventContext = contextualQuestion ? suppliedEventContext : null;
 
   const contextualKind = eventContext
@@ -2038,7 +1925,7 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
   if (eventContext && contextualKind === "schedule-edit") {
     let mutationClient: ToolClient;
     try {
-      mutationClient = await makeToolClient(url, persona);
+      mutationClient = await makeToolClient(url);
     } catch (e: any) {
       throwIfGovernanceDenied(e);
       return {
@@ -2069,7 +1956,6 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
         system: buildSystemPrompt(resolveDefaultLeaderId(), topN),
         user: buildAgentUserPrompt(req, suppliedEventContext),
         mcpUrl: url,
-        persona,
         maxIterations: 10,
         discoveryMcpUrl: DISCOVERY_URL(),
       });
@@ -2103,7 +1989,7 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
 
   let client: ToolClient;
   try {
-    client = await makeToolClient(url, persona);
+    client = await makeToolClient(url);
   } catch (e: any) {
     throwIfGovernanceDenied(e);
     return {
@@ -2157,7 +2043,6 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
           categoryBreakdown: intel.categoryBreakdown,
           areaResolved: intel.area,
           today: intel.today,
-          redactedCount: intel.redactedCount,
           topicIds: intel.topicIds ?? topicIds,
           radiusMi: req.radiusMi,
           days,
@@ -2193,7 +2078,7 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
               ? " — hot topics to advance, stale relationships to re-engage, and timely events are below. "
               : ". ") +
             `Which engagement category should this trip focus on? Once you pick, I'll build the itinerary and recommend the best senior leader to send.`
-          : `No engagements found around ${intel.area?.name ?? "this area"} for this persona.`,
+          : `No engagements found around ${intel.area?.name ?? "this area"}.`,
         area: intel.area,
         today: intel.today,
         topicIds: intel.topicIds ?? topicIds,
@@ -2201,7 +2086,6 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
         staleContacts: intel.staleContacts,
         areaEvents: intel.areaEvents,
         categoryBreakdown: intel.categoryBreakdown,
-        redactedCount: intel.redactedCount,
         questions: hasCats ? [catQ] : [],
         toolCalls: toolCalls(),
       };
@@ -2241,7 +2125,6 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
         leaderId,
         eventId: event.id,
         topicIds,
-        persona,
       });
       const pr = optionsToPlanResult(base, opts, event);
       pr.deterministicReason = "event-anchored";
@@ -2293,7 +2176,7 @@ export async function planTrip(req: PlanRequest): Promise<PlanResult> {
 //   2. buildAreaItinerary → take the human's picks and produce the final route + ui://trip-map.
 //
 // Deterministic and LLM-free: `plan_options` already does the reasoning; the orchestrator only
-// resolves the anchor, forwards the persona trim, and shapes the option menus for the UI.
+// resolves the anchor and shapes the option menus for the UI.
 // ════════════════════════════════════════════════════════════════════════════
 
 /** One selectable option in a clarifying question. */
@@ -2316,7 +2199,6 @@ export interface OptionQuestion {
 export interface AreaOptionsRequest {
   /** Free-text ask; the area + topic focus are parsed from it when not given explicitly. */
   question?: string;
-  persona?: string;
   /** Explicit area anchor (any of these wins over parsing the question). */
   regionId?: string;
   region?: string;
@@ -2337,7 +2219,6 @@ export interface AreaOptionsResult {
   stage: "clarify" | "options";
   /** When `stage:'clarify'`, WHICH decision is pending (drives the single question returned). */
   clarify: "area" | "leader" | null;
-  persona: string;
   question: string | null;
   answer: string | null;
   area: any | null;
@@ -2360,15 +2241,12 @@ export interface AreaOptionsResult {
   extensionOptions: any[];
   absorbedEventIds: string[];
   onSiteDays: number | null;
-  redactedCount: number | null;
-  rejected: boolean;
   /** The option groups the UI renders (who/how long/extensions), or the single "which area?" ask. */
   questions: OptionQuestion[];
   error?: string;
 }
 
 export interface AreaBuildRequest {
-  persona?: string;
   regionId?: string;
   region?: string;
   city?: string;
@@ -2561,7 +2439,6 @@ function defaultAnchorEventId(plan: any): string | undefined {
 }
 
 function emptyOptions(
-  persona: string,
   question: string | null,
   window: { start: string; end: string } | null,
 ): AreaOptionsResult {
@@ -2569,7 +2446,6 @@ function emptyOptions(
     ok: false,
     stage: "options",
     clarify: null,
-    persona,
     question,
     answer: null,
     area: null,
@@ -2586,8 +2462,6 @@ function emptyOptions(
     extensionOptions: [],
     absorbedEventIds: [],
     onSiteDays: null,
-    redactedCount: null,
-    rejected: false,
     questions: [],
   };
 }
@@ -2600,14 +2474,13 @@ function emptyOptions(
 export async function planAreaOptions(
   req: AreaOptionsRequest,
 ): Promise<AreaOptionsResult> {
-  const persona = req.persona || DEFAULT_PERSONA();
   const url = req.serverUrl || DEFAULT_URL();
   const window = req.window || defaultWindow();
 
   const area = resolveAreaAnchor(req);
   if (!area) {
     return {
-      ...emptyOptions(persona, req.question ?? null, window),
+      ...emptyOptions(req.question ?? null, window),
       stage: "clarify",
       clarify: "area",
       answer:
@@ -2624,11 +2497,11 @@ export async function planAreaOptions(
 
   let client: ToolClient;
   try {
-    client = await makeToolClient(url, persona);
+    client = await makeToolClient(url);
   } catch (e: any) {
     throwIfGovernanceDenied(e);
     return {
-      ...emptyOptions(persona, req.question ?? null, window),
+      ...emptyOptions(req.question ?? null, window),
       error:
         `Cannot initialize the governed Python agent path for engagements MCP ${url}: ${e?.message || e}. ` +
         "Start the MCP server and the engagements agent workspace services.",
@@ -2651,7 +2524,7 @@ export async function planAreaOptions(
     // Area could not be resolved server-side → ask for it explicitly.
     if (plan.error) {
       return {
-        ...emptyOptions(persona, req.question ?? null, window),
+        ...emptyOptions(req.question ?? null, window),
         stage: "clarify",
         clarify: "area",
         answer: plan.error,
@@ -2659,16 +2532,15 @@ export async function planAreaOptions(
       };
     }
 
-    const rejected = !!plan.rejected;
     const leaderOptions: any[] = plan.leaderOptions ?? [];
 
     // STAGE 1a — ask WHO first. When the caller has not named a leader, make choosing the senior
     // leader an explicit decision (top pick flagged recommended) before we shape the duration and
     // extension menus, which are leader-specific. The UI re-calls plan-options with the picked
     // leaderId to advance to the option menus.
-    if (!rejected && !req.leaderId && leaderOptions.length > 0) {
+    if (!req.leaderId && leaderOptions.length > 0) {
       return {
-        ...emptyOptions(persona, req.question ?? null, plan.window ?? window),
+        ...emptyOptions(req.question ?? null, plan.window ?? window),
         stage: "clarify",
         clarify: "leader",
         answer:
@@ -2685,16 +2557,14 @@ export async function planAreaOptions(
         chosenLeaderId: plan.chosenLeaderId ?? null,
         absorbedEventIds: plan.absorbedEventIds ?? [],
         onSiteDays: plan.onSiteDays ?? null,
-        redactedCount: plan.redactedCount ?? null,
         questions: [leaderClarifyQuestion(leaderOptions, plan.chosenLeaderId)],
       };
     }
 
     return {
-      ok: !rejected && (plan.leaderOptions?.length ?? 0) > 0,
+      ok: (plan.leaderOptions?.length ?? 0) > 0,
       stage: "options",
       clarify: null,
-      persona,
       question: req.question ?? null,
       answer,
       area: plan.area ?? null,
@@ -2711,9 +2581,7 @@ export async function planAreaOptions(
       extensionOptions: plan.extensionOptions ?? [],
       absorbedEventIds: plan.absorbedEventIds ?? [],
       onSiteDays: plan.onSiteDays ?? null,
-      redactedCount: plan.redactedCount ?? null,
-      rejected,
-      questions: rejected ? [] : buildOptionQuestions(plan),
+      questions: buildOptionQuestions(plan),
     };
   } finally {
     await client.close().catch(() => {});
@@ -2722,7 +2590,7 @@ export async function planAreaOptions(
 
 /** Project a build_itinerary structuredContent into the compact itinerary the chat host renders. */
 function extractItinerary(build: any): any | null {
-  if (!build || isRejected(build)) return null;
+  if (!build) return null;
   return {
     leader: build.leader,
     event: build.event,
@@ -2748,17 +2616,14 @@ function extractItinerary(build: any): any | null {
 
 function assembleBuild(base: PlanResult, captured: CapturedCall[]): PlanResult {
   const build = lastCapture(captured, "build_itinerary")?.result;
-  const rejected = isRejected(build);
   const itinerary = extractItinerary(build);
   return {
     ...base,
-    ok: !rejected && itinerary != null,
+    ok: itinerary != null,
     toolCalls: captured.map((c) => ({ name: c.name, args: c.args })),
     menu: build?.accepted ?? null,
     itinerary,
     tripMap: build?.tripMap ?? null,
-    redactedCount: build?.redactedCount ?? null,
-    rejected,
   };
 }
 
@@ -2766,19 +2631,17 @@ function assembleBuild(base: PlanResult, captured: CapturedCall[]): PlanResult {
  * STAGE 2 — turn the human's picks (leader + duration tier + toggled extensions) into the final
  * itinerary + ui://trip-map. Prefers the UI-supplied `acceptedContactIds` (already derived from the
  * option menus); otherwise re-runs `plan_options` for the chosen leader to derive them. Always calls
- * `build_itinerary`, which re-authorizes every id server-side, so the persona trim still holds.
+ * `build_itinerary`, which re-resolves every id server-side.
  */
 export async function buildAreaItinerary(
   req: AreaBuildRequest,
 ): Promise<PlanResult> {
-  const persona = req.persona || DEFAULT_PERSONA();
   const url = req.serverUrl || DEFAULT_URL();
   const window = req.window || defaultWindow();
 
   const base: PlanResult = {
     ok: false,
     mode: "deterministic",
-    persona,
     question: req.leaderId
       ? `Build itinerary for ${req.leaderId}`
       : "Build itinerary",
@@ -2787,8 +2650,6 @@ export async function buildAreaItinerary(
     menu: null,
     itinerary: null,
     tripMap: null,
-    redactedCount: null,
-    rejected: false,
   };
 
   if (!req.leaderId)
@@ -2798,7 +2659,7 @@ export async function buildAreaItinerary(
 
   let client: ToolClient;
   try {
-    client = await makeToolClient(url, persona);
+    client = await makeToolClient(url);
   } catch (e: any) {
     throwIfGovernanceDenied(e);
     return {
@@ -2830,12 +2691,6 @@ export async function buildAreaItinerary(
         requireTopicMatch: false,
       });
       const plan = lastCapture(client.captured, "plan_options")?.result ?? {};
-      if (plan.rejected)
-        return {
-          ...assembleBuild(base, client.captured),
-          rejected: true,
-          answer: "Access rejected — no verified tenant claim.",
-        };
       if (plan.error) return { ...base, error: plan.error };
       if (acceptedContactIds.length === 0) {
         acceptedContactIds = selectedContactIds(plan, {
@@ -2920,7 +2775,6 @@ export interface AreaItineraryOption {
 
 export interface AreaItineraryOptionsResult {
   ok: boolean;
-  persona: string;
   question: string | null;
   leaderId: string | null;
   leaderName: string | null;
@@ -2934,8 +2788,6 @@ export interface AreaItineraryOptionsResult {
   recommendedOptionId: string | null;
   /** Area-wide engagement footprint across the four audiences (from the probe build). */
   categoryBreakdown?: any[];
-  redactedCount: number | null;
-  rejected: boolean;
   /** The resolved anchor event, when the options are event-anchored (else null/absent). */
   event?: any | null;
   error?: string;
@@ -3184,13 +3036,11 @@ export function categoryFromQuestion(
 export async function buildAreaItineraryOptions(
   req: AreaBuildRequest,
 ): Promise<AreaItineraryOptionsResult> {
-  const persona = req.persona || DEFAULT_PERSONA();
   const url = req.serverUrl || DEFAULT_URL();
   const window = req.window || defaultWindow();
 
   const empty: AreaItineraryOptionsResult = {
     ok: false,
-    persona,
     question: req.leaderId
       ? `Itinerary options for ${req.leaderId}`
       : "Itinerary options",
@@ -3202,8 +3052,6 @@ export async function buildAreaItineraryOptions(
     topicIds: [],
     options: [],
     recommendedOptionId: null,
-    redactedCount: null,
-    rejected: false,
   };
 
   if (!req.leaderId)
@@ -3221,7 +3069,7 @@ export async function buildAreaItineraryOptions(
 
   let client: ToolClient;
   try {
-    client = await makeToolClient(url, persona);
+    client = await makeToolClient(url);
   } catch (e: any) {
     throwIfGovernanceDenied(e);
     return {
@@ -3237,10 +3085,10 @@ export async function buildAreaItineraryOptions(
     const anchorArgs = areaArgs(area, req.radiusMi);
     const maxDays = Math.max(1, Math.round(req.maxDays ?? 7));
 
-    // A fixed-duration (radius) build_itinerary: fills `days × meetingsPerDay` best authorized stops
+    // A fixed-duration (radius) build_itinerary: fills `days × meetingsPerDay` best stops
     // in the area — NO event anchor, so `days` fully controls the trip length. When `acceptedContactIds`
-    // is passed it routes EXACTLY that set (re-authorized server-side) — the seam that forces a
-    // single-audience itinerary. Auto-fills (capacity) when omitted (the probe). Persona trim always holds.
+    // is passed it routes EXACTLY that set (re-resolved server-side) — the seam that forces a
+    // single-audience itinerary. Auto-fills (capacity) when omitted (the probe).
     const radiusBuild = (days: number, acceptedContactIds?: string[]) =>
       client.callTool("build_itinerary", {
         leaderId: req.leaderId,
@@ -3259,12 +3107,6 @@ export async function buildAreaItineraryOptions(
     await radiusBuild(maxDays);
     const probeCap = lastCapture(client.captured, "build_itinerary");
     const probe = probeCap?.result ?? {};
-    if (isRejected(probe))
-      return {
-        ...empty,
-        rejected: true,
-        error: "Access rejected — no verified tenant claim.",
-      };
     if (probe.error) return { ...empty, error: probe.error };
 
     const base = {
@@ -3274,7 +3116,6 @@ export async function buildAreaItineraryOptions(
       today: probe.today ?? null,
       topicIds,
       leaderName: probe.leader?.name ?? null,
-      redactedCount: probe.redactedCount ?? null,
       categoryBreakdown: probe.categoryBreakdown ?? [],
     };
 
@@ -3282,7 +3123,7 @@ export async function buildAreaItineraryOptions(
     if (availableStops === 0)
       return {
         ...base,
-        error: `No authorized stops in ${probe.area?.name ?? "this area"} for ${req.leaderId}.`,
+        error: `No stops in ${probe.area?.name ?? "this area"} for ${req.leaderId}.`,
       };
 
     const perDay = probe.meetingsPerDay ?? req.meetingsPerDay ?? 2;
@@ -3387,7 +3228,6 @@ export async function buildAreaItineraryOptions(
 const MAX_SWING_STOPS = 4;
 
 export interface EventBuildRequest {
-  persona?: string;
   /** Leader whose time is being allocated — required to build options. */
   leaderId: string;
   /** Anchor event by id (e.g. "E-AUSA") or free text ("AUSA"); or parsed from `question`. */
@@ -3402,12 +3242,10 @@ export interface EventBuildRequest {
 
 /** Blank event-options envelope. */
 function emptyEventOptions(
-  persona: string,
   leaderId: string | null,
 ): AreaItineraryOptionsResult {
   return {
     ok: false,
-    persona,
     question: leaderId
       ? `Itinerary options for ${leaderId}`
       : "Itinerary options",
@@ -3419,15 +3257,13 @@ function emptyEventOptions(
     topicIds: [],
     options: [],
     recommendedOptionId: null,
-    redactedCount: null,
-    rejected: false,
     event: null,
   };
 }
 
 /**
  * Decide whether an ask is EVENT-anchored (vs. a radius/free-form trip) and resolve the anchor event.
- * Returns the top authorized event matching the question's anchor token, or null. A parseable radius
+ * Returns the top event matching the question's anchor token, or null. A parseable radius
  * ask ("3 days within 60 mi of Reston") is deliberately NOT treated as an event anchor.
  */
 async function resolveEventAnchor(
@@ -3444,7 +3280,6 @@ async function resolveEventAnchor(
     return null;
   }
   const res = lastCapture(client.captured, "search_events")?.result ?? {};
-  if (res.rejected) return null;
   const events: any[] = res.events ?? [];
   const q = query.toLowerCase();
   return (
@@ -3508,7 +3343,6 @@ async function rankRosterForArea(
   staleContacts: any[];
   areaEvents: any[];
   categoryBreakdown: any[];
-  redactedCount: number | null;
 }> {
   const roster = () =>
     loadLeaders().map((l) => ({ leaderId: l.id, name: l.name, role: l.role }));
@@ -3519,7 +3353,6 @@ async function rankRosterForArea(
     staleContacts: [] as any[],
     areaEvents: [] as any[],
     categoryBreakdown: [] as any[],
-    redactedCount: null,
   };
   try {
     await client.callTool("plan_options", {
@@ -3539,7 +3372,6 @@ async function rankRosterForArea(
       staleContacts: res.staleContacts ?? [],
       areaEvents: res.areaEvents ?? [],
       categoryBreakdown: res.categoryBreakdown ?? [],
-      redactedCount: res.redactedCount ?? null,
     };
   } catch (error) {
     throwIfGovernanceDenied(error);
@@ -3566,13 +3398,11 @@ async function buildEventOptions(
     eventId?: string;
     eventQuery?: string;
     topicIds?: string[];
-    persona?: string;
     maxDays?: number;
   },
 ): Promise<AreaItineraryOptionsResult> {
-  const persona = args.persona || DEFAULT_PERSONA();
   const topicIds = args.topicIds ?? [];
-  const empty = emptyEventOptions(persona, args.leaderId);
+  const empty = emptyEventOptions(args.leaderId);
 
   // 1) The on-site + local nearby pool (the "you're already going there" batch) + the resolved event.
   await client.callTool("suggest_candidates", {
@@ -3582,12 +3412,6 @@ async function buildEventOptions(
     ...(topicIds.length ? { topicIds } : {}),
   });
   const sug = lastCapture(client.captured, "suggest_candidates")?.result ?? {};
-  if (sug.rejected)
-    return {
-      ...empty,
-      rejected: true,
-      error: "Access rejected — no verified tenant claim.",
-    };
   if (!sug.event)
     return {
       ...empty,
@@ -3605,16 +3429,15 @@ async function buildEventOptions(
     leaderName,
     topicIds,
     today: sug.today ?? null,
-    redactedCount: sug.redactedCount ?? null,
   };
   if (nearbyIds.length === 0) {
     return {
       ...base,
-      error: `No authorized candidates for ${args.leaderId} at ${event.name}.`,
+      error: `No candidates for ${args.leaderId} at ${event.name}.`,
     };
   }
 
-  // 2) Far, authorized, on-topic, ACTIVE stops beyond the nearby pool — the regional-swing sources,
+  // 2) Far, on-topic, ACTIVE stops beyond the nearby pool — the regional-swing sources,
   //    ranked by strategic value then staleness. Capped so trips stay realistic.
   await client.callTool("search_contacts", {
     ...(topicIds.length ? { topicIds } : {}),
@@ -3655,12 +3478,6 @@ async function buildEventOptions(
     });
     const cap = lastCapture(client.captured, "build_itinerary");
     const build = cap?.result ?? {};
-    if (isRejected(build))
-      return {
-        ...base,
-        rejected: true,
-        error: "Access rejected — no verified tenant claim.",
-      };
     const itinerary = extractItinerary(build);
     const days = build?.duration?.days ?? null;
     if (maxDays != null && typeof days === "number" && days > maxDays) continue;
@@ -3720,9 +3537,8 @@ async function buildEventOptions(
 export async function buildEventItineraryOptions(
   req: EventBuildRequest,
 ): Promise<AreaItineraryOptionsResult> {
-  const persona = req.persona || DEFAULT_PERSONA();
   const url = req.serverUrl || DEFAULT_URL();
-  const empty = emptyEventOptions(persona, req.leaderId ?? null);
+  const empty = emptyEventOptions(req.leaderId ?? null);
   if (!req.leaderId)
     return {
       ...empty,
@@ -3731,7 +3547,7 @@ export async function buildEventItineraryOptions(
 
   let client: ToolClient;
   try {
-    client = await makeToolClient(url, persona);
+    client = await makeToolClient(url);
   } catch (e: any) {
     throwIfGovernanceDenied(e);
     return {
@@ -3760,7 +3576,6 @@ export async function buildEventItineraryOptions(
       eventId: req.eventId,
       eventQuery,
       topicIds,
-      persona,
       maxDays: req.maxDays,
     });
   } finally {
@@ -3815,8 +3630,6 @@ export function optionsToPlanResult(
     menu: rec?.itinerary?.accepted ?? null,
     categoryBreakdown:
       opts.categoryBreakdown ?? (base as any).categoryBreakdown ?? [],
-    redactedCount: opts.redactedCount,
-    rejected: opts.rejected,
     error: opts.error,
   };
 }
@@ -3844,8 +3657,6 @@ interface CategoryPlanResult {
   tripMap: any | null;
   contactIds: string[];
   categoryBreakdown: any[];
-  redactedCount: number | null;
-  rejected: boolean;
   error?: string;
 }
 
@@ -3853,7 +3664,7 @@ interface CategoryPlanResult {
  * STAGE 2 (category-first) — build ONE single-audience itinerary for the chosen engagement category and
  * recommend WHO should go. Reuses the open client + the intel already gathered by {@link rankRosterForArea}
  * (ranked `leaderOptions` + the per-audience `categoryBreakdown`): route EXACTLY the chosen audience's
- * in-area contacts (`acceptedContactIds`, re-authorized server-side → never blends audiences), then rank
+ * in-area contacts (`acceptedContactIds`, re-resolved server-side → never blends audiences), then rank
  * the best senior leader for that audience. The itinerary is the star; the leader is the OUTPUT.
  */
 async function buildCategoryPlan(
@@ -3867,7 +3678,6 @@ async function buildCategoryPlan(
     categoryBreakdown: any[];
     areaResolved: any | null;
     today: string | null;
-    redactedCount: number | null;
     topicIds: string[];
     radiusMi?: number;
     days?: number;
@@ -3920,8 +3730,6 @@ async function buildCategoryPlan(
     tripMap: null,
     contactIds,
     categoryBreakdown: args.categoryBreakdown ?? [],
-    redactedCount: args.redactedCount,
-    rejected: false,
   };
   if (contactIds.length === 0) {
     return {
@@ -3931,7 +3739,7 @@ async function buildCategoryPlan(
   }
 
   // The itinerary is single-audience regardless of leader (we force this audience's contacts), so any
-  // authorized leader routes the same stops; the leader only re-tunes ROI/availability (the "who should
+  // leader routes the same stops; the leader only re-tunes ROI/availability (the "who should
   // go" layer). We build for the SELECTED leader (the human's pick, else the recommendation).
   const leaderId =
     chosen?.leaderId ??
@@ -3958,12 +3766,6 @@ async function buildCategoryPlan(
   });
   const cap = lastCapture(client.captured, "build_itinerary");
   const build = cap?.result ?? {};
-  if (isRejected(build))
-    return {
-      ...base,
-      rejected: true,
-      error: "Access rejected — no verified tenant claim.",
-    };
   if (build.error) return { ...base, error: build.error };
   const itinerary = extractItinerary(build);
   const stops: any[] = build.accepted ?? [];
@@ -3982,7 +3784,6 @@ async function buildCategoryPlan(
     itinerary,
     tripMap: build?.tripMap ?? null,
     contactIds: stops.map((s: any) => s.contactId),
-    redactedCount: build?.redactedCount ?? args.redactedCount,
   };
 }
 
@@ -4037,8 +3838,6 @@ export function categoryPlanToResult(
     area: plan.area,
     today: plan.today,
     categoryBreakdown: plan.categoryBreakdown,
-    redactedCount: plan.redactedCount,
-    rejected: plan.rejected,
     error: plan.error,
   };
 }
@@ -4074,7 +3873,6 @@ export interface RadiusOptionsRequest {
 
 export interface RadiusOptionsResult {
   ok: boolean;
-  persona: string;
   question: string | null;
   answer: string | null;
   anchor: any | null;
@@ -4094,14 +3892,11 @@ export interface RadiusOptionsResult {
   conflicts: any[];
   categoryBreakdown: any[];
   extensionOptions: any[];
-  redactedCount: number | null;
-  rejected: boolean;
   questions: OptionQuestion[];
   error?: string;
 }
 
 export interface RadiusBuildRequest {
-  persona?: string;
   anchorContactId?: string;
   company?: string;
   lat?: number;
@@ -4189,18 +3984,16 @@ export function buildRadiusQuestions(plan: any): OptionQuestion[] {
 
 /**
  * STAGE 1 (radius) — anchor on a company/coordinate/city + a fixed day count and return the filled
- * trip plus the who/extend menus. Fail-closed on NO_TENANT (empty menus).
+ * trip plus the who/extend menus.
  */
 export async function planRadiusOptions(
   req: RadiusOptionsRequest,
 ): Promise<RadiusOptionsResult> {
-  const persona = req.persona || DEFAULT_PERSONA();
   const url = req.serverUrl || DEFAULT_URL();
   const window = req.window || defaultWindow();
 
   const empty: RadiusOptionsResult = {
     ok: false,
-    persona,
     question: req.question ?? null,
     answer: null,
     anchor: null,
@@ -4220,14 +4013,12 @@ export async function planRadiusOptions(
     conflicts: [],
     categoryBreakdown: [],
     extensionOptions: [],
-    redactedCount: null,
-    rejected: false,
     questions: [],
   };
 
   let client: ToolClient;
   try {
-    client = await makeToolClient(url, persona);
+    client = await makeToolClient(url);
   } catch (e: any) {
     throwIfGovernanceDenied(e);
     return {
@@ -4255,10 +4046,8 @@ export async function planRadiusOptions(
     const plan = cap0?.result ?? {};
     if (plan.error) return { ...empty, error: plan.error };
 
-    const rejected = !!plan.rejected;
     return {
-      ok: !rejected && (plan.stops?.length ?? 0) > 0,
-      persona,
+      ok: (plan.stops?.length ?? 0) > 0,
       question: req.question ?? null,
       answer: cap0?.text ?? null,
       anchor: plan.anchor ?? null,
@@ -4278,9 +4067,7 @@ export async function planRadiusOptions(
       conflicts: plan.conflicts ?? [],
       categoryBreakdown: plan.categoryBreakdown ?? [],
       extensionOptions: plan.extensionOptions ?? [],
-      redactedCount: plan.redactedCount ?? null,
-      rejected,
-      questions: rejected ? [] : buildRadiusQuestions(plan),
+      questions: buildRadiusQuestions(plan),
     };
   } finally {
     await client.close().catch(() => {});
@@ -4289,19 +4076,17 @@ export async function planRadiusOptions(
 
 /**
  * STAGE 2 (radius) — turn the human's picks (leader + toggled extensions) into the final event-less
- * itinerary + ui://trip-map. `build_itinerary` re-authorizes every id server-side, so the trim holds.
+ * itinerary + ui://trip-map. `build_itinerary` re-resolves every id server-side.
  */
 export async function buildRadiusItinerary(
   req: RadiusBuildRequest,
 ): Promise<PlanResult> {
-  const persona = req.persona || DEFAULT_PERSONA();
   const url = req.serverUrl || DEFAULT_URL();
   const window = req.window || defaultWindow();
 
   const base: PlanResult = {
     ok: false,
     mode: "deterministic",
-    persona,
     question: req.leaderId
       ? `Build radius itinerary for ${req.leaderId}`
       : "Build radius itinerary",
@@ -4310,8 +4095,6 @@ export async function buildRadiusItinerary(
     menu: null,
     itinerary: null,
     tripMap: null,
-    redactedCount: null,
-    rejected: false,
   };
 
   if (!req.leaderId)
@@ -4324,7 +4107,7 @@ export async function buildRadiusItinerary(
 
   let client: ToolClient;
   try {
-    client = await makeToolClient(url, persona);
+    client = await makeToolClient(url);
   } catch (e: any) {
     throwIfGovernanceDenied(e);
     return {
@@ -4367,10 +4150,10 @@ export async function buildRadiusItinerary(
 // ════════════════════════════════════════════════════════════════════════════
 // Hot topics — a topic-first way to INITIATE a search (not a locked flow).
 //
-// Ranks the seed taxonomy by the caller's live footprint (persona-trimmed): active vs prospect
+// Ranks the seed taxonomy by the caller's live footprint: active vs prospect
 // contacts, on-site events, upcoming events, and whether an approved message exists. The UI shows
 // these as chips; clicking one just sends the topic's `question` to the free-form /ask agent, so
-// the human can then steer wherever they like. NO_TENANT/cross-tenant => empty (same trim beat).
+// the human can then steer wherever they like.
 // ════════════════════════════════════════════════════════════════════════════
 
 export interface HotTopic {
@@ -4390,16 +4173,12 @@ export interface HotTopic {
 }
 
 export interface HotTopicsRequest {
-  persona?: string;
   serverUrl?: string;
 }
 
 export interface HotTopicsResult {
   ok: boolean;
-  persona: string;
-  rejected: boolean;
   topics: HotTopic[];
-  redactedCount: number | null;
   error?: string;
 }
 
@@ -4409,7 +4188,7 @@ export function hotTopicQuestion(name: string): string {
 }
 
 /**
- * Pure ranker: fold the caller's authorized contacts + events into a per-topic footprint and
+ * Pure ranker: fold the caller's contacts + events into a per-topic footprint and
  * sort hottest-first. Kept side-effect-free so it is unit-testable without a live server.
  * Only topics with a non-zero footprint are returned (a topic no one can see is not "hot").
  */
@@ -4474,25 +4253,21 @@ export function rankHotTopics(
 }
 
 /**
- * Rank the seed topics by the caller's authorized footprint. Two cheap, already-trimmed tool
- * calls (search_contacts + search_events with no filter) feed the pure ranker above.
+ * Rank the seed topics by the caller's footprint. Two cheap tool calls
+ * (search_contacts + search_events with no filter) feed the pure ranker above.
  */
 export async function hotTopics(
   req: HotTopicsRequest,
 ): Promise<HotTopicsResult> {
-  const persona = req.persona || DEFAULT_PERSONA();
   const url = req.serverUrl || DEFAULT_URL();
   const base: HotTopicsResult = {
     ok: false,
-    persona,
-    rejected: false,
     topics: [],
-    redactedCount: null,
   };
 
   let client: ToolClient;
   try {
-    client = await makeToolClient(url, persona);
+    client = await makeToolClient(url);
   } catch (e: any) {
     throwIfGovernanceDenied(e);
     return {
@@ -4505,14 +4280,6 @@ export async function hotTopics(
 
   try {
     const contactsRes: any = await client.callTool("search_contacts", {});
-    if (contactsRes?.rejected) {
-      return {
-        ...base,
-        ok: true,
-        rejected: true,
-        redactedCount: contactsRes.redactedCount ?? null,
-      };
-    }
     const eventsRes: any = await client.callTool("search_events", {});
     const topics = rankHotTopics(
       contactsRes?.contacts ?? [],
@@ -4524,7 +4291,6 @@ export async function hotTopics(
       ...base,
       ok: true,
       topics,
-      redactedCount: contactsRes?.redactedCount ?? null,
     };
   } catch (e: any) {
     throwIfGovernanceDenied(e);
@@ -4537,9 +4303,7 @@ export async function hotTopics(
 // ── Area discovery: organizations in the travel area the traveler does NOT already track ─────────
 //
 // The Area Discovery capability returns PUBLIC place data with no relationship history, so the
-// "is this new?" judgement is made HERE, by diffing those names against the caller's authorized
-// contacts. That trim matters: an organization hidden from this persona is reported as `new`, never
-// as a redacted record, so the diff can never be used to probe what the caller cannot see.
+// "is this new?" judgement is made HERE, by diffing those names against the caller's contacts.
 
 /** Corporate suffixes and articles stripped before matching a POI name to a tracked organization. */
 const ORG_NOISE =
@@ -4567,7 +4331,7 @@ export interface AreaBusiness {
   lng: number;
   distanceMi: number | null;
   url: string | null;
-  /** Contact id when this business is already a tracked relationship VISIBLE to this caller. */
+  /** Contact id when this business is already a tracked relationship. */
   knownContactId: string | null;
   knownContactName: string | null;
 }
@@ -4617,20 +4381,17 @@ export interface DiscoverAreaRequest {
   focus?: string[];
   radiusMi?: number;
   limit?: number;
-  persona?: string;
   serverUrl?: string;
 }
 
 export interface DiscoverAreaResult {
   ok: boolean;
-  persona: string;
   anchor: any | null;
   /** Every business found, each flagged known/new. */
   businesses: AreaBusiness[];
-  /** Only the ones with no matching authorized relationship — the "make me aware" list. */
+  /** Only the ones with no matching relationship — the "make me aware" list. */
   newBusinesses: AreaBusiness[];
   knownCount: number;
-  rejected: boolean;
   error?: string;
 }
 
@@ -4643,16 +4404,13 @@ export interface DiscoverAreaResult {
 export async function discoverAreaBusinesses(
   req: DiscoverAreaRequest,
 ): Promise<DiscoverAreaResult> {
-  const persona = req.persona || DEFAULT_PERSONA();
   const url = req.serverUrl || DEFAULT_URL();
   const base: DiscoverAreaResult = {
     ok: false,
-    persona,
     anchor: null,
     businesses: [],
     newBusinesses: [],
     knownCount: 0,
-    rejected: false,
   };
 
   if (
@@ -4668,7 +4426,7 @@ export async function discoverAreaBusinesses(
 
   let client: ToolClient;
   try {
-    client = await makeToolClient(url, persona);
+    client = await makeToolClient(url);
   } catch (e: any) {
     throwIfGovernanceDenied(e);
     return {
@@ -4692,18 +4450,9 @@ export async function discoverAreaBusinesses(
     });
     if (found?.error) return { ...base, error: String(found.error) };
 
-    // Security trim runs server-side: this is only what THIS persona may see.
     const contactsRes: any = await client.callTool("search_contacts", {
       query: req.city || undefined,
     });
-    if (contactsRes?.rejected) {
-      return {
-        ...base,
-        ok: true,
-        rejected: true,
-        anchor: found?.anchor ?? null,
-      };
-    }
 
     const businesses = diffAgainstKnownContacts(
       found?.businesses ?? [],

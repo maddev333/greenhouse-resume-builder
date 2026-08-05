@@ -10,7 +10,6 @@ async def test_mcp_bridge_preserves_map_but_strips_it_from_model(
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = __import__("json").loads(request.content)
-        assert request.headers["x-demo-persona"] == "EA_G8"
         assert payload["method"] == "tools/call"
         return httpx.Response(
             200,
@@ -36,7 +35,6 @@ async def test_mcp_bridge_preserves_map_but_strips_it_from_model(
 
     result = await bridge.call_tool(
         mcp_url="http://mcp.test/mcp",
-        persona="EA_G8",
         name="build_itinerary",
         arguments={"leaderId": "L1"},
         trace_id="trace-map",
@@ -81,10 +79,7 @@ async def test_mcp_bridge_discovers_tools(settings: Settings) -> None:
         http_client=http_client,
     )
 
-    tools = await bridge.list_tools(
-        mcp_url="http://mcp.test/mcp",
-        persona="EA_BASIC",
-    )
+    tools = await bridge.list_tools(mcp_url="http://mcp.test/mcp")
 
     assert [tool.name for tool in tools] == ["search_contacts"]
     await http_client.aclose()
@@ -116,7 +111,6 @@ async def test_mcp_tool_error_is_returned_to_the_orchestrator(
 
     result = await bridge.call_tool(
         mcp_url="http://mcp.test/mcp",
-        persona="EA_G8",
         name="search_events",
         arguments={"query": "unknown"},
         trace_id="trace-error-result",

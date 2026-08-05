@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Engagements MCP capability server — exposes the deterministic travel-planner engine + security-trimmed retrieval as MCP tools (ARCHITECTURE §5.3). Local-first (tsx); ui://trip-map App added at M3.",
+  "description": "Engagements MCP capability server — exposes the deterministic travel-planner engine + retrieval as MCP tools (ARCHITECTURE §5.3). Local-first (tsx); ui://trip-map App added at M3.",
   "main": "src/main.ts",
   "scripts": {
     "preserve": "npm run build:app",

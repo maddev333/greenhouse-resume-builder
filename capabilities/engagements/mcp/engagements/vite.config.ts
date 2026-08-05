@@ -36,10 +36,17 @@ const isDev = process.env.NODE_ENV === 'development';
 // repo-root AZURE_MAPS_KEY (local dev only — production should use Azure Maps AAD anonymous auth).
 export default defineConfig(() => {
   const mapsKey = process.env.VITE_AZURE_MAPS_KEY || nearestEnvValue('AZURE_MAPS_KEY') || '';
+  const mapsEndpoint =
+    process.env.VITE_AZURE_MAPS_ENDPOINT ||
+    process.env.AZURE_MAPS_ENDPOINT ||
+    nearestEnvValue('AZURE_MAPS_ENDPOINT') ||
+    'https://atlas.microsoft.com';
+  const mapsDomain = new URL(mapsEndpoint).host;
   return {
     plugins: [react(), viteSingleFile()],
     define: {
       'import.meta.env.VITE_AZURE_MAPS_KEY': JSON.stringify(mapsKey),
+      'import.meta.env.VITE_AZURE_MAPS_DOMAIN': JSON.stringify(mapsDomain),
     },
     build: {
       sourcemap: isDev ? 'inline' : undefined,

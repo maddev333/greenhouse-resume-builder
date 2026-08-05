@@ -1,7 +1,7 @@
 /**
  * Entry point — two modes:
- *   CLI (default):   npm run ask -- "I'm planning a trip to AUSA, who should I meet on UAS/drone?" --persona EA_G8
- *   HTTP (--serve):  npm run serve   ->  POST /ask { question, persona?, leaderId?, topN?, category?, context?, history? }
+ *   CLI (default):   npm run ask -- "I'm planning a trip to AUSA, who should I meet on UAS/drone?"
+ *   HTTP (--serve):  npm run serve   ->  POST /ask { question, leaderId?, topN?, category?, context?, history? }
  *
  * The HTTP surface is the seam the chat UI (M6) calls. Requires the engagements MCP server
  * running (default http://localhost:3010/mcp; override with ENGAGEMENTS_MCP_URL).
@@ -22,7 +22,6 @@ import { PythonRuntimeRequestError } from "./python-runtime.js";
 
 interface CliArgs {
   question?: string;
-  persona?: string;
   leader?: string;
   top?: number;
   category?: string;
@@ -49,8 +48,7 @@ function parseArgs(argv: string[]): CliArgs {
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--persona") out.persona = argv[++i];
-    else if (a === "--leader") out.leader = argv[++i];
+    if (a === "--leader") out.leader = argv[++i];
     else if (a === "--top") out.top = Number(argv[++i]);
     else if (a === "--category" || a === "--cat") out.category = argv[++i];
     else if (a === "--options") out.options = true;
@@ -100,15 +98,12 @@ async function options(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const result = await planAreaOptions({
     question: args.question,
-    persona: args.persona,
     region: args.region,
     leaderId: args.leader,
     window: parseWindow(args.window),
   });
 
-  console.log(
-    `\n[persona ${result.persona}] stage=${result.stage}${result.rejected ? "  ACCESS REJECTED" : ""}`,
-  );
+  console.log(`\nstage=${result.stage}`);
   if (result.error) console.error(`\n! ${result.error}`);
   if (result.answer) console.log(`\n${result.answer}`);
   for (const q of result.questions) {
@@ -121,7 +116,7 @@ async function options(argv: string[]): Promise<void> {
   }
   if (result.stage === "options") {
     console.log(
-      `\n— area ${result.area?.name ?? "?"}; ${result.areaSurvey.length} topic(s); redacted ${result.redactedCount ?? 0}`,
+      `\n— area ${result.area?.name ?? "?"}; ${result.areaSurvey.length} topic(s)`,
     );
     console.log(
       `  to build: POST /build { leaderId, durationTier?, extensionContactIds?, region }`,
@@ -146,12 +141,11 @@ async function itineraries(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   if (!args.leader) {
     console.error(
-      "usage: npm run ask -- --itineraries --leader L1 [--region NCR | --city Reston] [--window 2025-10-06..2025-10-31] [--count 3] [--max-days 7] [--per-day 2] [--target-days 2,5,7] [--persona EA_G8]",
+      "usage: npm run ask -- --itineraries --leader L1 [--region NCR | --city Reston] [--window 2025-10-06..2025-10-31] [--count 3] [--max-days 7] [--per-day 2] [--target-days 2,5,7]",
     );
     process.exit(1);
   }
   const result = await buildAreaItineraryOptions({
-    persona: args.persona,
     leaderId: args.leader,
     region: args.region,
     city: args.city,
@@ -163,11 +157,11 @@ async function itineraries(argv: string[]): Promise<void> {
   });
 
   console.log(
-    `\n[persona ${result.persona}] itinerary options for ${result.leaderId}${result.leaderName ? ` (${result.leaderName})` : ""}${result.rejected ? "  ACCESS REJECTED" : ""}`,
+    `\nitinerary options for ${result.leaderId}${result.leaderName ? ` (${result.leaderName})` : ""}`,
   );
   if (result.error) console.error(`\n! ${result.error}`);
   console.log(
-    `— area ${result.area?.name ?? "?"}; ${result.options.length} single-audience option(s) by engagement category; redacted ${result.redactedCount ?? 0}`,
+    `— area ${result.area?.name ?? "?"}; ${result.options.length} single-audience option(s) by engagement category`,
   );
   for (const o of result.options) {
     const roi = o.itinerary?.roi?.roiScore ?? o.roiScore;
@@ -192,7 +186,6 @@ async function radius(argv: string[]): Promise<void> {
   const days = args.days ?? 3;
   const result = await planRadiusOptions({
     question: args.question,
-    persona: args.persona,
     anchorContactId: args.anchor,
     company: args.company,
     lat: args.lat,
@@ -205,9 +198,7 @@ async function radius(argv: string[]): Promise<void> {
     window: parseWindow(args.window),
   });
 
-  console.log(
-    `\n[persona ${result.persona}] radius${result.rejected ? "  ACCESS REJECTED" : ""}`,
-  );
+  console.log(`\nradius`);
   if (result.error) console.error(`\n! ${result.error}`);
   if (result.answer) console.log(`\n${result.answer}`);
   for (const q of result.questions) {
@@ -220,7 +211,7 @@ async function radius(argv: string[]): Promise<void> {
   }
   console.log(
     `\n— anchor ${result.anchor?.name ?? "(coord/area)"}; area ${result.area?.name ?? "?"} (${result.area?.radiusMi ?? "?"} mi); ` +
-      `${result.days ?? "?"} day(s), capacity ${result.capacity ?? "?"}; stops ${result.stops.length}; redacted ${result.redactedCount ?? 0}`,
+      `${result.days ?? "?"} day(s), capacity ${result.capacity ?? "?"}; stops ${result.stops.length}`,
   );
   console.log(
     `  to build: POST /build-radius { leaderId, days, anchorContactId|company|lat+lng|city, acceptedContactIds?, extensionContactIds? }`,
@@ -229,16 +220,12 @@ async function radius(argv: string[]): Promise<void> {
     console.log(`\n${JSON.stringify(result, null, 2)}`);
 }
 
-/** Hot topics from the CLI: rank the seed taxonomy by the persona's live footprint. */
-async function topics(argv: string[]): Promise<void> {
-  const args = parseArgs(argv);
-  const result = await hotTopics({ persona: args.persona });
-  console.log(
-    `\n[persona ${result.persona}]${result.rejected ? "  ACCESS REJECTED" : ""}`,
-  );
+/** Hot topics from the CLI: rank the seed taxonomy by the live footprint. */
+async function topics(): Promise<void> {
+  const result = await hotTopics({});
   if (result.error) console.error(`\n! ${result.error}`);
   if (result.topics.length === 0 && !result.error)
-    console.log("\n(no hot topics visible to this persona)");
+    console.log("\n(no hot topics visible)");
   for (const t of result.topics) {
     console.log(
       `  🔥 ${t.topicId} ${t.name}  — ${t.reason} (score ${t.score})`,
@@ -252,20 +239,19 @@ async function ask(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   if (!args.question) {
     console.error(
-      'usage: npm run ask -- "<question>" [--persona EA_G8] [--category industry] [--leader L1] [--top 3]',
+      'usage: npm run ask -- "<question>" [--category industry] [--leader L1] [--top 3]',
     );
     console.error(
-      '   or: npm run ask -- --options "<ask>" [--region NCR] [--window 2025-10-06..2025-10-31] [--persona EA_G8]',
+      '   or: npm run ask -- --options "<ask>" [--region NCR] [--window 2025-10-06..2025-10-31]',
     );
     console.error(
-      '   or: npm run ask -- --radius --company "Meridian Robotics" --days 3 [--radius-mi 40] [--lat --lng | --city] [--persona EA_G8]',
+      '   or: npm run ask -- --radius --company "Meridian Robotics" --days 3 [--radius-mi 40] [--lat --lng | --city]',
     );
-    console.error("   or: npm run ask -- --topics [--persona EA_G8]");
+    console.error("   or: npm run ask -- --topics");
     process.exit(1);
   }
   const result = await planTrip({
     question: args.question,
-    persona: args.persona,
     leaderId: args.leader,
     topN: args.top,
     category: args.category as any,
@@ -274,7 +260,7 @@ async function ask(argv: string[]): Promise<void> {
   });
 
   console.log(
-    `\n[persona ${result.persona}] mode=${result.mode}${result.stage ? ` stage=${result.stage}` : ""}${result.rejected ? "  ACCESS REJECTED" : ""}`,
+    `\nmode=${result.mode}${result.stage ? ` stage=${result.stage}` : ""}`,
   );
   if (result.error) console.error(`\n! ${result.error}`);
   if (result.answer) console.log(`\n${result.answer}`);
@@ -305,7 +291,7 @@ async function ask(argv: string[]): Promise<void> {
     `\n— tools: ${result.toolCalls.map((t) => t.name).join(" → ") || "(none)"}`,
   );
   console.log(
-    `— menu: ${result.menu?.length ?? 0} option(s); redacted ${result.redactedCount ?? 0}; trip-map ${result.tripMap ? "YES" : "no"}`,
+    `— menu: ${result.menu?.length ?? 0} option(s); trip-map ${result.tripMap ? "YES" : "no"}`,
   );
   if (process.env.ENGAGEMENTS_AGENT_JSON)
     console.log(`\n${JSON.stringify(result, null, 2)}`);
@@ -328,13 +314,11 @@ async function serve(): Promise<void> {
     });
   });
 
-  // Hot topics — a topic-first entry point for the UI. Persona-trimmed; picking one just seeds a
+  // Hot topics — a topic-first entry point for the UI. Picking one just seeds a
   // free-form /ask, so it kicks off a search without locking the user into a flow.
-  app.get("/topics", async (req, res) => {
-    const persona =
-      typeof req.query.persona === "string" ? req.query.persona : undefined;
+  app.get("/topics", async (_req, res) => {
     try {
-      res.json(await hotTopics({ persona }));
+      res.json(await hotTopics({}));
     } catch (e: any) {
       sendRequestError(res, e);
     }
@@ -343,7 +327,6 @@ async function serve(): Promise<void> {
   app.post("/ask", async (req, res) => {
     const {
       question,
-      persona,
       leaderId,
       topN,
       category,
@@ -362,7 +345,6 @@ async function serve(): Promise<void> {
       res.json(
         await planTrip({
           question,
-          persona,
           leaderId,
           topN,
           category,
@@ -378,10 +360,10 @@ async function serve(): Promise<void> {
   });
 
   // Area discovery — organizations physically around a travel anchor, each flagged known/new against
-  // the caller's AUTHORIZED contacts. Awareness only: a new business is not a contact, so it cannot be
+  // the caller's contacts. Awareness only: a new business is not a contact, so it cannot be
   // routed into an itinerary until it is onboarded through the normal relationship path.
   app.post("/discover", async (req, res) => {
-    const { city, state, lat, lng, query, focus, radiusMi, limit, persona } =
+    const { city, state, lat, lng, query, focus, radiusMi, limit } =
       req.body ?? {};
     try {
       res.json(
@@ -394,7 +376,6 @@ async function serve(): Promise<void> {
           focus,
           radiusMi,
           limit,
-          persona,
         }),
       );
     } catch (e: any) {
@@ -407,7 +388,6 @@ async function serve(): Promise<void> {
   app.post("/plan-options", async (req, res) => {
     const {
       question,
-      persona,
       regionId,
       region,
       city,
@@ -422,7 +402,6 @@ async function serve(): Promise<void> {
       res.json(
         await planAreaOptions({
           question,
-          persona,
           regionId,
           region,
           city,
@@ -442,7 +421,6 @@ async function serve(): Promise<void> {
   // Interactive planner — STAGE 2: build the final itinerary + ui://trip-map from the human's picks.
   app.post("/build", async (req, res) => {
     const {
-      persona,
       regionId,
       region,
       city,
@@ -465,7 +443,6 @@ async function serve(): Promise<void> {
     try {
       res.json(
         await buildAreaItinerary({
-          persona,
           regionId,
           region,
           city,
@@ -490,7 +467,6 @@ async function serve(): Promise<void> {
   // trips and proceeds with one. Optional knobs: optionCount / maxDays / targetDays / meetingsPerDay.
   app.post("/build-options", async (req, res) => {
     const {
-      persona,
       regionId,
       region,
       city,
@@ -513,7 +489,6 @@ async function serve(): Promise<void> {
     try {
       res.json(
         await buildAreaItineraryOptions({
-          persona,
           regionId,
           region,
           city,
@@ -538,7 +513,6 @@ async function serve(): Promise<void> {
   app.post("/plan-radius", async (req, res) => {
     const {
       question,
-      persona,
       anchorContactId,
       company,
       lat,
@@ -565,7 +539,6 @@ async function serve(): Promise<void> {
       res.json(
         await planRadiusOptions({
           question,
-          persona,
           anchorContactId,
           company,
           lat,
@@ -591,7 +564,6 @@ async function serve(): Promise<void> {
   // Fixed-radius planner — STAGE 2: build the event-less itinerary + ui://trip-map from the picks.
   app.post("/build-radius", async (req, res) => {
     const {
-      persona,
       anchorContactId,
       company,
       lat,
@@ -624,7 +596,6 @@ async function serve(): Promise<void> {
     try {
       res.json(
         await buildRadiusItinerary({
-          persona,
           anchorContactId,
           company,
           lat,
@@ -654,13 +625,13 @@ async function serve(): Promise<void> {
   const server = app.listen(port, () => {
     console.log(`Engagements orchestrator on http://localhost:${port}`);
     console.log(
-      `  POST /ask           { question, persona?, leaderId?, topN?, category?, context?, history? } — conversational planning`,
+      `  POST /ask           { question, leaderId?, topN?, category?, context?, history? } — conversational planning`,
     );
     console.log(
-      `  GET  /topics        ?persona=EA_G8                                       — hot topics (topic-first entry)`,
+      `  GET  /topics                                                             — hot topics (topic-first entry)`,
     );
     console.log(
-      `  POST /plan-options  { question?|region?|city?, persona?, window? }       — interactive: survey + option menus`,
+      `  POST /plan-options  { question?|region?|city?, window? }                 — interactive: survey + option menus`,
     );
     console.log(
       `  POST /build         { leaderId, durationTier?, extensionContactIds?, region? } — build itinerary + trip map`,
@@ -669,7 +640,7 @@ async function serve(): Promise<void> {
       `  POST /build-options { leaderId, region?|city?, window?, optionCount?, maxDays?, targetDays?[] } — compare full itineraries of DIFFERENT LENGTHS`,
     );
     console.log(
-      `  POST /plan-radius   { days, company?|anchorContactId?|lat+lng?|city?, radiusMi?, persona? } — fixed-radius: fill + menus`,
+      `  POST /plan-radius   { days, company?|anchorContactId?|lat+lng?|city?, radiusMi? } — fixed-radius: fill + menus`,
     );
     console.log(
       `  POST /build-radius  { leaderId, days, company?|anchorContactId?|lat+lng?|city?, acceptedContactIds? } — event-less itinerary + map`,
@@ -700,7 +671,7 @@ const argv = process.argv.slice(2);
 function dispatch(): Promise<void> {
   if (argv.includes("--serve")) return serve();
   const rest = argv.filter((a) => a !== "--serve");
-  if (rest.includes("--topics")) return topics(rest);
+  if (rest.includes("--topics")) return topics();
   if (rest.includes("--radius")) return radius(rest);
   if (rest.includes("--itineraries")) return itineraries(rest);
   if (rest.includes("--options")) return options(rest);

@@ -1,45 +1,61 @@
 /**
  * Azure AI Search backend for the engagements read model — the CLOUD swap-in that satisfies the
- * SAME `SecurityDecision` / `TrimmedResult` contract as the in-memory {@link EngagementIndex}
- * (ARCHITECTURE §5.2–5.4). The security trim is enforced SERVER-SIDE as an OData `$filter`, so
- * unauthorized rows never leave the service — identical guarantee to the shim's predicate, only now
- * evaluated by Azure instead of in Node.
+ * SAME result contract as the in-memory {@link EngagementIndex} (ARCHITECTURE §5.2).
  *
- * Topology: ONE index (`engagements`) with a `kind` discriminator (`contact` | `event`) so the free
- * tier's 3-index cap is respected (`resume-facts` already occupies one). Each doc carries the
- * filterable governance envelope (`tenantId`, `aclGroups[]`, `sensitivity`, `topicIds[]`) the trim
- * evaluates, plus a retrievable `json` string holding the full {@link Labeled} record for lossless
- * reconstruction on read.
- *
- * Recall parity: `query`/`topicIds`/`status` are RECALL (they shape the base set); tenant + ACL +
- * sensitivity are the SECURITY trim. `redactedCount = |base| − |authorized|` is computed with two
- * count-only queries (server-side `$filter` never returns the trimmed rows, so the "watch a row
- * disappear" beat is reconstructed from the count delta).
+ * Topology: whatever the schema REGISTRY declares. Every read and write resolves the declaration
+ * that claims the record kind (`declarationForKind`) and uses THAT declaration's index name, key,
+ * discriminator, topic/status fields, payload field and searchable fields. So contacts and events
+ * may sit in one index with a `kind` discriminator (the demo `engagements` index), or in separate
+ * customer indexes with entirely different field names — nothing here assumes one shared index.
  *
  * Auth: admin/query key when `AZURE_SEARCH_API_KEY` is set, else `DefaultAzureCredential`
  * (managed identity / `az login`).
  */
-import { SearchClient, SearchIndexClient, AzureKeyCredential } from '@azure/search-documents';
-import type { SearchField, SearchIndex } from '@azure/search-documents';
-import { DefaultAzureCredential } from '@azure/identity';
-import type { Contact, EngagementEvent, Preferences } from '@greenhouse-resume-builder/shared';
-import { buildEngagementSecurityFilter, odataEscapeLiteral } from './security';
-import type { ContactQuery, EventQuery } from './retrieval-index';
-import type { Labeled, LabeledDataset, TrimmedResult } from './types';
+import {
+  SearchClient,
+  SearchIndexClient,
+  AzureKeyCredential,
+} from "@azure/search-documents";
+import { DefaultAzureCredential } from "@azure/identity";
+import type {
+  Contact,
+  EngagementEvent,
+  Preferences,
+} from "@greenhouse-resume-builder/shared";
+import { odataEscapeLiteral } from "./odata";
+import {
+  declarationForKind,
+  entityTypeValue,
+  filterableField,
+  indexName,
+  loadIndexRegistry,
+  payloadField,
+  searchableFields,
+  toSearchIndex,
+  type IndexEntityKind,
+  type IndexSchema,
+} from "./index-schema";
+import type { ContactQuery, EventQuery } from "./retrieval-index";
+import type { Labeled, LabeledDataset } from "./types";
 
-const INDEX_NAME: string = process.env.ENGAGEMENTS_SEARCH_INDEX ?? 'engagements';
-const ENDPOINT_SUFFIX: string = process.env.AZURE_SEARCH_ENDPOINT_SUFFIX ?? 'search.windows.net';
+const ENDPOINT_SUFFIX: string =
+  process.env.AZURE_SEARCH_ENDPOINT_SUFFIX ?? "search.windows.net";
 
 /** True when a search service is configured (else the capability falls back to the in-memory index). */
 export function isSearchConfigured(): boolean {
-  return Boolean((process.env.AZURE_SEARCH_SERVICE ?? '').trim());
+  return Boolean((process.env.AZURE_SEARCH_SERVICE ?? "").trim());
 }
 
 function serviceEndpoint(): string {
-  const raw = (process.env.AZURE_SEARCH_SERVICE ?? '').trim().replace(/\/+$/, '');
-  if (!raw) throw new Error('AZURE_SEARCH_SERVICE is not set (expected the service name or full https:// endpoint).');
+  const raw = (process.env.AZURE_SEARCH_SERVICE ?? "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!raw)
+    throw new Error(
+      "AZURE_SEARCH_SERVICE is not set (expected the service name or full https:// endpoint).",
+    );
   if (/^https?:\/\//i.test(raw)) return raw;
-  if (raw.includes('.')) return `https://${raw}`;
+  if (raw.includes(".")) return `https://${raw}`;
   return `https://${raw}.${ENDPOINT_SUFFIX}`;
 }
 
@@ -49,196 +65,345 @@ function credential(): AzureKeyCredential | DefaultAzureCredential {
   return key ? new AzureKeyCredential(key) : new DefaultAzureCredential();
 }
 
+// ── Declaration resolution ─────────────────────────────────────────────────
+
+/** The declaration that claims a record kind. Throws when no configured index holds it. */
+function declarationFor(kind: IndexEntityKind): IndexSchema {
+  const schema = declarationForKind(kind);
+  if (!schema) {
+    throw new Error(
+      `No index declaration carries the "${kind}" record kind, so it cannot be read or written. ` +
+        `Add "${kind}" to \`mapping.entityType\` in one of:\n` +
+        loadIndexRegistry()
+          .map((d) => `  ${d.id}: ${d.sourcePath}`)
+          .join("\n"),
+    );
+  }
+  return schema;
+}
+
+/** A client bound to the index THIS declaration names — never one shared index. */
+function clientFor(schema: IndexSchema): SearchClient<EngagementDoc> {
+  return new SearchClient<EngagementDoc>(
+    serviceEndpoint(),
+    indexName(schema),
+    credential(),
+  );
+}
+
 // ── Index document shape ───────────────────────────────────────────────────
 
-/** The flattened, filterable projection stored per record; `json` reconstructs the domain object. */
-export interface EngagementDoc {
-  id: string;
-  kind: 'contact' | 'event';
-  tenantId: string;
-  aclGroups: string[];
-  sensitivity: string;
-  topicIds: string[];
-  status?: string;
-  name: string;
-  org?: string;
-  smeText?: string;
-  city?: string;
-  state?: string;
-  json: string;
-}
+/**
+ * A document keyed by PHYSICAL field name. The mapped roles (key, discriminator, topicIds, status,
+ * payload) are written under whatever names the target declaration gives them; the free-text
+ * projection columns (`name`/`org`/`smeText`/`city`/`state`) have no mapping entry and so are
+ * written literally, matching the demo `engagements` index.
+ *
+ * Writes are a DEMO facility — `ensure`/`sync` must never be aimed at a customer index.
+ */
+export type EngagementDoc = Record<string, unknown>;
 
 /** Azure Search keys allow only letters, digits, `_`, `-`, `=`; namespace by kind + sanitize the id. */
 const KEY_UNSAFE = /[^A-Za-z0-9_\-=]/g;
-const docKey = (kind: string, id: string): string => `${kind}-${id.replace(KEY_UNSAFE, '_')}`;
+const docKey = (kind: string, id: string): string =>
+  `${kind}-${id.replace(KEY_UNSAFE, "_")}`;
 
-function contactToDoc(c: Labeled<Contact>): EngagementDoc {
+/** The mapped columns every document carries, named as the target declaration names them. */
+function mappedDoc(
+  schema: IndexSchema,
+  kind: IndexEntityKind,
+  record: { id: string },
+  topicIds: string[],
+  status?: string,
+): EngagementDoc {
+  const kindField = schema.mapping.entityType?.field;
+  const kindValue = entityTypeValue(kind, schema);
+  if (!kindField || !kindValue) {
+    throw new Error(
+      `Index declaration "${schema.id}" does not carry the "${kind}" record kind.\n  (${schema.sourcePath})`,
+    );
+  }
+
+  const doc: EngagementDoc = {
+    [schema.mapping.key]: docKey(kind, record.id),
+    [kindField]: kindValue,
+  };
+  if (schema.mapping.topicIds) doc[schema.mapping.topicIds] = topicIds;
+  if (schema.mapping.status && status) doc[schema.mapping.status] = status;
+  if (schema.mapping.payload) {
+    doc[schema.mapping.payload] = JSON.stringify(record);
+  }
+  return doc;
+}
+
+function contactToDoc(c: Labeled<Contact>, schema: IndexSchema): EngagementDoc {
   return {
-    id: docKey('contact', c.id),
-    kind: 'contact',
-    tenantId: c.tenantId,
-    aclGroups: c.aclGroups,
-    sensitivity: c.sensitivity,
-    topicIds: c.topicIds ?? [],
-    status: c.status,
+    ...mappedDoc(schema, "contact", c, c.topicIds ?? [], c.status),
     name: c.name,
-    org: c.org ?? '',
-    smeText: (c.smeAreas ?? []).join(' '),
+    org: c.org ?? "",
+    smeText: (c.smeAreas ?? []).join(" "),
     city: c.location.city,
-    state: c.location.state ?? '',
-    json: JSON.stringify(c),
+    state: c.location.state ?? "",
   };
 }
 
-function eventToDoc(e: Labeled<EngagementEvent>): EngagementDoc {
+function eventToDoc(
+  e: Labeled<EngagementEvent>,
+  schema: IndexSchema,
+): EngagementDoc {
   return {
-    id: docKey('event', e.id),
-    kind: 'event',
-    tenantId: e.tenantId,
-    aclGroups: e.aclGroups,
-    sensitivity: e.sensitivity,
-    topicIds: e.topicIds ?? [],
+    ...mappedDoc(schema, "event", e, e.topicIds ?? []),
     name: e.name,
     city: e.location.city,
-    state: e.location.state ?? '',
-    json: JSON.stringify(e),
+    state: e.location.state ?? "",
   };
 }
 
 // ── Index provisioning ─────────────────────────────────────────────────────
 
-/** The single `engagements` index: filterable trim fields + searchable recall + retrievable `json`. */
-function indexDefinition(): SearchIndex {
-  // Runtime shape is proven against v13 `createOrUpdateIndex`; the literal → union cast avoids the
-  // SDK's discriminated-field friction.
-  const fields = [
-    { name: 'id', type: 'Edm.String', key: true, filterable: true, sortable: true },
-    { name: 'kind', type: 'Edm.String', filterable: true },
-    { name: 'tenantId', type: 'Edm.String', filterable: true },
-    { name: 'aclGroups', type: 'Collection(Edm.String)', filterable: true },
-    { name: 'sensitivity', type: 'Edm.String', filterable: true },
-    { name: 'topicIds', type: 'Collection(Edm.String)', filterable: true },
-    { name: 'status', type: 'Edm.String', filterable: true },
-    { name: 'name', type: 'Edm.String', searchable: true },
-    { name: 'org', type: 'Edm.String', searchable: true },
-    { name: 'smeText', type: 'Edm.String', searchable: true },
-    { name: 'city', type: 'Edm.String', searchable: true, filterable: true },
-    { name: 'state', type: 'Edm.String', searchable: true, filterable: true },
-    { name: 'json', type: 'Edm.String' },
-  ] as unknown as SearchField[];
-  return { name: INDEX_NAME, fields };
-}
-
-/** Create or update the `engagements` index (idempotent). Requires index-management rights (admin key). */
-export async function ensureEngagementIndex(): Promise<string> {
-  const client = new SearchIndexClient(serviceEndpoint(), credential());
-  const res = await client.createOrUpdateIndex(indexDefinition());
-  return res.name;
-}
-
-/** Upsert every contact + event from a labeled dataset (the "reindex per data source" demo beat). */
-export async function syncEngagementDocs(ds: LabeledDataset): Promise<{ contacts: number; events: number }> {
-  const client = new SearchClient<EngagementDoc>(serviceEndpoint(), INDEX_NAME, credential());
-  const docs: EngagementDoc[] = [...ds.contacts.map(contactToDoc), ...ds.events.map(eventToDoc)];
-  if (docs.length) await client.mergeOrUploadDocuments(docs);
-  return { contacts: ds.contacts.length, events: ds.events.length };
-}
-
-/** Upsert a single contact/event (demo add/update). */
-export async function upsertEngagementContact(c: Labeled<Contact>): Promise<void> {
-  const client = new SearchClient<EngagementDoc>(serviceEndpoint(), INDEX_NAME, credential());
-  await client.mergeOrUploadDocuments([contactToDoc(c)]);
-}
-export async function upsertEngagementEvent(e: Labeled<EngagementEvent>): Promise<void> {
-  const client = new SearchClient<EngagementDoc>(serviceEndpoint(), INDEX_NAME, credential());
-  await client.mergeOrUploadDocuments([eventToDoc(e)]);
-}
-
-/** Delete a single record by kind + domain id (demo delete → reindex → row disappears). */
-export async function deleteEngagementDoc(kind: 'contact' | 'event', id: string): Promise<void> {
-  const client = new SearchClient<EngagementDoc>(serviceEndpoint(), INDEX_NAME, credential());
-  await client.deleteDocuments('id', [docKey(kind, id)]);
-}
-
-// ── Security-trimmed retrieval (the swap target) ───────────────────────────
-
-const KIND_CONTACT = "kind eq 'contact'";
-const KIND_EVENT = "kind eq 'event'";
-
-/** `search.in` membership over a collection field — mirrors `security.ts` exactly (recall convenience). */
-function topicClause(topicIds: string[]): string {
-  const list = topicIds.map(odataEscapeLiteral).join(',');
-  return `topicIds/any(x: search.in(x, '${list}'))`;
-}
-
-const REJECTED = <T>(reason: string): TrimmedResult<T> => ({
-  items: [],
-  filter: `(rejected: ${reason})`,
-  redactedCount: 0,
-});
-
-/** Preference narrowing — drops out-of-policy candidates. NEVER widens the trim (mirrors the shim). */
-function narrowByPreferences<T extends { id: string; strategicValue: number }>(items: T[], prefs: Preferences): T[] {
-  let out = items;
-  if (prefs.doNotMeet?.length) out = out.filter((c) => !prefs.doNotMeet!.includes(c.id));
-  if (typeof prefs.seniorityFloor === 'number') out = out.filter((c) => c.strategicValue >= prefs.seniorityFloor!);
-  return out;
-}
-
-async function countMatching(client: SearchClient<EngagementDoc>, text: string, filter: string): Promise<number> {
-  const res = await client.search(text, { filter, top: 0, includeTotalCount: true });
-  return res.count ?? 0;
+/** Project a reference record (leader/topic/message/region) into its declaration's document shape. */
+function referenceDoc(
+  kind: IndexEntityKind,
+  record: { id: string; name?: string },
+  schema: IndexSchema,
+): EngagementDoc {
+  return {
+    ...mappedDoc(schema, kind, record, []),
+    name: record.name ?? record.id,
+  };
 }
 
 /**
- * Return contacts the caller is authorized to see — recall (kind + status + topic + query) is trimmed
- * SERVER-SIDE by the tenant + ACL + sensitivity `$filter`, then narrowed by caller preferences.
- * `redactedCount` = matches to the recall base that the security trim removed.
+ * Create or update EVERY index the registry declares (idempotent). Requires index-management rights
+ * (admin key). Returns the index names, comma-joined; declarations sharing an index name are
+ * applied once.
  */
-export async function searchEngagementContacts(q: ContactQuery): Promise<TrimmedResult<Labeled<Contact>>> {
-  const decision = buildEngagementSecurityFilter(q.ctx);
-  if (!decision.allowed || !decision.filter) return REJECTED(decision.reason ?? 'unauthorized');
-
-  const recallParts: string[] = [KIND_CONTACT];
-  if (q.status) recallParts.push(`status eq '${odataEscapeLiteral(q.status)}'`);
-  if (q.topicIds?.length) recallParts.push(topicClause(q.topicIds));
-  const recallFilter = recallParts.join(' and ');
-  const authorizedFilter = `${recallFilter} and ${decision.filter}`;
-  const text = q.query?.trim() ? q.query : '*';
-
-  const client = new SearchClient<EngagementDoc>(serviceEndpoint(), INDEX_NAME, credential());
-  const resp = await client.search(text, { filter: authorizedFilter, top: 1000, includeTotalCount: true });
-  const items: Labeled<Contact>[] = [];
-  for await (const r of resp.results) items.push(JSON.parse(r.document.json) as Labeled<Contact>);
-
-  const authorizedCount = resp.count ?? items.length;
-  const baseCount = await countMatching(client, text, recallFilter);
-  const redactedCount = Math.max(0, baseCount - authorizedCount);
-
-  const narrowed = q.preferences ? narrowByPreferences(items, q.preferences) : items;
-  return { items: narrowed, filter: decision.filter, redactedCount };
+export async function ensureEngagementIndex(): Promise<string> {
+  const client = new SearchIndexClient(serviceEndpoint(), credential());
+  const names: string[] = [];
+  for (const schema of loadIndexRegistry()) {
+    if (names.includes(indexName(schema))) continue;
+    const res = await client.createOrUpdateIndex(toSearchIndex(schema));
+    names.push(res.name);
+  }
+  return names.join(", ");
 }
 
-/** Return authorized anchor events, optionally matched by text/topic (same server-side trim). */
-export async function searchEngagementEvents(q: EventQuery): Promise<TrimmedResult<Labeled<EngagementEvent>>> {
-  const decision = buildEngagementSecurityFilter(q.ctx);
-  if (!decision.allowed || !decision.filter) return REJECTED(decision.reason ?? 'unauthorized');
+/**
+ * Upsert every contact + event from a labeled dataset (the "reindex per data source" demo beat).
+ * Documents are batched PER DECLARATION, so a registry that splits records across indexes issues
+ * one upload per index.
+ */
+export async function syncEngagementDocs(
+  ds: LabeledDataset,
+): Promise<{ contacts: number; events: number; reference: number }> {
+  const batches = new Map<
+    string,
+    { schema: IndexSchema; docs: EngagementDoc[] }
+  >();
+  const stage = (schema: IndexSchema, doc: EngagementDoc): void => {
+    const batch = batches.get(schema.id) ?? { schema, docs: [] };
+    batch.docs.push(doc);
+    batches.set(schema.id, batch);
+  };
 
-  const recallParts: string[] = [KIND_EVENT];
-  if (q.topicIds?.length) recallParts.push(topicClause(q.topicIds));
+  const contactSchema = declarationFor("contact");
+  for (const c of ds.contacts) {
+    stage(contactSchema, contactToDoc(c, contactSchema));
+  }
+  const eventSchema = declarationFor("event");
+  for (const e of ds.events) stage(eventSchema, eventToDoc(e, eventSchema));
+
+  // Reference sets are pushed too: the read model sources leaders/topics/messages/regions from the
+  // INDEX (never the seed), so an index missing them would leave the planner with no roster.
+  // A kind no declaration carries is skipped rather than guessed at.
+  const referenceSets: [
+    IndexEntityKind,
+    ReadonlyArray<{ id: string; name?: string }>,
+  ][] = [
+    ["leader", ds.leaders],
+    ["topic", ds.topics],
+    ["message", ds.messages],
+    ["region", ds.regions],
+  ];
+  let reference = 0;
+  for (const [kind, records] of referenceSets) {
+    const schema = declarationForKind(kind);
+    if (!schema) continue;
+    for (const r of records) {
+      stage(schema, referenceDoc(kind, r, schema));
+      reference += 1;
+    }
+  }
+
+  for (const batch of batches.values()) {
+    if (batch.docs.length) {
+      await clientFor(batch.schema).mergeOrUploadDocuments(batch.docs);
+    }
+  }
+  return {
+    contacts: ds.contacts.length,
+    events: ds.events.length,
+    reference,
+  };
+}
+
+/** Upsert a single contact/event (demo add/update). */
+export async function upsertEngagementContact(
+  c: Labeled<Contact>,
+): Promise<void> {
+  const schema = declarationFor("contact");
+  await clientFor(schema).mergeOrUploadDocuments([contactToDoc(c, schema)]);
+}
+export async function upsertEngagementEvent(
+  e: Labeled<EngagementEvent>,
+): Promise<void> {
+  const schema = declarationFor("event");
+  await clientFor(schema).mergeOrUploadDocuments([eventToDoc(e, schema)]);
+}
+
+/** Delete a single record by kind + domain id (demo delete, then reindex, and the row disappears). */
+export async function deleteEngagementDoc(
+  kind: "contact" | "event",
+  id: string,
+): Promise<void> {
+  const schema = declarationFor(kind);
+  await clientFor(schema).deleteDocuments(schema.mapping.key, [
+    docKey(kind, id),
+  ]);
+}
+
+// ── Retrieval (the swap target) ───────────────────────────────────
+
+/** `<entityType> eq '<value>'` for one kind, resolved through THAT declaration's mapping. */
+function kindClause(kind: IndexEntityKind, schema: IndexSchema): string {
+  const f = filterableField("entityType", schema)!;
+  return `${f} eq '${odataEscapeLiteral(entityTypeValue(kind, schema)!)}'`;
+}
+
+/** `search.in` membership over the mapped topic collection; omitted when the index has no such field. */
+function topicClause(
+  topicIds: string[],
+  schema: IndexSchema,
+): string | undefined {
+  const f = filterableField("topicIds", schema);
+  if (!f) return undefined;
+  const list = topicIds.map(odataEscapeLiteral).join(",");
+  return `${f}/any(x: search.in(x, '${list}'))`;
+}
+
+/**
+ * Reconstruct a domain record from a result document via the mapped payload field.
+ * Without a payload field the index cannot round-trip domain objects, so say so plainly.
+ */
+function fromPayload<T>(doc: unknown, schema: IndexSchema): T {
+  const f = payloadField(schema);
+  if (!f) {
+    throw new Error(
+      `Index declaration "${schema.id}" declares no \`mapping.payload\` field, so domain records ` +
+        "cannot be reconstructed. Add a payload field to the declaration, or use a grounding query " +
+        `that returns text instead.\n  (${schema.sourcePath})`,
+    );
+  }
+  return JSON.parse(String((doc as Record<string, unknown>)[f])) as T;
+}
+
+/** Preference narrowing - drops out-of-policy candidates (mirrors the shim). */
+function narrowByPreferences<T extends { id: string; strategicValue: number }>(
+  items: T[],
+  prefs: Preferences,
+): T[] {
+  let out = items;
+  if (prefs.doNotMeet?.length)
+    out = out.filter((c) => !prefs.doNotMeet!.includes(c.id));
+  if (typeof prefs.seniorityFloor === "number")
+    out = out.filter((c) => c.strategicValue >= prefs.seniorityFloor!);
+  return out;
+}
+
+/** Return contacts matching recall (kind + status + topic + query), narrowed by caller preferences. */
+export async function searchEngagementContacts(
+  q: ContactQuery,
+): Promise<Labeled<Contact>[]> {
+  const schema = declarationFor("contact");
+  const recallParts: string[] = [kindClause("contact", schema)];
+  if (q.status) {
+    const statusField = filterableField("status", schema);
+    if (statusField) {
+      recallParts.push(`${statusField} eq '${odataEscapeLiteral(q.status)}'`);
+    }
+  }
+  if (q.topicIds?.length) {
+    const clause = topicClause(q.topicIds, schema);
+    if (clause) recallParts.push(clause);
+  }
+  const recallFilter = recallParts.join(" and ");
+  const text = q.query?.trim() ? q.query : "*";
+
+  const resp = await clientFor(schema).search(text, {
+    filter: recallFilter,
+    searchFields: searchableFields(schema),
+    top: 1000,
+  });
+  const items: Labeled<Contact>[] = [];
+  for await (const r of resp.results)
+    items.push(fromPayload<Labeled<Contact>>(r.document, schema));
+
+  return q.preferences ? narrowByPreferences(items, q.preferences) : items;
+}
+
+/** Return anchor events, optionally matched by text/topic. */
+export async function searchEngagementEvents(
+  q: EventQuery,
+): Promise<Labeled<EngagementEvent>[]> {
+  const schema = declarationFor("event");
+  const recallParts: string[] = [kindClause("event", schema)];
+  if (q.topicIds?.length) {
+    const clause = topicClause(q.topicIds, schema);
+    if (clause) recallParts.push(clause);
+  }
   const query = q.query?.trim();
   const exactId = query && /^E-[A-Za-z0-9-]+$/i.test(query) ? query : undefined;
-  if (exactId) recallParts.push(`id eq '${odataEscapeLiteral(exactId)}'`);
-  const recallFilter = recallParts.join(' and ');
-  const authorizedFilter = `${recallFilter} and ${decision.filter}`;
-  const text = exactId ? '*' : query || '*';
+  if (exactId) {
+    recallParts.push(
+      `${filterableField("key", schema)!} eq '${odataEscapeLiteral(exactId)}'`,
+    );
+  }
+  const recallFilter = recallParts.join(" and ");
+  const text = exactId ? "*" : query || "*";
 
-  const client = new SearchClient<EngagementDoc>(serviceEndpoint(), INDEX_NAME, credential());
-  const resp = await client.search(text, { filter: authorizedFilter, top: 1000, includeTotalCount: true });
+  const resp = await clientFor(schema).search(text, {
+    filter: recallFilter,
+    searchFields: searchableFields(schema),
+    top: 1000,
+  });
   const items: Labeled<EngagementEvent>[] = [];
-  for await (const r of resp.results) items.push(JSON.parse(r.document.json) as Labeled<EngagementEvent>);
+  for await (const r of resp.results)
+    items.push(fromPayload<Labeled<EngagementEvent>>(r.document, schema));
 
-  const authorizedCount = resp.count ?? items.length;
-  const baseCount = await countMatching(client, text, recallFilter);
-  return { items, filter: decision.filter, redactedCount: Math.max(0, baseCount - authorizedCount) };
+  return items;
+}
+
+/**
+ * Read EVERY record of one kind straight from the index that declares it — the reference sets
+ * (leaders, topics, messages, regions) the planner needs alongside contacts/events.
+ *
+ * Returns `[]` when NO declaration in the registry carries that kind, i.e. no configured index
+ * holds it. That is deliberate: an empty reference set is the honest answer, and is strictly better
+ * than silently substituting demo seed records.
+ */
+export async function searchEngagementRecords<T>(
+  kind: IndexEntityKind,
+): Promise<T[]> {
+  const schema = declarationForKind(kind);
+  if (!schema) return [];
+
+  const resp = await clientFor(schema).search("*", {
+    filter: kindClause(kind, schema),
+    top: 1000,
+  });
+  const items: T[] = [];
+  for await (const r of resp.results)
+    items.push(fromPayload<T>(r.document, schema));
+  return items;
 }

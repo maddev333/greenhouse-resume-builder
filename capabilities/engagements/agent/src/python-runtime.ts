@@ -28,7 +28,6 @@ export interface PythonAgentDecision {
 
 interface RuntimeRequestContext {
   mcpUrl: string;
-  persona: string;
   traceId?: string;
   /** Area Discovery capability endpoint; the runtime falls back to its own DISCOVERY_MCP_URL. */
   discoveryMcpUrl?: string;
@@ -97,7 +96,6 @@ export async function runPythonAgent(input: {
   system: string;
   user: string;
   mcpUrl: string;
-  persona: string;
   maxIterations?: number;
   traceId?: string;
   discoveryMcpUrl?: string;

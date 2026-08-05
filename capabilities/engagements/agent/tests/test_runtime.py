@@ -25,7 +25,6 @@ def test_agent_framework_tools_match_governance_allowlist(settings: Settings) ->
         system="Use tools.",
         user="Plan a trip.",
         mcpUrl="http://mcp.test/mcp",
-        persona="EA_G8",
         traceId="trace-tools",
     )
 
@@ -51,7 +50,6 @@ def test_discovery_tool_is_omitted_when_no_discovery_endpoint(
         system="Use tools.",
         user="What is near Huntsville?",
         mcpUrl="http://mcp.test/mcp",
-        persona="EA_G8",
         traceId="trace-no-discovery",
     )
 
@@ -83,7 +81,6 @@ async def test_discovery_tool_targets_the_discovery_capability(
         system="Use tools.",
         user="What is near Huntsville?",
         mcpUrl="http://mcp.test/mcp",
-        persona="EA_G8",
         traceId="trace-discovery",
     )
     tools = {tool.name: tool for tool in runtime._build_tools(request, [])}
@@ -172,7 +169,6 @@ async def test_function_tool_forwards_only_declared_arguments(
         system="Use tools.",
         user="Find cyber contacts.",
         mcpUrl="http://mcp.test/mcp",
-        persona="EA_G8",
         traceId="trace-forwarding",
     )
     search_contacts = runtime._build_tools(request, [])[0]
@@ -217,7 +213,6 @@ async def test_parallel_tools_cannot_exceed_call_budget(
         system="Use tools.",
         user="Find contacts.",
         mcpUrl="http://mcp.test/mcp",
-        persona="EA_G8",
         traceId="trace-budget",
         maxIterations=1,
     )
@@ -286,7 +281,6 @@ async def test_tool_governance_denial_aborts_agent_run(
                 system="Use tools.",
                 user="Find contacts.",
                 mcpUrl="http://mcp.test/mcp",
-                persona="EA_G8",
                 traceId="trace-denial",
             )
         )
@@ -344,7 +338,6 @@ async def test_agent_run_timeout_cancels_model_work(
                 system="Use tools.",
                 user="Plan a trip.",
                 mcpUrl="http://mcp.test/mcp",
-                persona="EA_G8",
                 traceId="trace-timeout",
             )
         )
@@ -401,7 +394,6 @@ async def test_agent_run_returns_structured_framework_decision(
             system="Use tools.",
             user="Plan a trip to Boston.",
             mcpUrl="http://mcp.test/mcp",
-            persona="EA_G8",
             traceId="trace-decision",
         )
     )

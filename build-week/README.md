@@ -1,5 +1,13 @@
 # Multi-Agent Azure Architecture
 
+> **Status note (2026-08-05).** This document records the design as originally specified. Since then
+> the claims-based security trim (`tenantId` / `aclGroups` / `sensitivity`, `redactedCount`, and the
+> demo personas) has been **removed** from the implementation, and retrieval has moved to a
+> multi-index schema registry with an added grounding-only mode. Sections below describing the
+> security trim and the single shared `engagements` index no longer reflect the code. See
+> [`README.md`](../README.md) and [`docs/life-of-a-question.md`](../docs/life-of-a-question.md) for
+> current behaviour.
+
 Multiple Azure Function-hosted agents use Azure AI Search for grounded retrieval and Azure OpenAI through an API Management AI Gateway. A single MCP server provides the Azure Maps MCP App, while Application Insights collects telemetry across the system.
 
 ## Build Week Lab Definition

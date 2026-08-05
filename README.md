@@ -2,42 +2,42 @@
 
 A CRM-style planning assistant for U.S. Army senior-leader engagements, delivered as a
 **chat UI that hosts MCP UI Apps**. You ask a natural-language question; an orchestrator
-agent calls a domain capability (living behind MCP tools), applies a persona-based security
-trim, and answers with a menu of who-to-meet cards plus an interactive **Azure Maps** trip
-itinerary rendered as a sandboxed MCP App.
+agent calls a domain capability (living behind MCP tools) and answers with a menu of
+who-to-meet cards plus an interactive **Azure Maps** trip itinerary rendered as a sandboxed
+MCP App.
 
 > The "money moment": _"you're already going there"_ — the planner batches stale or
 > high-value contacts into a trip a leader is already taking.
 
+> **No access control.** The capability server applies **no** security trim — no tenant
+> isolation, no group ACLs, no sensitivity gating. **Any caller sees the entire corpus** the
+> configured backend holds. Put access control in front of this stack if you need it.
+
 ## What the demo shows
 
-Open the chat host, keep the persona on **EA · G8**, and ask:
+Open the chat host and ask:
 
 > _I'm planning a trip to AUSA — who should I meet on the UAS/drone topic?_
 
-You get an assistant summary, a menu of candidate contacts, and a live trip map. Switch the
-persona and re-ask to watch the **server-side security trim** change what's returned:
-
-| Persona        | Result                                             |
-| -------------- | -------------------------------------------------- |
-| `EA_G8`        | 3 cards (1 redacted)                               |
-| `EA_BASIC`     | 2 cards (2 redacted)                               |
-| `NO_TENANT`    | rejected (fail-closed)                             |
-| `CROSS_TENANT` | empty (tenant isolation)                           |
+You get an assistant summary, a menu of candidate contacts, and a live trip map. Follow-ups
+(_"why these meetings?"_, _"give me a day-by-day breakdown"_) reuse the same plan; the
+`Plan a trip` wizard walks an area-first flow deterministically, with no model required.
 
 ## Repository layout
 
 ```
 capabilities/
   engagements/            ← the demo (the only capability wired up)
-    mcp/engagements/      MCP capability server: seed data, retrieval, security trim,
-                          suggest_candidates / build_itinerary tools, and the ui://trip-map App
+    mcp/engagements/      MCP capability server: retrieval (seed / Azure AI Search / grounding),
+                          the deterministic planner tools, and the ui://trip-map App
+    mcp/discovery/        Area Discovery MCP server over Azure Maps POI search
     agent/                TS orchestration gateway + Python MAF/AGT runtime
     ui/                   M6 chat UI + real MCP-Apps host (the interface you run)
-  mcp-core/               shared MCP-server, identity, and security helpers
+  mcp-core/               shared MCP-server and identity/token helpers
 shared/                   canonical Strategic Engagements domain schema (framework-free types)
 engagement-intelligence/  design docs (ARCHITECTURE, DEMO-DATASET, MVP-PLAN) + seed dataset
 governance/               Agent Governance Toolkit policy loaded by the Python runtime
+scripts/                  Azure Web App packaging (ZIP artifacts)
 ```
 
 ## Quickstart
@@ -47,9 +47,14 @@ Prerequisites: **Node 20+**, npm, and **Python 3.11+**. Install both ecosystems 
 ```powershell
 # from the repo root, one time:
 npm install
+npm run build -w @greenhouse-resume-builder/shared -w @greenhouse-resume-builder/mcp-core
 npm run setup:python --workspace @greenhouse-resume-builder/cap-engagements-agent
 az login          # optional — enables the Azure OpenAI path; a deterministic fallback runs without it
 ```
+
+`npm install` does **not** compile the two library workspaces; the build step above does. The `demo`
+script runs it for you through its `predemo` hook, but any manual/three-terminal run needs it first
+or the servers fail with `ERR_MODULE_NOT_FOUND`.
 
 Then start the whole demo. The agent workspace launches its TypeScript gateway and the Python
 Microsoft Agent Framework + Agent Governance Toolkit runtime together:
@@ -63,9 +68,84 @@ Open **http://localhost:8080**. Press `Ctrl+C` to stop.
 Full run details, the manual three-terminal path, config, and troubleshooting live in
 [`capabilities/engagements/ui/README.md`](capabilities/engagements/ui/README.md).
 
+## Onboarding a customer's own data
+
+The Quickstart above runs on the bundled demo seed. To point the stack at a customer's **existing**
+Azure AI Search index instead:
+
+1. **Clone and install.**
+
+   ```powershell
+   git clone <repo-url>
+   cd greenhouse-resume-builder
+   npm install
+   ```
+
+2. **Build the two library workspaces.** Required — a plain `npm install` leaves their `dist/`
+   folders empty and every server then fails with `ERR_MODULE_NOT_FOUND`.
+
+   ```powershell
+   npm run build -w @greenhouse-resume-builder/shared -w @greenhouse-resume-builder/mcp-core
+   ```
+
+3. **Install the pinned Python runtime** (only needed to run the agent).
+
+   ```powershell
+   npm run setup:python -w @greenhouse-resume-builder/cap-engagements-agent
+   ```
+
+4. **Create the environment file.** Copy `.env.example` to `.env` at the repo root and fill in
+   `AZURE_SEARCH_SERVICE` (plus `AZURE_SEARCH_API_KEY`, or leave it blank to use
+   `DefaultAzureCredential` / `az login`).
+
+5. **Describe each index in a config file.** Every index the capability reads gets one JSON
+   declaration — `id`, `indexName`, `fields[]` and a `mapping` from logical role to the customer's
+   own field names. Copy
+   [`index-schema.structured.example.json`](capabilities/engagements/mcp/engagements/index-schema.structured.example.json)
+   for an index of structured records and
+   [`index-schema.grounding.example.json`](capabilities/engagements/mcp/engagements/index-schema.grounding.example.json)
+   for a document/chunk RAG index, rename them (files ending in `.example.json` are deliberately
+   skipped), and point at them with an **absolute** path:
+
+   ```
+   ENGAGEMENTS_INDEX_SCHEMAS=C:\path\to\index-configs      # directory, or a comma-separated file list
+   ```
+
+   Use the singular `ENGAGEMENTS_INDEX_SCHEMA` for a single file. Relative paths resolve against the
+   process working directory, which differs between `npm run -w` and a deployed Web App — prefer
+   absolute.
+
+6. **Validate the registry — offline.**
+
+   ```powershell
+   npm run provision:search -w @greenhouse-resume-builder/cap-engagements-mcp-engagements -- validate
+   ```
+
+   This makes **no** Azure calls. It prints every declaration with its file, index name, field
+   counts, filterable/searchable fields, payload field, grounding field and the record kinds it
+   claims. Check that output against the real index before going further.
+
+   > ⚠️ **Never run `provision:search ensure`, `sync` or `reindex` against a customer index.**
+   > `ensure` reshapes the index from the declaration, and `sync` pushes demo seed records into it.
+   > `validate` is the only safe command against an index you did not create.
+
+7. **Select the backend** with `RETRIEVAL_BACKEND` in `.env`:
+
+   | Value       | Use when                                                               | Result                                                                                                                    |
+   | ----------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+   | `memory`    | No cloud; the bundled demo seed.                                       | Default.                                                                                                                  |
+   | `search`    | The index holds **structured records** (contacts, events, leaders, …). | Full deterministic planner.                                                                                               |
+   | `grounding` | The index holds **documents/chunks** (an ordinary RAG index).          | Only the `search_grounding` tool; the planner is unavailable because a text corpus has no contacts, geo or leader roster. |
+
+   `search` and `grounding` never read the seed, and requesting either without
+   `AZURE_SEARCH_SERVICE` is a hard error rather than a silent fallback to demo data.
+
+Details of the registry, its validation rules and the two caveats worth knowing are in
+[`capabilities/engagements/mcp/engagements/README.md`](capabilities/engagements/mcp/engagements/README.md).
+
 ## Build Azure Web App ZIPs
 
-Create the three deployment artifacts from the repository root:
+Create the four deployment artifacts from the repository root:
 
 ```powershell
 npm run package:webapps
@@ -73,20 +153,33 @@ npm run package:webapps
 
 The command writes self-contained artifacts beneath `.deploy\`:
 
-| Artifact | Web App runtime | Startup |
-| --- | --- | --- |
-| `engagements-agent-gateway.zip` | Node.js 20+ | `npm start` |
-| `engagements-agent-runtime.zip` | Python 3.11+ | `bash startup.sh` |
-| `engagements-mcp.zip` | Node.js 20+ | `npm start` |
+| Artifact                        | Web App runtime | Startup           |
+| ------------------------------- | --------------- | ----------------- |
+| `engagements-agent-gateway.zip` | Node.js 20+     | `npm start`       |
+| `engagements-agent-runtime.zip` | Python 3.11+    | `bash startup.sh` |
+| `engagements-mcp.zip`           | Node.js 20+     | `npm start`       |
+| `engagements-ui.zip`            | Node.js 20+     | `npm start`       |
 
-The Node artifacts bundle their production dependencies and the seed data. The Python artifact
-contains `requirements.txt`, the Agent Governance Toolkit policy, and its startup script; enable
+The gateway and MCP artifacts bundle their production dependencies plus the seed JSON; the UI
+artifact bundles `serve.ts` and the browser bundles only. The Python artifact contains
+`requirements.txt`, the Agent Governance Toolkit policy, and its startup script; enable
 App Service build automation with `SCM_DO_BUILD_DURING_DEPLOYMENT=true` so Oryx installs the Python
 dependencies during ZIP deployment. Configure the Python Web App startup command as
 `bash startup.sh`. App settings and `.env` files are deliberately not included in any archive.
 
+`engagements-mcp.zip` does **not** carry an index schema config file. That only matters for
+`RETRIEVAL_BACKEND=search` / `grounding`, which need `ENGAGEMENTS_INDEX_SCHEMA(S)` pointed at an
+absolute path anyway; the default `memory` backend never loads the registry.
+
 Build only one artifact with `npm run package:webapp:gateway`,
-`npm run package:webapp:runtime`, or `npm run package:webapp:mcp`.
+`npm run package:webapp:runtime`, `npm run package:webapp:mcp`, or
+`npm run package:webapp:ui`.
+
+The UI artifact bundles `serve.ts` plus both single-file browser bundles. Because the MCP App
+sandbox must be a **distinct origin**, `serve.ts` binds two ports (`HOST_PORT` 8080 and
+`SANDBOX_PORT` 8081) and a single App Service routes only one — deploy the ZIP to two Web Apps, or
+front them with a gateway exposing both origins. `scripts/package-ui-webapp.ps1` wraps the same
+packaging step and adds `az webapp deploy`.
 
 ### Optional configuration
 
@@ -97,9 +190,11 @@ Copy `.env.example` to `.env` at the repo root to enable the optional integratio
 - **Agent planning** — set `AZURE_OPENAI_*` (and `az login`) so Microsoft Agent Framework owns
   intent/workflow decisions; otherwise the gateway uses its deterministic planner.
 - **Agent governance** — enabled by default through `AGT_ENABLED=true`; policy is loaded from
-  `governance/policy.yaml` before model execution and every MCP tool call.
-- **Azure AI Search backend** — set `RETRIEVAL_BACKEND=search` + `AZURE_SEARCH_*` to index the
-  seed data into Azure AI Search; the default `memory` backend needs no cloud resources.
+  `governance/policy.yaml` before model execution and every MCP tool call. This is the Agent
+  Governance Toolkit (prompt-injection / tool-call policy) and is unrelated to data access control.
+- **Azure AI Search backend** — set `RETRIEVAL_BACKEND=search` or `grounding` plus `AZURE_SEARCH_*`
+  and an index schema config; the default `memory` backend needs no cloud resources. See
+  [Onboarding a customer's own data](#onboarding-a-customers-own-data).
 
 ## How it fits together
 
@@ -117,8 +212,8 @@ Browser chat host (:8080)                                  chat client + MCP-App
   │                                         └─ governed MCP tools/call ─┐
   │                                                                     ▼
   └─ resources/read ui://trip-map ──────────────────►  Engagements MCP (:3010)
-     (rendered in a sandboxed iframe, :8081)             • seed contacts/events/topics
-                                                         • persona security trim
+     (rendered in a sandboxed iframe, :8081)             • contacts/events/topics from the
+                                                           configured retrieval backend
                                                          • suggest_candidates / build_itinerary
                                                          • ui://trip-map App resource
 
@@ -126,11 +221,16 @@ Browser chat host (:8080)                                  chat client + MCP-App
                                                  to personalize the itinerary at request time
 ```
 
+An **Area Discovery MCP** server (`capabilities/engagements/mcp/discovery`, port 3011) is also
+started by the `demo` script; it surfaces public Azure Maps POIs around a travel anchor.
+
 See [`engagement-intelligence/ARCHITECTURE.md`](engagement-intelligence/ARCHITECTURE.md) for the
-full design (data model, blob → AI Search indexing, claims-based trim, and the modular
-capability architecture) and [`engagement-intelligence/MVP-PLAN.md`](engagement-intelligence/MVP-PLAN.md)
-for the milestone roadmap. The future per-user personalization server is designed in
+original design (data model, blob → AI Search indexing, and the modular capability architecture) and
+[`engagement-intelligence/MVP-PLAN.md`](engagement-intelligence/MVP-PLAN.md) for the milestone
+roadmap — both carry a status note where they diverge from the code. The runtime trace of one
+request is in [`docs/life-of-a-question.md`](docs/life-of-a-question.md). The future per-user
+personalization server is designed in
 [`docs/personal-context-and-engagement-intelligence-design.md`](docs/personal-context-and-engagement-intelligence-design.md),
-and the future area-first / optioned planning flow (geo anchor, topics-in-area, leader selection,
+and the area-first / optioned planning flow (geo anchor, topics-in-area, leader selection,
 duration + extension options) in
 [`docs/area-first-optioned-planning-design.md`](docs/area-first-optioned-planning-design.md).

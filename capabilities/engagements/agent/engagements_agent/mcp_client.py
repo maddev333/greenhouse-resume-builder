@@ -32,10 +32,9 @@ class GovernedMcpClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def list_tools(self, *, mcp_url: str, persona: str) -> list[ToolDescriptor]:
+    async def list_tools(self, *, mcp_url: str) -> list[ToolDescriptor]:
         payload = await self._rpc(
             mcp_url=mcp_url,
-            persona=persona,
             method="tools/list",
             params={},
         )
@@ -56,7 +55,6 @@ class GovernedMcpClient:
         self,
         *,
         mcp_url: str,
-        persona: str,
         name: str,
         arguments: dict[str, Any],
         trace_id: str,
@@ -66,13 +64,11 @@ class GovernedMcpClient:
             name=name,
             arguments=arguments,
             trace_id=trace_id,
-            persona=persona,
             caller_agent_id=caller_agent_id,
         )
         try:
             raw = await self._rpc(
                 mcp_url=mcp_url,
-                persona=persona,
                 method="tools/call",
                 params={"name": name, "arguments": arguments},
             )
@@ -115,7 +111,6 @@ class GovernedMcpClient:
         self,
         *,
         mcp_url: str,
-        persona: str,
         method: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
@@ -126,7 +121,6 @@ class GovernedMcpClient:
                 headers={
                     "content-type": "application/json",
                     "accept": "application/json, text/event-stream",
-                    "x-demo-persona": persona,
                 },
                 json={
                     "jsonrpc": "2.0",

@@ -180,7 +180,6 @@ class GovernanceRuntime:
         name: str,
         arguments: dict[str, Any],
         trace_id: str,
-        persona: str,
         caller_agent_id: str,
     ) -> None:
         if name not in ORCHESTRATOR_TOOL_NAMES:
@@ -188,7 +187,6 @@ class GovernanceRuntime:
                 name=name,
                 arguments=arguments,
                 trace_id=trace_id,
-                persona=persona,
                 caller_agent_id=caller_agent_id,
                 allowed=False,
                 rule="orchestrator-tool-allowlist",
@@ -207,7 +205,6 @@ class GovernanceRuntime:
                 "tool_name": name,
                 "message": json.dumps(arguments, sort_keys=True, default=str),
                 "agent_id": caller_agent_id,
-                "persona": persona,
                 "trace_id": trace_id,
             }
         )
@@ -216,7 +213,6 @@ class GovernanceRuntime:
                 name=name,
                 arguments=arguments,
                 trace_id=trace_id,
-                persona=persona,
                 caller_agent_id=caller_agent_id,
                 allowed=False,
                 rule=decision.matched_rule,
@@ -230,7 +226,6 @@ class GovernanceRuntime:
                 name=name,
                 arguments=arguments,
                 trace_id=trace_id,
-                persona=persona,
                 caller_agent_id=caller_agent_id,
                 allowed=False,
                 rule=rule,
@@ -241,7 +236,6 @@ class GovernanceRuntime:
             name=name,
             arguments=arguments,
             trace_id=trace_id,
-            persona=persona,
             caller_agent_id=caller_agent_id,
             allowed=True,
             rule=decision.matched_rule,
@@ -294,7 +288,6 @@ class GovernanceRuntime:
         name: str,
         arguments: dict[str, Any],
         trace_id: str,
-        persona: str,
         caller_agent_id: str,
         allowed: bool,
         rule: str | None,
@@ -306,7 +299,6 @@ class GovernanceRuntime:
         data = {
             **audit_arguments,
             "trace_id": trace_id,
-            "persona": persona,
             "matched_rule": rule,
             "reason": reason,
         }
@@ -325,7 +317,6 @@ class GovernanceRuntime:
                 "tool_name": name,
                 **audit_arguments,
                 "trace_id": trace_id,
-                "persona": persona,
                 "allowed": allowed,
                 "matched_rule": rule,
                 "reason": reason,

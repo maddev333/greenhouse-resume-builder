@@ -3,7 +3,7 @@
  * override them via GET /api/config (so ports are not baked into the single-file bundle).
  *
  *   orchestratorUrl     M5 orchestrator  — POST {orchestratorUrl}/ask
- *   engagementsMcpUrl   engagements MCP  — read ui://trip-map/trip-map.html (persona header)
+ *   engagementsMcpUrl   engagements MCP  — read ui://trip-map/trip-map.html
  *   sandboxProxyBaseUrl sandbox proxy    — distinct origin that isolates the MCP App
  */
 export interface HostConfig {

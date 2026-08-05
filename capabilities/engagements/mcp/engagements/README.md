@@ -1,36 +1,33 @@
 # Engagements MCP capability server
 
 The **capability tier** of the Strategic Engagements Travel Planner (ARCHITECTURE §5.3). It exposes the
-deterministic planner engine (`src/planner`) and the security-trimmed retrieval shim
-(`src/retrieval`) as MCP tools that the orchestrator/chat host calls. Local-first — runs with `tsx`,
-no cloud. `build_itinerary` renders on the **`ui://trip-map`** Azure Maps MCP App (M3, the one UI in
-scope); **M4** adds a real Azure AI Search backend, selectable with `RETRIEVAL_BACKEND` (see below).
+deterministic planner engine (`src/planner`) and the retrieval layer (`src/retrieval`) as MCP tools
+that the orchestrator/chat host calls. Local-first — runs with `tsx`, no cloud. `build_itinerary`
+renders on the **`ui://trip-map`** Azure Maps MCP App (M3, the one UI in scope); a real Azure AI Search
+backend is selectable with `RETRIEVAL_BACKEND` (see below).
+
+> **No access control.** This server applies **no** security trim, tenant isolation or ACL/sensitivity
+> filtering — those were removed. Every caller sees the **entire corpus** the configured backend
+> holds. Access control, if you need it, has to live in front of this server.
 
 ## Tools
 
-| Tool | Purpose |
-| --- | --- |
-| `search_contacts` | Security-trimmed contact recall (free-text + topic/status). Reports `$filter` + `redactedCount`. |
-| `search_events` | Security-trimmed anchor discovery (the conferences a trip is built around). |
-| `survey_area` | **Area-first** — anchor on a place + date window and see which topics have a live footprint there (contacts/events + approved-message badge), ranked by opportunity. |
-| `suggest_leaders` | Given an area + topics, rank **which senior leader should go** (topic fit, availability in the window, seniority). Always a ranked menu — advisory, not an auto-pick. |
-| `nearby_leaders` | **Deconfliction / awareness** — anchor on an event or an area + window and see which **other senior leaders** will be at, or close to, the same place: sharing the anchor event (`same-event`), owning a contact on the itinerary (`same-contact`), or home-based within reach and available (`nearby-geo`). Pass `leaderId` to frame "who else" and `stopContactIds` to light up shared-contact overlaps. Advisory only. |
-| `suggest_candidates` | **The nudge** — rank who a leader should meet at an anchor event (on-site + nearby stale re-engagements), authorized-only. Returns a ranked menu. |
-| `plan_options` | **The capstone** — anchor on an area + window and get one optioned plan: topic survey, ranked leader options, tiered **duration options** (core vs. extended, fully costed), and **extension options** ("+N days unlocks meeting THIS entity on THIS topic — here are the approved talking points"). |
-| `plan_radius` | **Fixed-radius planner** — the "a leader must visit a specific company (or coordinate/city) for a fixed N days, **no anchor event**" entry. Anchors by company name / contact id / raw `lat`+`lng` / city, fills `days × meetingsPerDay` slots with the anchor (met on-site) + the highest-value **authorized contacts inside the radius**, and offers the overflow as fixed-days **extension options** ("+1 day unlocks one more meeting…"). Purely geographic — it does **not** absorb nearby events' rosters. |
-| `build_itinerary` | Order accepted stops, compute trip-ROI, and surface advisory conflicts (fit / budget / opportunity-cost) **plus `nearbyLeaders` awareness** (other senior leaders at/near the same event/contact/geo). **Two modes:** event-anchored (`eventId`/`eventQuery`) or **event-less radius** (`company`/`anchorContactId`/`lat`+`lng`/`city` + `days`). In event mode, optional **`additionalContactIds`** appends an authorized **regional swing** — far-afield on-topic stops beyond the event's nearby pool (re-authorized through the same trim, so it can't smuggle a redacted contact) — which is how the leader-first `/ask` builds longer options while keeping the on-site attendees. **App tool** — its result carries a `tripMap` payload rendered on `ui://trip-map`. |
+Nine planner tools are registered for `RETRIEVAL_BACKEND=memory` and `search`. `search_grounding` is
+registered **in addition** whenever an index declaration carries a `mapping.grounding` block, and is
+the **only** tool registered when `RETRIEVAL_BACKEND=grounding`.
 
-## Caller identity (security trim)
-
-Claims arrive as request headers (the prod Keycloak token maps to the same shape). Fastest demo switch:
-
-```
-x-demo-persona: EA_BASIC | EA_G8 | ADMIN | CROSS_TENANT | NO_TENANT
-```
-
-or the granular form: `x-tenant-id`, `x-user-id`, `x-user-groups`, `x-user-roles`, `x-user-scopes`.
-Default caller is `EA_BASIC` (enterprise baseline), so the trim is visible out-of-the-box: the canonical
-AUSA/UAS menu returns `{P2, C3}` with the G8-restricted **C4** redacted until you elevate to `EA_G8`.
+| Tool                 | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_grounding`   | **Grounded RAG** — ranked passages from a document/chunk index (hybrid BM25 + vector, semantic reranking where configured), returned with citation metadata (`id`, `title`, `url`, `parentId`). Inputs: `query`, `top` (default 8), optional OData `filter`. Registration is conditional — see above.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `search_contacts`    | Contact recall (free-text over name / org / SME area / city / state, plus `topicIds` and `status`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `search_events`      | Anchor discovery (the conferences a trip is built around).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `survey_area`        | **Area-first** — anchor on a place + date window and see which topics have a live footprint there (contacts/events + approved-message badge), ranked by opportunity.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `suggest_leaders`    | Given an area + topics, rank **which senior leader should go** (topic fit, availability in the window, seniority). Always a ranked menu — advisory, not an auto-pick.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `nearby_leaders`     | **Deconfliction / awareness** — anchor on an event or an area + window and see which **other senior leaders** will be at, or close to, the same place: sharing the anchor event (`same-event`), owning a contact on the itinerary (`same-contact`), or home-based within reach and available (`nearby-geo`). Pass `leaderId` to frame "who else" and `stopContactIds` to light up shared-contact overlaps. Advisory only.                                                                                                                                                                                                                                                                                                                                         |
+| `suggest_candidates` | **The nudge** — rank who a leader should meet at an anchor event (on-site + nearby stale re-engagements). Returns a ranked menu.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `plan_options`       | **The capstone** — anchor on an area + window and get one optioned plan: topic survey, ranked leader options, tiered **duration options** (core vs. extended, fully costed), and **extension options** ("+N days unlocks meeting THIS entity on THIS topic — here are the approved talking points").                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `plan_radius`        | **Fixed-radius planner** — the "a leader must visit a specific company (or coordinate/city) for a fixed N days, **no anchor event**" entry. Anchors by company name / contact id / raw `lat`+`lng` / city, fills `days × meetingsPerDay` slots with the anchor (met on-site) + the highest-value contacts inside the radius, and offers the overflow as fixed-days **extension options** ("+1 day unlocks one more meeting…"). Purely geographic — it does **not** absorb nearby events' rosters.                                                                                                                                                                                                                                                                 |
+| `build_itinerary`    | Order accepted stops, compute trip-ROI, and surface advisory conflicts (fit / budget / opportunity-cost) **plus `nearbyLeaders` awareness** (other senior leaders at/near the same event/contact/geo). **Two modes:** event-anchored (`eventId`/`eventQuery`) or **event-less radius** (`company`/`anchorContactId`/`lat`+`lng`/`city` + `days`). In event mode, optional **`additionalContactIds`** appends a **regional swing** — far-afield on-topic stops beyond the event's nearby pool — which is how the leader-first `/ask` builds longer options while keeping the on-site attendees; ids that match no known contact come back in `notMatched` and are never routed. **App tool** — its result carries a `tripMap` payload rendered on `ui://trip-map`. |
 
 ## Run
 
@@ -41,7 +38,7 @@ npm run serve:stdio --workspace @greenhouse-resume-builder/cap-engagements-mcp-e
 npm test       --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements   # end-to-end MCP client tests
 ```
 
-`PORT` / `ENGAGEMENTS_MCP_PORT` override the port; `ENGAGEMENTS_DEMO_PERSONA` sets the stdio/default persona.
+`PORT` / `ENGAGEMENTS_MCP_PORT` override the port.
 
 ## Trip Map App (`ui://trip-map`)
 
@@ -77,46 +74,98 @@ npm run serve     --workspace @greenhouse-resume-builder/cap-engagements-mcp-eng
 #   SERVERS='["http://localhost:3010/mcp"]' npm run start   → http://localhost:8080
 ```
 
-## Retrieval backend (`memory` | `search`)
+## Retrieval backend (`memory` | `search` | `grounding`)
 
-The tools read through one async seam (`src/readmodel.ts`), selected by `RETRIEVAL_BACKEND`:
+The planner tools read through one async seam (`src/readmodel.ts`), selected by `RETRIEVAL_BACKEND`:
 
-| Value | Backend | Notes |
-| --- | --- | --- |
-| `memory` (default) | In-memory `EngagementIndex` over the staged seed. | Zero cloud; the trim runs as a predicate. Loaded fresh per call. |
-| `search` | **Real Azure AI Search** — the same tenant + ACL + sensitivity trim is enforced **server-side** as an OData `$filter`. | Falls back to `memory` if no service is configured. |
+| Value              | Backend                                                                                                 | Notes                                                                                                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `memory` (default) | In-memory `EngagementIndex` over the staged seed.                                                       | Zero cloud. Loaded fresh per call, so a live add/update/delete shows immediately.                                                                                            |
+| `search`           | **Azure AI Search index of STRUCTURED records** (contacts, events, leaders, topics, messages, regions). | The full deterministic planner. Needs `mapping.entityType` + `mapping.payload` in the index declaration.                                                                     |
+| `grounding`        | **Azure AI Search index of DOCUMENTS/CHUNKS** — an ordinary RAG index.                                  | Registers **only** `search_grounding`. The deterministic planner is unavailable, because a text corpus carries no contacts, geo or leader roster. Needs `mapping.grounding`. |
 
-Both honor the identical `TrimmedResult` contract, so the demo beats (`redactedCount`, the AUSA/UAS
-menu, the "watch C4 disappear" for `EA_BASIC`) are byte-for-byte the same on either backend.
+**Seed isolation.** Neither cloud mode falls back to the seed. Asking for `search` or `grounding`
+without `AZURE_SEARCH_SERVICE` set is a **hard error**, not a silent downgrade — a quiet fallback
+would serve demo data while looking healthy. In `search` mode contacts, events, leaders, topics,
+messages **and** regions all come from the index, and `today` is the real current date rather than
+the seed's month-shifted demo clock; a record kind the index does not carry reads back **empty**
+rather than being substituted from the seed. `grounding` mode does not open the seed at all.
+
+`search_grounding` over-fetches, then collapses passages **by parent document** (best-scoring chunk
+wins) before taking the top N, so one long PDF cannot occupy every result slot.
 
 ### Cloud config (repo-root `.env`)
 
 ```
 AZURE_SEARCH_SERVICE=https://<service>.search.windows.net
 AZURE_SEARCH_API_KEY=<admin-or-query-key>       # omit to use DefaultAzureCredential (az login / managed identity)
-# ENGAGEMENTS_SEARCH_INDEX=engagements          # optional override (default: engagements)
+# AZURE_SEARCH_ENDPOINT_SUFFIX=search.windows.net   # sovereign clouds
 ```
+
+### Index schema registry
+
+Each index is described by its own JSON config file declaring `id`, `indexName`, `fields[]`
+(`name`, `type`, `key`/`filterable`/`searchable`/`sortable`/`facetable`/`retrievable`) and a
+`mapping` from logical role → physical field name. Adding an index means dropping in a file — no
+code change. The declarations are also the query guard: a `filterable` mismatch fails with a readable
+message naming the field and the file, instead of an opaque Azure HTTP 400.
+
+| Var                         | Takes                                                                                                                                                                                    |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ENGAGEMENTS_INDEX_SCHEMAS` | Comma/semicolon-separated **file and/or directory** paths. A directory contributes every `*.json` in it, sorted by filename, **skipping `*.example.json`**. Wins over the singular form. |
+| `ENGAGEMENTS_INDEX_SCHEMA`  | One file (the original single-index knob).                                                                                                                                               |
+| _(neither set)_             | The packaged/checked-in `index-schema.json`.                                                                                                                                             |
+
+Roles resolve **by content, not by order**:
+
+- the declaration carrying `mapping.grounding` is the corpus `search_grounding` answers from;
+- `mapping.entityType` values decide which declaration serves each record kind — so contacts and
+  events may live in **different** indexes, one index may hold everything, or one index per kind.
+
+Validation rejects duplicate `id`s, more than one `mapping.grounding` block, the same record kind
+claimed by two declarations, and an empty registry — each error naming the offending files.
+
+Examples to copy: [`index-schema.json`](./index-schema.json) (the demo index),
+[`index-schema.structured.example.json`](./index-schema.structured.example.json) (a customer index of
+structured records with unknown field names), and
+[`index-schema.grounding.example.json`](./index-schema.grounding.example.json) (a plain
+document/chunk RAG index).
+
+Two caveats worth knowing:
+
+- **`ENGAGEMENTS_SEARCH_INDEX` throws** when the registry holds more than one declaration — applying
+  one name to several declarations would silently collapse distinct indexes onto one. Set
+  `indexName` in each config file instead.
+- **Prefer absolute paths.** A relative `ENGAGEMENTS_INDEX_SCHEMA(S)` resolves against the process
+  working directory, which differs between `npm run -w <workspace>` and a deployed Web App.
 
 ### Provision + reindex
 
-One `engagements` index carries both sources via a `kind` (`contact` | `event`) discriminator, with the
-governance envelope (`tenantId`, `aclGroups[]`, `sensitivity`, `topicIds[]`) as filterable fields and the
-full record in a retrievable `json` field. The CLI is the local stand-in for the ETL/indexer:
-
 ```bash
-npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements               # reindex (ensure + upsert seed)
-npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements -- ensure      # create/update index only
-npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements -- sync        # upsert docs only
+npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements -- validate   # OFFLINE — check + print every declaration
+npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements               # reindex (ensure + sync)
+npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements -- ensure      # create/update indexes only
+npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements -- sync        # upsert seed docs only
 npm run provision:search --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagements -- delete contact C4   # delete one record (demo)
 ```
 
+> **Never run `ensure` / `sync` / `reindex` against a customer index.** `ensure` reshapes the index
+> from the declaration and `sync` pushes demo seed records into it. `validate` makes **no** Azure
+> calls and is the only safe command against an index you did not create — run it first, and check
+> that the printed `index`, `kinds` and `grounding` lines match what you expect.
+
+The checked-in `index-schema.json` describes the demo `engagements` index: one index carrying every
+record kind behind a `kind` discriminator, with `topicIds[]` / `status` / `city` / `state` filterable
+and the full record in a retrievable `json` payload field. `provision:search` is the local stand-in
+for the ETL/indexer that would normally land per-source blobs.
+
 Serve against it with `RETRIEVAL_BACKEND=search npm run serve …`. Add/update/delete a record then
-`reindex` to watch a source change flow through the trim live (indexing is eventually consistent — allow
-a second or two).
+`reindex` to watch a source change flow through live (indexing is eventually consistent — allow a
+second or two).
 
 ## Interop note
 
-The deterministic **planner** (`src/planner`) and **retrieval / security** (`src/retrieval`) engines
+The deterministic **planner** (`src/planner`) and **retrieval** (`src/retrieval`) engines
 live inside this ESM package. `engine.ts` is the single bridge that adapts them into the MCP tool layer:
 it imports each as a namespace (`import * as planner from './planner/index.js'`), then re-exports the
 pieces the tools use. Everything else imports the engine only from `./engine.js`.

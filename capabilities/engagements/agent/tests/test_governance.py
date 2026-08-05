@@ -14,7 +14,6 @@ def test_agt_policy_allows_planning_tool(settings: Settings) -> None:
         name="search_contacts",
         arguments={"query": "UAS"},
         trace_id="trace-1",
-        persona="EA_G8",
         caller_agent_id="test-agent",
     )
 
@@ -34,7 +33,6 @@ def test_agt_policy_blocks_ssn_in_tool_arguments(settings: Settings) -> None:
             name="search_contacts",
             arguments={"query": ssn},
             trace_id="trace-2",
-            persona="EA_G8",
             caller_agent_id="test-agent",
         )
 
@@ -53,7 +51,6 @@ def test_gateway_allowlist_fails_closed_before_policy(settings: Settings) -> Non
             name="execute_shell",
             arguments={"command": "whoami"},
             trace_id="trace-3",
-            persona="EA_G8",
             caller_agent_id="test-agent",
         )
 
@@ -90,7 +87,6 @@ def test_policy_tool_call_limit_applies_per_trace(settings: Settings) -> None:
             name="search_contacts",
             arguments={"query": "cyber"},
             trace_id="trace-budget",
-            persona="EA_G8",
             caller_agent_id="test-agent",
         )
 
@@ -99,7 +95,6 @@ def test_policy_tool_call_limit_applies_per_trace(settings: Settings) -> None:
             name="search_contacts",
             arguments={"query": "cyber"},
             trace_id="trace-budget",
-            persona="EA_G8",
             caller_agent_id="test-agent",
         )
 
@@ -107,7 +102,6 @@ def test_policy_tool_call_limit_applies_per_trace(settings: Settings) -> None:
         name="search_contacts",
         arguments={"query": "cyber"},
         trace_id="different-trace",
-        persona="EA_G8",
         caller_agent_id="test-agent",
     )
 
