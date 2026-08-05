@@ -23,6 +23,7 @@ import type {
   Preferences,
 } from "@greenhouse-resume-builder/shared";
 import { odataEscapeLiteral } from "./odata";
+import { runSearch, searchLog as log } from "./search-errors.js";
 import {
   declarationForKind,
   entityTypeValue,
@@ -62,6 +63,11 @@ function serviceEndpoint(): string {
 /** Admin/query key when present, otherwise Entra ID (managed identity / az login). */
 function credential(): AzureKeyCredential | DefaultAzureCredential {
   const key = process.env.AZURE_SEARCH_API_KEY;
+  if (!key) {
+    log.debug(
+      "no AZURE_SEARCH_API_KEY -- authenticating with DefaultAzureCredential (managed identity / az login)",
+    );
+  }
   return key ? new AzureKeyCredential(key) : new DefaultAzureCredential();
 }
 
@@ -71,13 +77,14 @@ function credential(): AzureKeyCredential | DefaultAzureCredential {
 function declarationFor(kind: IndexEntityKind): IndexSchema {
   const schema = declarationForKind(kind);
   if (!schema) {
-    throw new Error(
+    const message =
       `No index declaration carries the "${kind}" record kind, so it cannot be read or written. ` +
-        `Add "${kind}" to \`mapping.entityType\` in one of:\n` +
-        loadIndexRegistry()
-          .map((d) => `  ${d.id}: ${d.sourcePath}`)
-          .join("\n"),
-    );
+      `Add "${kind}" to \`mapping.entityType\` in one of:\n` +
+      loadIndexRegistry()
+        .map((d) => `  ${d.id}: ${d.sourcePath}`)
+        .join("\n");
+    log.error(message);
+    throw new Error(message);
   }
   return schema;
 }
@@ -340,16 +347,30 @@ export async function searchEngagementContacts(
   const recallFilter = recallParts.join(" and ");
   const text = q.query?.trim() ? q.query : "*";
 
-  const resp = await clientFor(schema).search(text, {
-    filter: recallFilter,
-    searchFields: searchableFields(schema),
-    top: 1000,
-  });
+  const index = indexName(schema);
+  log.debug(
+    () =>
+      `search_contacts: index "${index}" search="${text}" $filter=${recallFilter}`,
+  );
+  const resp = await runSearch(
+    log,
+    { operation: "search_contacts", index, sourcePath: schema.sourcePath },
+    () =>
+      clientFor(schema).search(text, {
+        filter: recallFilter,
+        searchFields: searchableFields(schema),
+        top: 1000,
+      }),
+  );
   const items: Labeled<Contact>[] = [];
   for await (const r of resp.results)
     items.push(fromPayload<Labeled<Contact>>(r.document, schema));
 
-  return q.preferences ? narrowByPreferences(items, q.preferences) : items;
+  const out = q.preferences ? narrowByPreferences(items, q.preferences) : items;
+  log.info(
+    `search_contacts: ${items.length} from index "${index}", ${out.length} after preference narrowing`,
+  );
+  return out;
 }
 
 /** Return anchor events, optionally matched by text/topic. */
@@ -372,15 +393,26 @@ export async function searchEngagementEvents(
   const recallFilter = recallParts.join(" and ");
   const text = exactId ? "*" : query || "*";
 
-  const resp = await clientFor(schema).search(text, {
-    filter: recallFilter,
-    searchFields: searchableFields(schema),
-    top: 1000,
-  });
+  const index = indexName(schema);
+  log.debug(
+    () =>
+      `search_events: index "${index}" search="${text}" $filter=${recallFilter}`,
+  );
+  const resp = await runSearch(
+    log,
+    { operation: "search_events", index, sourcePath: schema.sourcePath },
+    () =>
+      clientFor(schema).search(text, {
+        filter: recallFilter,
+        searchFields: searchableFields(schema),
+        top: 1000,
+      }),
+  );
   const items: Labeled<EngagementEvent>[] = [];
   for await (const r of resp.results)
     items.push(fromPayload<Labeled<EngagementEvent>>(r.document, schema));
 
+  log.info(`search_events: ${items.length} from index "${index}"`);
   return items;
 }
 
@@ -396,14 +428,26 @@ export async function searchEngagementRecords<T>(
   kind: IndexEntityKind,
 ): Promise<T[]> {
   const schema = declarationForKind(kind);
-  if (!schema) return [];
+  if (!schema) {
+    log.warn(
+      `no index declaration carries the "${kind}" record kind -- reading back EMPTY rather than substituting demo seed records`,
+    );
+    return [];
+  }
 
-  const resp = await clientFor(schema).search("*", {
-    filter: kindClause(kind, schema),
-    top: 1000,
-  });
+  const index = indexName(schema);
+  const resp = await runSearch(
+    log,
+    { operation: `read ${kind}`, index, sourcePath: schema.sourcePath },
+    () =>
+      clientFor(schema).search("*", {
+        filter: kindClause(kind, schema),
+        top: 1000,
+      }),
+  );
   const items: T[] = [];
   for await (const r of resp.results)
     items.push(fromPayload<T>(r.document, schema));
+  log.info(`read ${kind}: ${items.length} record(s) from index "${index}"`);
   return items;
 }

@@ -13,7 +13,7 @@
     "build:app": "cross-env INPUT=trip-map.html vite build",
     "watch:app": "cross-env NODE_ENV=development INPUT=trip-map.html vite build --watch",
     "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.app.json",
-    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "test": "cross-env ENGAGEMENTS_LOG_LEVEL=error node --import tsx --test \"src/**/*.test.ts\"",
     "provision:search": "tsx src/provision.ts"
   },
   "dependencies": {

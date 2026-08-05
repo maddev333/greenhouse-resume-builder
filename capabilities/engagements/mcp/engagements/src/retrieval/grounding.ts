@@ -16,12 +16,16 @@
  */
 import { SearchClient, AzureKeyCredential } from "@azure/search-documents";
 import { DefaultAzureCredential } from "@azure/identity";
+import { createLogger } from "../log.js";
+import { runSearch } from "./search-errors.js";
 import {
   groundingDeclaration,
   groundingMapping,
   indexName,
   searchableFields,
 } from "./index-schema";
+
+const log = createLogger("grounding");
 
 const ENDPOINT_SUFFIX: string =
   process.env.AZURE_SEARCH_ENDPOINT_SUFFIX ?? "search.windows.net";
@@ -42,6 +46,11 @@ function serviceEndpoint(): string {
 
 function credential(): AzureKeyCredential | DefaultAzureCredential {
   const key = process.env.AZURE_SEARCH_API_KEY;
+  if (!key) {
+    log.debug(
+      "no AZURE_SEARCH_API_KEY -- authenticating with DefaultAzureCredential (managed identity / az login)",
+    );
+  }
   return key ? new AzureKeyCredential(key) : new DefaultAzureCredential();
 }
 
@@ -97,11 +106,12 @@ export async function searchGrounding(
   const schema = groundingDeclaration();
   const g = schema && groundingMapping(schema);
   if (!schema || !g) {
-    throw new Error(
+    const message =
       "No index declaration carries a `mapping.grounding` block, so no configured index can " +
-        "answer grounded questions. Add grounding.content (and optionally " +
-        "title/url/parentId/vector) to one of the index schema config files.",
-    );
+      "answer grounded questions. Add grounding.content (and optionally " +
+      "title/url/parentId/vector) to one of the index schema config files.";
+    log.error(message);
+    throw new Error(message);
   }
 
   const top = Math.max(1, q.top ?? DEFAULT_TOP);
@@ -136,19 +146,37 @@ export async function searchGrounding(
     };
   }
 
+  const index = indexName(schema);
+  const mode = g.vector ? "hybrid (BM25 + kNN/RRF)" : "keyword (BM25)";
+  log.info(
+    `query "${q.query}" -> declaration "${schema.id}", index "${index}", ${mode}` +
+      `${g.semanticConfiguration ? " + semantic rerank" : ""}, top=${top}, fetch=${top * OVERFETCH}` +
+      `${q.filter ? ", caller filter applied" : ""}`,
+  );
+  log.debug(() => `search options ${JSON.stringify(options)}`);
+
   const client = new SearchClient<Record<string, unknown>>(
     serviceEndpoint(),
-    indexName(schema),
+    index,
     credential(),
   );
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const resp = await client.search(q.query, options as any);
+  const started = Date.now();
+  const resp = await runSearch(
+    log,
+    { operation: "search_grounding", index, sourcePath: schema.sourcePath },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    () => client.search(q.query, options as any),
+  );
 
   const hits: GroundingHit[] = [];
+  let empty = 0;
   for await (const r of resp.results) {
     const doc = r.document;
     const content = str(doc[g.content]);
-    if (!content) continue; // a chunk with no text cannot ground anything
+    if (!content) {
+      empty += 1;
+      continue; // a chunk with no text cannot ground anything
+    }
 
     const rr = r as unknown as { rerankerScore?: number; score: number };
     hits.push({
@@ -161,7 +189,32 @@ export async function searchGrounding(
     });
   }
 
-  return collapseByParent(hits, top);
+  const collapsed = collapseByParent(hits, top);
+  log.info(
+    `${collapsed.length} passage(s) from ${hits.length} chunk(s) in ${Date.now() - started}ms`,
+  );
+  if (empty) {
+    log.warn(
+      `${empty} result(s) had no text in "${g.content}" and were dropped -- check mapping.grounding.content names the passage field in ${schema.sourcePath}`,
+    );
+  }
+  if (!collapsed.length) {
+    log.warn(
+      `nothing matched "${q.query}" in index "${index}". The index may be empty, the query may not ` +
+        `match any content, or ${q.filter ? "the caller filter may exclude everything" : `"${g.content}" may not be the searchable passage field`}.`,
+    );
+  }
+  log.debug(
+    () =>
+      collapsed
+        .map(
+          (h, i) =>
+            `  #${i + 1} score=${h.score.toFixed(4)} id=${h.id}${h.parentId ? ` parent=${h.parentId}` : ""}${h.title ? ` title=${h.title}` : ""}`,
+        )
+        .join("\n") || "  (no passages)",
+  );
+
+  return collapsed;
 }
 
 /** Keep the best-scoring passage per parent document, then take the top N. */

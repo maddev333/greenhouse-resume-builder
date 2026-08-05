@@ -94,6 +94,22 @@ rather than being substituted from the seed. `grounding` mode does not open the 
 `search_grounding` over-fetches, then collapses passages **by parent document** (best-scoring chunk
 wins) before taking the top N, so one long PDF cannot occupy every result slot.
 
+### Diagnostics
+
+`ENGAGEMENTS_LOG_LEVEL=silent|error|warn|info|debug` (default `info`). Everything is written to
+**stderr** — stdout carries the JSON-RPC frames in `--stdio` mode.
+
+| Level   | What you get                                                                                                                                                              |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `info`  | Startup summary (backend, search endpoint, auth mode, every loaded declaration with its index/grounding field/record kinds/file), per-tool timings, per-query hit counts. |
+| `debug` | Adds the full search options, the OData `$filter` actually sent, the ranked hit ids/scores, tool arguments, and error stacks.                                             |
+
+Retrieval failures name the setting to change rather than an HTTP status — a 403 points at the
+**Search Index Data Reader** role, a 404 at `indexName` in the declaration file, a semantic 400 at
+`mapping.grounding.semanticConfiguration`, a vector 400 at the missing vectorizer. Tool handlers are
+wrapped, so a failing tool logs `<name> FAILED after <n>ms` with the cause; without that the MCP SDK
+turns the throw into an `isError` result and the server stays silent.
+
 ### Cloud config (repo-root `.env`)
 
 ```

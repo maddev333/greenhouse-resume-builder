@@ -69,11 +69,14 @@ import {
   groundingDeclaration,
 } from "./engine.js";
 import { getReadModel, resolveBackend, type ReadModel } from "./readmodel.js";
+import { createLogger, describeError } from "./log.js";
 import type {
   TripMapLeg,
   TripMapPayload,
   TripMapPoint,
 } from "./app-payload.js";
+
+const log = createLogger("tools");
 
 /** The ui://trip-map App: URI the tool advertises + where `vite build` writes the single-file HTML. */
 const TRIP_MAP_RESOURCE_URI = "ui://trip-map/trip-map.html";
@@ -642,10 +645,50 @@ function registerGroundingTool(server: McpServer): void {
   );
 }
 
+/**
+ * Wrap `registerTool` so EVERY tool logs its call, duration and failure.
+ *
+ * The MCP SDK converts a thrown handler error into an `isError` result for the client, which means
+ * a failing tool is otherwise completely silent on the server — the operator sees a broken chat and
+ * nothing in the logs. This is the seam that makes failures visible, and it costs one wrap instead
+ * of a try/catch in every handler.
+ */
+function instrumentToolCalls(server: McpServer): void {
+  type Handler = (...args: unknown[]) => unknown;
+  const register = server.registerTool.bind(server) as (
+    name: string,
+    config: unknown,
+    handler: Handler,
+  ) => unknown;
+
+  (server as unknown as { registerTool: unknown }).registerTool = (
+    name: string,
+    config: unknown,
+    handler: Handler,
+  ) =>
+    register(name, config, async (...args: unknown[]) => {
+      const started = Date.now();
+      log.debug(() => `-> ${name} ${JSON.stringify(args[0] ?? {})}`);
+      try {
+        const result = await handler(...args);
+        log.info(`${name} ok in ${Date.now() - started}ms`);
+        return result;
+      } catch (err) {
+        log.error(`${name} FAILED after ${Date.now() - started}ms`, err);
+        // Hand the reason to the caller too; an opaque tool error is unfixable from the chat side.
+        throw err instanceof Error
+          ? err
+          : new Error(`${name} failed: ${describeError(err)}`);
+      }
+    });
+}
+
 export function registerEngagementTools(server: McpServer): void {
+  instrumentToolCalls(server);
   const backend = resolveBackend();
 
   if (backend === "grounding") {
+    log.info("backend=grounding -> registering only search_grounding");
     registerGroundingTool(server);
     return;
   }
