@@ -20,7 +20,7 @@
     "Left as the <placeholder> the server refuses to load this file, rather than sending the",
     "placeholder to Azure and surfacing an opaque 404."
   ],
-  "indexName": "<customer-index-name>",
+  "indexName": "rag-1785978129136",
 
   "fields": [
     {
@@ -46,10 +46,11 @@
       "searchable": true
     },
     {
-      "name": "url",
-      "type": "Edm.String"
-    },
-    {
+      "//text_vector": [
+        "Dimensions are NOT declared here - this file describes an EXISTING index, and the vector",
+        "query passes raw TEXT, which the index's own vectorizer embeds. The declaration only has",
+        "to agree on the field name and that it is Collection(Edm.Single)."
+      ],
       "name": "text_vector",
       "type": "Collection(Edm.Single)",
       "retrievable": false
@@ -67,25 +68,25 @@
     "//grounding": [
       "content  REQUIRED, must be `searchable` - the passage text an answer is grounded in.",
       "title    optional citation label.",
-      "url      optional citation link.",
+      "url      null here because the index carries no url field. Naming a field that the index",
+      "         does not declare is rejected at load; citations then fall back to `title`.",
       "parentId optional, must be `filterable` - collapses many chunks of one document to its best",
       "         passage, so a long PDF cannot occupy every result slot.",
       "vector   optional, must be Collection(Edm.Single) - turns recall hybrid (BM25 + kNN + RRF).",
       "         The index needs a VECTORIZER on its vector profile, because queries pass raw text.",
       "         Set it to null when the index has no vectors, or vectors but no vectorizer; recall",
       "         then falls back to keyword search.",
-      "semanticConfiguration null here on purpose: naming one that does not exist on the index",
-      "         fails EVERY query with an HTTP 400. Set it to the index's semantic configuration",
-      "         (the wizard names it <index-name>-semantic-configuration) to add the L2 reranker.",
-      "         Requires Basic tier or above."
+      "semanticConfiguration the index's semantic configuration, adding the L2 reranker. Naming",
+      "         one that does not exist fails EVERY query with an HTTP 400, so set it back to null",
+      "         if the index has none. Requires Basic tier or above."
     ],
     "grounding": {
       "content": "chunk",
       "title": "title",
-      "url": "url",
+      "url": null,
       "parentId": "parent_id",
       "vector": "text_vector",
-      "semanticConfiguration": null
+      "semanticConfiguration": "rag-1785978129136-semantic-configuration"
     }
   }
 }
