@@ -28,11 +28,23 @@
  *      structured planner records). Each is taken from the process working directory when a
  *      deployed copy is there, else from source.
  *
+ * Both environment variables accept RELATIVE paths, resolved against the working directory first
+ * and the checked-in project second. That is what makes `ENGAGEMENTS_INDEX_SCHEMAS=config` — the
+ * whole config directory, which the Web App ZIP unpacks at the site root — one setting that works
+ * unchanged locally and on App Service, where an absolute developer path cannot.
+ *
  * Pointing at a customer's EXISTING index therefore means describing that index in a config file —
  * not re-provisioning over it.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  resolve,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { SearchField, SearchIndex } from "@azure/search-documents";
@@ -62,6 +74,24 @@ function defaultSchemaPath(file: string): string {
 }
 
 /**
+ * Resolve a CONFIGURED path (either environment variable). An absolute path is used verbatim; a
+ * relative one is tried against the working directory first and the checked-in project second —
+ * the same rule as `defaultSchemaPath`, extended to operator-supplied paths.
+ *
+ * This is what lets ONE relative setting survive deployment: `config` is the project's config
+ * directory under `npm run -w`, and the site root's `config/` on App Service, where the ZIP unpacks
+ * every declaration. A relative path that exists in neither place keeps the working-directory form,
+ * so the "does not exist" error quotes the path the operator most likely meant.
+ */
+function resolveConfigPath(entry: string): string {
+  if (isAbsolute(entry)) return entry;
+  const fromCwd = resolve(process.cwd(), entry);
+  if (existsSync(fromCwd)) return fromCwd;
+  const fromSource = sourceSchemaPath(entry);
+  return existsSync(fromSource) ? fromSource : fromCwd;
+}
+
+/**
  * Location of the single-file declaration (`ENGAGEMENTS_INDEX_SCHEMA` wins, then packaged, then
  * source). Every path is resolved lazily on each call so the environment variable AND the working
  * directory are honoured whenever they are set, not just at import.
@@ -74,7 +104,7 @@ function defaultSchemaPath(file: string): string {
  */
 export function indexSchemaPath(): string {
   const override = process.env.ENGAGEMENTS_INDEX_SCHEMA?.trim();
-  if (override) return resolve(override);
+  if (override) return resolveConfigPath(override);
   const grounding =
     process.env.RETRIEVAL_BACKEND?.trim().toLowerCase() === "grounding";
   return defaultSchemaPath(grounding ? RAG_CONFIG : RECORDS_CONFIG);
@@ -82,7 +112,7 @@ export function indexSchemaPath(): string {
 
 /** Expand one `ENGAGEMENTS_INDEX_SCHEMAS` entry (a file or a directory) into config file paths. */
 function expandSchemaSource(entry: string): string[] {
-  const path = resolve(entry);
+  const path = resolveConfigPath(entry);
   if (!existsSync(path)) {
     throw new Error(
       `ENGAGEMENTS_INDEX_SCHEMAS names "${entry}", which does not exist (resolved to ${path}).`,
@@ -151,11 +181,17 @@ const mappingSchema = z.object({
   // structured contact/event records — that declaration then serves grounding only.
   entityType: z
     .object({
-      field: z.string().min(1),
+      // The discriminator column, when SEVERAL record kinds share one index (the demo `engagements`
+      // index does). OMIT it for a DEDICATED index — a customer's contacts index has no "kind"
+      // column, and demanding one would mean altering an index we do not own. Without it the
+      // declaration must claim exactly one kind, since nothing could tell two apart.
+      field: z.string().min(1).nullable().optional(),
       // contact + event must both be STATED so splitting records across indexes is a deliberate
       // act, but either may be `null` meaning "this index does not hold that kind" — that is what
       // lets one declaration own contacts and another own events. The reference kinds are fully
       // optional; omit one (or set it null) and that record set reads back EMPTY.
+      // With no `field`, a value is just a marker that the kind is present; only its presence is
+      // read. Conventionally the kind name.
       contact: z.string().min(1).nullable(),
       event: z.string().min(1).nullable(),
       leader: z.string().min(1).nullable().optional(),
@@ -288,6 +324,26 @@ function validate(raw: unknown, path: string): IndexSchema {
         "`mapping.grounding` (document/chunk RAG), or both. With neither there is nothing to read.",
       path,
     );
+  }
+
+  // A DEDICATED index needs no discriminator — the index IS the record kind, and every query for
+  // it drops the `<field> eq '<value>'` clause. That only holds while the declaration claims one
+  // kind: with two and no column to tell them apart, contacts and events would read as each other.
+  const entityType = schema.mapping.entityType;
+  if (entityType && !entityType.field) {
+    const claimed = ENTITY_KINDS.filter((k) => entityType[k]);
+    if (claimed.length !== 1) {
+      fail(
+        "Invalid index schema: `mapping.entityType` omits `field`, which declares an index " +
+          `dedicated to ONE record kind, but ${
+            claimed.length
+              ? `${claimed.length} are claimed (${claimed.join(", ")})`
+              : "none is claimed"
+          }. Either name the discriminator field the index uses to separate kinds, or claim ` +
+          "exactly one kind here and put the others in their own config file.",
+        path,
+      );
+    }
   }
 
   if (g) {

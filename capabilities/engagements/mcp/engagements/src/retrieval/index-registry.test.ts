@@ -9,7 +9,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -96,13 +103,45 @@ const EVENTS_ONLY = {
   },
 };
 
-/** Write a throwaway config directory and return its path. */
-function fixtureDir(files: Record<string, unknown>): string {
-  const dir = mkdtempSync(join(tmpdir(), "engagements-index-registry-"));
+/**
+ * A DEDICATED contacts index: no discriminator column at all, because every document in it is a
+ * contact. This is the shape of a customer index we did not build.
+ */
+const DEDICATED_CONTACTS = {
+  id: "people-only",
+  indexName: "customer-contacts",
+  fields: [
+    { name: "record_id", type: "Edm.String", key: true, filterable: true },
+    { name: "full_name", type: "Edm.String", searchable: true },
+    { name: "payload_json", type: "Edm.String" },
+  ],
+  mapping: {
+    key: "record_id",
+    entityType: { contact: "contact", event: null },
+    payload: "payload_json",
+  },
+};
+
+/** Write the given config files into `dir`, creating it, and return it. */
+function fixtureDirAt(dir: string, files: Record<string, unknown>): string {
+  mkdirSync(dir, { recursive: true });
   for (const [name, body] of Object.entries(files)) {
     writeFileSync(join(dir, name), JSON.stringify(body, null, 2), "utf8");
   }
   return dir;
+}
+
+/**
+ * A throwaway directory, in the CANONICAL form `process.cwd()` reports. Windows hands back an 8.3
+ * short path from `tmpdir()`, which would not compare equal to a resolved config path.
+ */
+function tempDir(prefix: string): string {
+  return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+}
+
+/** Write a throwaway config directory and return its path. */
+function fixtureDir(files: Record<string, unknown>): string {
+  return fixtureDirAt(tempDir("engagements-index-registry-"), files);
 }
 
 /**
@@ -270,6 +309,51 @@ test("grounding mode still honours an explicit ENGAGEMENTS_INDEX_SCHEMA", () => 
   }
 });
 
+test("a relative ENGAGEMENTS_INDEX_SCHEMAS falls back to the project directory", () => {
+  // The multi-index setting has to survive deployment. An absolute developer path cannot be an App
+  // Service app setting, so `config` — the directory the ZIP unpacks at the site root — must
+  // resolve wherever the process was started from, not only when the working directory happens to
+  // be the project. Running from a temp directory is the case that used to find nothing.
+  const elsewhere = tempDir("engagements-cwd-");
+  const cwd = process.cwd();
+  try {
+    process.chdir(elsewhere);
+    withRegistry("config", () => {
+      const paths = indexSchemaPaths();
+      assert.ok(
+        paths.some((p) => p.endsWith(join("config", "rag-index.json"))),
+        `expected the project's config/ declarations, got ${paths.join(", ")}`,
+      );
+      assert.ok(
+        paths.every((p) => !p.startsWith(elsewhere)),
+        "must not resolve against a working directory that has no config/",
+      );
+    });
+  } finally {
+    process.chdir(cwd);
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+test("a relative path still prefers the working directory when one exists there", () => {
+  // The deployed copy next to the process wins over the checked-in one, matching how
+  // config/rag-index.json is already resolved.
+  const parent = tempDir("engagements-cwd-");
+  const cwd = process.cwd();
+  try {
+    fixtureDirAt(join(parent, "config"), { "a-rag.json": RAG });
+    process.chdir(parent);
+    withRegistry("config", () => {
+      assert.deepEqual(indexSchemaPaths(), [
+        join(parent, "config", "a-rag.json"),
+      ]);
+    });
+  } finally {
+    process.chdir(cwd);
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test("an unedited <placeholder> indexName is rejected, naming the file", () => {
   // Otherwise the placeholder is sent to Azure verbatim and comes back as an opaque 404.
   withFixture(
@@ -342,6 +426,45 @@ test("a kind no declaration carries resolves to undefined, never a guess", () =>
     assert.equal(declarationForKind("leader"), undefined);
     assert.equal(declarationForKind("region"), undefined);
   });
+});
+
+test("a DEDICATED index needs no discriminator field", () => {
+  // A customer's contacts index has no "kind" column — everything in it is a contact. Demanding
+  // one would mean altering an index we do not own, so `field` may be omitted and the kind clause
+  // is simply not emitted.
+  withFixture({ "a-people.json": DEDICATED_CONTACTS }, () => {
+    reloadIndexRegistry();
+    const contacts = declarationForKind("contact");
+    assert.equal(contacts?.id, "people-only");
+    assert.equal(contacts?.mapping.entityType?.field, undefined);
+    assert.deepEqual(entityKinds(contacts!), ["contact"]);
+    assert.equal(declarationForKind("event"), undefined);
+  });
+});
+
+test("no discriminator + several kinds is rejected — nothing could tell them apart", () => {
+  withFixture(
+    {
+      "a-mixed.json": {
+        ...DEDICATED_CONTACTS,
+        mapping: {
+          ...DEDICATED_CONTACTS.mapping,
+          entityType: { contact: "contact", event: "event" },
+        },
+      },
+    },
+    () => {
+      assert.throws(
+        () => reloadIndexRegistry(),
+        (err: unknown) => {
+          const msg = (err as Error).message;
+          assert.match(msg, /omits `field`/);
+          assert.match(msg, /2 are claimed \(contact, event\)/);
+          return true;
+        },
+      );
+    },
+  );
 });
 
 // ── Cross-declaration validation ───────────────────────────────────────────

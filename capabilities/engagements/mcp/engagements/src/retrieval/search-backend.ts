@@ -125,7 +125,7 @@ function mappedDoc(
 ): EngagementDoc {
   const kindField = schema.mapping.entityType?.field;
   const kindValue = entityTypeValue(kind, schema);
-  if (!kindField || !kindValue) {
+  if (!kindValue) {
     throw new Error(
       `Index declaration "${schema.id}" does not carry the "${kind}" record kind.\n  (${schema.sourcePath})`,
     );
@@ -133,8 +133,9 @@ function mappedDoc(
 
   const doc: EngagementDoc = {
     [schema.mapping.key]: docKey(kind, record.id),
-    [kindField]: kindValue,
   };
+  // A dedicated index declares no discriminator, so there is no such column to write.
+  if (kindField) doc[kindField] = kindValue;
   if (schema.mapping.topicIds) doc[schema.mapping.topicIds] = topicIds;
   if (schema.mapping.status && status) doc[schema.mapping.status] = status;
   if (schema.mapping.payload) {
@@ -282,10 +283,26 @@ export async function deleteEngagementDoc(
 
 // ── Retrieval (the swap target) ───────────────────────────────────
 
-/** `<entityType> eq '<value>'` for one kind, resolved through THAT declaration's mapping. */
-function kindClause(kind: IndexEntityKind, schema: IndexSchema): string {
-  const f = filterableField("entityType", schema)!;
+/**
+ * `<entityType> eq '<value>'` for one kind, resolved through THAT declaration's mapping.
+ *
+ * `undefined` for a DEDICATED index — one whose declaration names no discriminator field because
+ * every document in it is that kind. Filtering is then unnecessary, and there is no column to
+ * filter on.
+ */
+function kindClause(
+  kind: IndexEntityKind,
+  schema: IndexSchema,
+): string | undefined {
+  const f = filterableField("entityType", schema);
+  if (!f) return undefined;
   return `${f} eq '${odataEscapeLiteral(entityTypeValue(kind, schema)!)}'`;
+}
+
+/** Join recall clauses into an OData `$filter`, or `undefined` when there is nothing to filter. */
+function odataFilter(parts: (string | undefined)[]): string | undefined {
+  const kept = parts.filter((p): p is string => Boolean(p));
+  return kept.length ? kept.join(" and ") : undefined;
 }
 
 /** `search.in` membership over the mapped topic collection; omitted when the index has no such field. */
@@ -333,7 +350,7 @@ export async function searchEngagementContacts(
   q: ContactQuery,
 ): Promise<Labeled<Contact>[]> {
   const schema = declarationFor("contact");
-  const recallParts: string[] = [kindClause("contact", schema)];
+  const recallParts: (string | undefined)[] = [kindClause("contact", schema)];
   if (q.status) {
     const statusField = filterableField("status", schema);
     if (statusField) {
@@ -344,13 +361,13 @@ export async function searchEngagementContacts(
     const clause = topicClause(q.topicIds, schema);
     if (clause) recallParts.push(clause);
   }
-  const recallFilter = recallParts.join(" and ");
+  const recallFilter = odataFilter(recallParts);
   const text = q.query?.trim() ? q.query : "*";
 
   const index = indexName(schema);
   log.debug(
     () =>
-      `search_contacts: index "${index}" search="${text}" $filter=${recallFilter}`,
+      `search_contacts: index "${index}" search="${text}" $filter=${recallFilter ?? "(none)"}`,
   );
   const resp = await runSearch(
     log,
@@ -378,7 +395,7 @@ export async function searchEngagementEvents(
   q: EventQuery,
 ): Promise<Labeled<EngagementEvent>[]> {
   const schema = declarationFor("event");
-  const recallParts: string[] = [kindClause("event", schema)];
+  const recallParts: (string | undefined)[] = [kindClause("event", schema)];
   if (q.topicIds?.length) {
     const clause = topicClause(q.topicIds, schema);
     if (clause) recallParts.push(clause);
@@ -390,13 +407,13 @@ export async function searchEngagementEvents(
       `${filterableField("key", schema)!} eq '${odataEscapeLiteral(exactId)}'`,
     );
   }
-  const recallFilter = recallParts.join(" and ");
+  const recallFilter = odataFilter(recallParts);
   const text = exactId ? "*" : query || "*";
 
   const index = indexName(schema);
   log.debug(
     () =>
-      `search_events: index "${index}" search="${text}" $filter=${recallFilter}`,
+      `search_events: index "${index}" search="${text}" $filter=${recallFilter ?? "(none)"}`,
   );
   const resp = await runSearch(
     log,

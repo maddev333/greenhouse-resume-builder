@@ -128,7 +128,7 @@ message naming the field and the file, instead of an opaque Azure HTTP 400.
 
 | Var                         | Takes                                                                                                                                                                                                                                                                     |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ENGAGEMENTS_INDEX_SCHEMAS` | Comma/semicolon-separated **file and/or directory** paths. A directory contributes every `*.json` in it, sorted by filename, **skipping `*.example.json`**. Wins over the singular form.                                                                                  |
+| `ENGAGEMENTS_INDEX_SCHEMAS` | Comma/semicolon-separated **file and/or directory** paths, absolute or relative. A directory contributes every `*.json` in it, sorted by filename, **skipping `*.example.json`**. Wins over the singular form.                                                            |
 | `ENGAGEMENTS_INDEX_SCHEMA`  | One file (the original single-index knob).                                                                                                                                                                                                                                |
 | _(neither set)_             | The checked-in default for the backend: [`config/rag-index.json`](./config/rag-index.json) when `RETRIEVAL_BACKEND=grounding`, else [`index-schema.json`](./index-schema.json). Taken from the process working directory when a deployed copy is there, else from source. |
 
@@ -139,15 +139,75 @@ so the identical declaration loads locally and on App Service. (Defaulting groun
 structured `index-schema.json`, which carries no `mapping.grounding` block, would fail every
 grounded query.)
 
+**Several indexes (`RETRIEVAL_BACKEND=search`) is the same `config/` directory.** Drop one file per
+index into [`config/`](./config) — copy [`index-schema.structured.example.json`](./index-schema.structured.example.json)
+per structured index, keep `rag-index.json` for the corpus — and set ONE app setting:
+
+```
+RETRIEVAL_BACKEND=search
+ENGAGEMENTS_INDEX_SCHEMAS=config
+```
+
+`engagements-mcp.zip` ships the whole directory at `config/`, and a relative path resolves against
+the working directory first and the checked-in project second, so that one setting is correct under
+`npm run -w`, from the repo root, and on App Service alike. Prefer it over an absolute developer
+path, which cannot be deployed. Adding an index later is a new file plus a redeploy — no setting
+changes, no code changes.
+
 Roles resolve **by content, not by order**:
 
 - the declaration carrying `mapping.grounding` is the corpus `search_grounding` answers from;
 - `mapping.entityType` values decide which declaration serves each record kind — so contacts and
   events may live in **different** indexes, one index may hold everything, or one index per kind.
 
+#### One index per record kind
+
+The planner reads six kinds — the same ones the demo seed stages: `contact`, `event`, `leader`,
+`topic`, `message`, `region`. `contact` and `event` drive planning; the other four are reference
+data. Each is claimed by at most one declaration, and any kind no declaration claims **reads back
+empty** rather than falling back to the seed.
+
+A customer index dedicated to one kind has no discriminator column — everything in a contacts index
+is a contact — so `mapping.entityType.field` is **optional**. Omit it and no
+`<field> eq '<value>'` clause is emitted; the declaration must then claim exactly one kind, since
+nothing could tell two apart. Contacts and events in separate indexes:
+
+```jsonc
+// config/contacts-index.json
+"mapping": {
+  "key": "record_id",
+  "entityType": { "contact": "contact", "event": null },  // no `field`: the index IS contacts
+  "topicIds": "subject_ids",
+  "status": "record_state",
+  "payload": "payload_json"
+}
+
+// config/events-index.json
+"mapping": {
+  "key": "evt_id",
+  "entityType": { "contact": null, "event": "event" },
+  "payload": "evt_json"
+}
+```
+
+When several kinds DO share one index, name the column that separates them and give the value stored
+for each kind — that is the demo [`index-schema.json`](./index-schema.json) shape
+(`"field": "kind"`).
+
+`mapping.payload` is what the planner needs most: it names a field holding the full record as a JSON
+string, and reads reconstruct domain objects from it. Without it, read queries fail with that
+message rather than returning half-populated records.
+
+**A kind the planner does not model — contracts, policies, reports — is not an `entityType`.** It is a
+document corpus: give it `mapping.grounding` and it is answered through `search_grounding`. Only
+**one** declaration may carry that block, because relevance scores from different indexes are not
+comparable and merging them would rank arbitrarily. To span several document sets, index them
+together with a filterable `source`/`category` field and pass `filter` to `search_grounding`.
+
 Validation rejects duplicate `id`s, more than one `mapping.grounding` block, the same record kind
-claimed by two declarations, an `indexName` left as an unedited `<placeholder>`, and an empty
-registry — each error naming the offending files.
+claimed by two declarations, a missing `field` on a declaration claiming several kinds, an
+`indexName` left as an unedited `<placeholder>`, and an empty registry — each error naming the
+offending files.
 
 Examples to copy: [`index-schema.json`](./index-schema.json) (the demo index),
 [`index-schema.structured.example.json`](./index-schema.structured.example.json) (a customer index of
@@ -161,8 +221,8 @@ Two caveats worth knowing:
 - **`ENGAGEMENTS_SEARCH_INDEX` throws** when the registry holds more than one declaration — applying
   one name to several declarations would silently collapse distinct indexes onto one. Set
   `indexName` in each config file instead.
-- **Prefer absolute paths.** A relative `ENGAGEMENTS_INDEX_SCHEMA(S)` resolves against the process
-  working directory, which differs between `npm run -w <workspace>` and a deployed Web App.
+- **Never `ensure`/`sync`/`reindex` a customer index.** `ensure` would try to reshape it and `sync`
+  would push demo seed records into it. `validate` is offline and safe.
 
 ### Provision + reindex
 

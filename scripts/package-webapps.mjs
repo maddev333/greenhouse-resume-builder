@@ -32,11 +32,11 @@ const MCP_PROJECT_DIR = join(
   "mcp",
   "engagements",
 );
-const MCP_RAG_INDEX_CONFIG = join(
-  MCP_PROJECT_DIR,
-  "config",
-  "rag-index.json",
-);
+// Every index declaration the operator has dropped in ships at `config/` in the ZIP, so
+// ENGAGEMENTS_INDEX_SCHEMAS=config resolves to the same relative directory on App Service as it
+// does locally. Shipping only rag-index.json would strand a multi-index (RETRIEVAL_BACKEND=search)
+// setup, whose extra declarations live beside it.
+const MCP_INDEX_CONFIG_DIR = join(MCP_PROJECT_DIR, "config");
 const UI_PROJECT_DIR = join(REPO_ROOT, "capabilities", "engagements", "ui");
 const SHARED_ENTRY = join(REPO_ROOT, "shared", "src", "index.ts");
 const ZIP_DATE = new Date("2000-01-01T00:00:00.000Z");
@@ -267,7 +267,13 @@ async function buildMcp(stage) {
     join(stage, "capabilities", "engagements", "mcp", "engagements", "dist"),
   );
   await mkdir(join(stage, "config"), { recursive: true });
-  await copyFile(MCP_RAG_INDEX_CONFIG, join(stage, "config", "rag-index.json"));
+  await copyTree(
+    MCP_INDEX_CONFIG_DIR,
+    join(stage, "config"),
+    // `*.example.json` is documentation; the registry skips it when expanding a directory, so
+    // shipping it would only be dead weight in the archive.
+    (path) => path.endsWith(".json") && !path.endsWith(".example.json"),
+  );
   await writeJson(join(stage, "package.json"), {
     name: "engagements-mcp-webapp",
     private: true,
