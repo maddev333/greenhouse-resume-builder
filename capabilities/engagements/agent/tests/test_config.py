@@ -2,6 +2,7 @@ from pathlib import Path
 
 from engagements_agent.config import (
     DEFAULT_AZURE_OPENAI_API_VERSION,
+    DEFAULT_SKILL_PATH,
     REPO_ROOT,
     Settings,
 )
@@ -27,3 +28,18 @@ def test_azure_openai_api_version_has_a_safe_default(monkeypatch) -> None:
     settings = Settings.from_env()
 
     assert settings.model_api_version == DEFAULT_AZURE_OPENAI_API_VERSION
+
+
+def test_skill_paths_default_to_packaged_skills_and_accept_a_list(monkeypatch) -> None:
+    monkeypatch.delenv("ENGAGEMENTS_SKILL_PATHS", raising=False)
+    assert Settings.from_env().skill_paths == (DEFAULT_SKILL_PATH,)
+
+    monkeypatch.setenv(
+        "ENGAGEMENTS_SKILL_PATHS",
+        "capabilities/engagements/agent/engagements_agent/skills;custom/skills",
+    )
+
+    assert Settings.from_env().skill_paths == (
+        DEFAULT_SKILL_PATH,
+        REPO_ROOT / "custom" / "skills",
+    )

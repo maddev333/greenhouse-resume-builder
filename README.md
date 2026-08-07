@@ -295,8 +295,9 @@ structured contact/event records required by the trip planner.
    ```
 
    Open `http://localhost:8080` and ask a question about the indexed documents. The agent calls
-   `search_grounding`, retrieves ranked passages, collapses duplicate chunks by parent document, and
-   generates a cited answer from those results.
+   `search_grounding`, retrieves ranked passages with parent-document diversity, and generates a
+   cited answer from those results. Record-oriented planning searches can request multiple passages
+   from one JSON or CSV parent when resolving a batched roster.
 
 8. **Deploy the same configuration to Azure.** Rebuild and deploy `engagements-mcp.zip`, then set
    `RETRIEVAL_BACKEND`, `AZURE_SEARCH_SERVICE` and the `AZURE_OPENAI_*` values as App Service
@@ -330,12 +331,28 @@ The command writes self-contained artifacts beneath `.deploy\`:
 | `engagements-mcp.zip`           | Node.js 20+     | `npm start`       |
 | `engagements-ui.zip`            | Node.js 20+     | `npm start`       |
 
+Use the sanitized per-service references when configuring each App Service:
+
+| Web App                  | Application-settings reference                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| Chat UI                  | [`deploy/app-settings/ui.env.example`](deploy/app-settings/ui.env.example)           |
+| TypeScript agent gateway | [`deploy/app-settings/gateway.env.example`](deploy/app-settings/gateway.env.example) |
+| Python agent runtime     | [`deploy/app-settings/runtime.env.example`](deploy/app-settings/runtime.env.example) |
+| Engagements MCP          | [`deploy/app-settings/mcp.env.example`](deploy/app-settings/mcp.env.example)         |
+
+These files are documentation templates, not secrets and not deployment inputs. Replace every
+placeholder and add the values under **App Service > Configuration > Application settings** (or
+the equivalent IaC). Keep credentials in managed identity or Key Vault references. In particular,
+the gateway's `ENGAGEMENTS_PYTHON_AGENT_URL` must be the public base URL of the Python runtime Web
+App; its localhost default is valid only for local development.
+
 The gateway and MCP artifacts bundle their production dependencies plus the seed JSON; the UI
 artifact bundles `serve.ts` and the browser bundles only. The Python artifact contains
 `requirements.txt`, the Agent Governance Toolkit policy, and its startup script; enable
 App Service build automation with `SCM_DO_BUILD_DURING_DEPLOYMENT=true` so Oryx installs the Python
 dependencies during ZIP deployment. Configure the Python Web App startup command as
-`bash startup.sh`. App settings and `.env` files are deliberately not included in any archive.
+`bash startup.sh`. App settings and `.env` files are deliberately not included in any archive; the
+references above make that external configuration contract explicit.
 
 `engagements-mcp.zip` carries the editable grounding declaration at `config/rag-index.json` — the
 declaration `RETRIEVAL_BACKEND=grounding` loads by default, so a grounding deployment needs no

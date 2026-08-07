@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_AZURE_OPENAI_API_VERSION = "2024-10-21"
+DEFAULT_SKILL_PATH = Path(__file__).resolve().parent / "skills"
 load_dotenv(REPO_ROOT / ".env")
 for _blank_secret in ("AZURE_OPENAI_API_KEY", "OPENAI_API_KEY"):
     if os.getenv(_blank_secret) == "":
@@ -35,6 +37,17 @@ def _repo_path(value: str) -> Path:
     return (path if path.is_absolute() else REPO_ROOT / path).resolve()
 
 
+def _env_paths(name: str, default: tuple[Path, ...]) -> tuple[Path, ...]:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return tuple(
+        _repo_path(item.strip())
+        for item in re.split(r"[,;]", value)
+        if item.strip()
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str
@@ -49,6 +62,7 @@ class Settings:
     model_api_key: str | None
     model_token_scope: str
     request_timeout_seconds: float
+    skill_paths: tuple[Path, ...] = (DEFAULT_SKILL_PATH,)
     discovery_mcp_url: str | None = None
     governance_audit_max_entries: int = 10_000
 
@@ -83,6 +97,10 @@ class Settings:
                 "https://cognitiveservices.azure.com/.default",
             ),
             request_timeout_seconds=float(os.getenv("AGENT_REQUEST_TIMEOUT_SECONDS", "45")),
+            skill_paths=_env_paths(
+                "ENGAGEMENTS_SKILL_PATHS",
+                (DEFAULT_SKILL_PATH,),
+            ),
             discovery_mcp_url=(
                 os.getenv("DISCOVERY_MCP_URL", "http://localhost:3011/mcp").strip() or None
             ),

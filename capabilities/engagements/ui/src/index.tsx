@@ -154,6 +154,43 @@ interface AskOption {
   answer?: string | null;
 }
 
+interface DocumentPlanCitation {
+  id: string;
+  title?: string | null;
+  url?: string | null;
+  parentId?: string | null;
+}
+
+interface DocumentPlanMeeting {
+  target: string;
+  organization?: string | null;
+  purpose: string;
+  location?: string | null;
+  time?: string | null;
+  sourceIds: string[];
+}
+
+interface DocumentPlanDay {
+  day: number;
+  date?: string | null;
+  location?: string | null;
+  meetings: DocumentPlanMeeting[];
+  notes: string[];
+}
+
+interface DocumentTripPlan {
+  title: string;
+  event?: string | null;
+  destination?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  summary: string;
+  days: DocumentPlanDay[];
+  sourceIds: string[];
+  gaps: string[];
+  citations: DocumentPlanCitation[];
+}
+
 interface PlanResult {
   ok?: boolean;
   mode?: string;
@@ -165,6 +202,7 @@ interface PlanResult {
   menu?: MenuItem[] | null;
   itinerary?: ItineraryDetail | null;
   tripMap?: unknown;
+  documentPlan?: DocumentTripPlan | null;
   error?: string;
 
   // Leader-first, multi-option `/ask` envelope (additive; absent on the legacy single-plan path).
@@ -376,7 +414,7 @@ interface CategoryCoverageRef {
 // Loose mirror of the orchestrator's AreaOptionsResult.
 interface OptionsResult {
   ok?: boolean;
-  stage?: "clarify" | "options";
+  stage?: "clarify" | "options" | "unavailable";
   answer?: string | null;
   area?: {
     id?: string;
@@ -762,6 +800,17 @@ function OptionsBubble({
     return <div className="bubble assistant error">⚠️ {options.error}</div>;
   }
 
+  if (options.stage === "unavailable") {
+    return (
+      <div className="bubble assistant">
+        <div className="meta-row">
+          <span className="chip">document search</span>
+        </div>
+        {options.answer && <div className="answer">{options.answer}</div>}
+      </div>
+    );
+  }
+
   // Clarify — the orchestrator needs an area first; render the region chips.
   if (options.stage === "clarify") {
     const areaQ = options.questions?.find((q) => q.id === "area");
@@ -1090,6 +1139,131 @@ function OptionDetail({
 // ============================================================================================
 // Assistant bubble
 // ============================================================================================
+function DocumentPlanView({ plan }: { plan: DocumentTripPlan }) {
+  const citationNumbers = new Map(
+    plan.citations.map((citation, index) => [citation.id, index + 1]),
+  );
+
+  const SourceRefs = ({ ids }: { ids: string[] }) => (
+    <span className="doc-source-refs" aria-label="Supporting sources">
+      {[...new Set(ids)].map((id) => {
+        const citation = plan.citations.find((item) => item.id === id);
+        const number = citationNumbers.get(id);
+        if (!citation || number == null) return null;
+        const label = `[${number}]`;
+        return citation.url ? (
+          <a
+            key={id}
+            href={citation.url}
+            target="_blank"
+            rel="noreferrer"
+            title={citation.title ?? id}
+          >
+            {label}
+          </a>
+        ) : (
+          <span key={id} title={citation.title ?? id}>
+            {label}
+          </span>
+        );
+      })}
+    </span>
+  );
+
+  return (
+    <section className="doc-plan" aria-label="Document-grounded trip plan">
+      <header className="doc-plan-head">
+        <div>
+          <div className="doc-plan-kicker">Document-grounded itinerary</div>
+          <h3>{plan.title}</h3>
+        </div>
+        <SourceRefs ids={plan.sourceIds} />
+      </header>
+
+      <div className="doc-plan-meta">
+        {plan.event && <span>{plan.event}</span>}
+        {plan.destination && <span>{plan.destination}</span>}
+        {(plan.startDate || plan.endDate) && (
+          <span>
+            {plan.startDate ?? "Date TBD"}
+            {plan.endDate && plan.endDate !== plan.startDate
+              ? ` to ${plan.endDate}`
+              : ""}
+          </span>
+        )}
+      </div>
+      <p className="doc-plan-summary">{plan.summary}</p>
+
+      <div className="doc-days">
+        {plan.days.map((day) => (
+          <section className="doc-day" key={`${day.day}-${day.date ?? "tbd"}`}>
+            <div className="doc-day-head">
+              <strong>Day {day.day}</strong>
+              <span className="muted">
+                {[day.date, day.location].filter(Boolean).join(" · ") ||
+                  "Details TBD"}
+              </span>
+            </div>
+            <ol className="doc-meetings">
+              {day.meetings.map((meeting, index) => (
+                <li key={`${meeting.target}-${index}`}>
+                  <div className="doc-meeting-head">
+                    <strong>{meeting.target}</strong>
+                    <SourceRefs ids={meeting.sourceIds} />
+                  </div>
+                  {meeting.organization &&
+                    meeting.organization !== meeting.target && (
+                      <div className="muted">{meeting.organization}</div>
+                    )}
+                  <div>{meeting.purpose}</div>
+                  {(meeting.time || meeting.location) && (
+                    <div className="doc-meeting-meta muted">
+                      {[meeting.time, meeting.location]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ol>
+            {day.notes.length > 0 && (
+              <div className="doc-day-notes muted">{day.notes.join(" · ")}</div>
+            )}
+          </section>
+        ))}
+      </div>
+
+      {plan.gaps.length > 0 && (
+        <div className="doc-gaps">
+          <strong>Open details</strong>
+          <ul>
+            {plan.gaps.map((gap) => (
+              <li key={gap}>{gap}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="doc-citations">
+        <strong>Sources</strong>
+        <ol>
+          {plan.citations.map((citation) => (
+            <li key={citation.id}>
+              {citation.url ? (
+                <a href={citation.url} target="_blank" rel="noreferrer">
+                  {citation.title ?? citation.id}
+                </a>
+              ) : (
+                (citation.title ?? citation.id)
+              )}
+            </li>
+          ))}
+        </ol>
+      </div>
+    </section>
+  );
+}
+
 function AssistantBubble({
   msg,
   config,
@@ -1153,6 +1327,7 @@ function AssistantBubble({
 
       {r.error && <div className="answer error">{r.error}</div>}
       {r.answer && <div className="answer">{r.answer}</div>}
+      {r.documentPlan && <DocumentPlanView plan={r.documentPlan} />}
 
       {/* "What's worth doing there" — area context shown BEFORE the leader is picked. */}
       {r.area && (
@@ -1488,12 +1663,24 @@ function App() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          question: opts.question,
+          question:
+            opts.question ??
+            (opts.label ? `Plan a trip to ${opts.label}` : undefined),
           regionId: opts.regionId,
         }),
       });
-      const options = (await res.json()) as OptionsResult;
-      setMessages((m) => [...m, { id: nextId++, role: "assistant", options }]);
+      const response = (await res.json()) as OptionsResult &
+        Partial<PlanResult>;
+      if (response.mode || response.documentPlan) {
+        const result = response as PlanResult;
+        setMessages((m) => [...m, { id: nextId++, role: "assistant", result }]);
+      } else {
+        const options = response as OptionsResult;
+        setMessages((m) => [
+          ...m,
+          { id: nextId++, role: "assistant", options },
+        ]);
+      }
     } catch (e) {
       setMessages((m) => [
         ...m,

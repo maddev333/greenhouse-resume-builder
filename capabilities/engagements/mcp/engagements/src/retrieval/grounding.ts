@@ -70,14 +70,16 @@ export interface GroundingHit {
 
 export interface GroundingQuery {
   query: string;
-  /** Passages to return after collapsing by parent (default 8). */
+  /** Maximum passages to return after applying source diversity (default 8). */
   top?: number;
+  /** Maximum passages from one parent document (default 1). */
+  maxPerParent?: number;
   /** Extra OData `$filter` applied verbatim — caller-supplied narrowing, not access control. */
   filter?: string;
 }
 
 const DEFAULT_TOP = 8;
-/** Over-fetch before collapsing: one long document can otherwise occupy every result slot. */
+/** Over-fetch before source selection so lower-ranked parents remain available. */
 const OVERFETCH = 6;
 
 function str(v: unknown): string | undefined {
@@ -97,8 +99,9 @@ function str(v: unknown): string | undefined {
  * The index queried is the ONE declaration in the registry carrying a `mapping.grounding` block —
  * never simply the first declaration, which in a multi-index setup is usually structured records.
  *
- * Results are over-fetched then collapsed to one passage per parent document (best-scoring chunk
- * wins), because a 24-chunk PDF would otherwise crowd out every other source.
+ * Results are over-fetched then limited to one passage per parent document by default, because a
+ * 24-chunk PDF would otherwise crowd out every other source. Record-collection lookups can raise
+ * maxPerParent when several distinct JSON or CSV records share one parent document.
  */
 export async function searchGrounding(
   q: GroundingQuery,
@@ -115,6 +118,7 @@ export async function searchGrounding(
   }
 
   const top = Math.max(1, q.top ?? DEFAULT_TOP);
+  const maxPerParent = Math.max(1, Math.min(top, q.maxPerParent ?? 1));
   const keyField = schema.mapping.key;
   const select = [keyField, g.content, g.title, g.url, g.parentId].filter(
     (f): f is string => Boolean(f),
@@ -189,9 +193,10 @@ export async function searchGrounding(
     });
   }
 
-  const collapsed = collapseByParent(hits, top);
+  const collapsed = selectGroundingHits(hits, top, maxPerParent);
   log.info(
-    `${collapsed.length} passage(s) from ${hits.length} chunk(s) in ${Date.now() - started}ms`,
+    `${collapsed.length} passage(s) from ${hits.length} chunk(s) in ${Date.now() - started}ms` +
+      ` (max ${maxPerParent} per parent)`,
   );
   if (empty) {
     log.warn(
@@ -217,13 +222,21 @@ export async function searchGrounding(
   return collapsed;
 }
 
-/** Keep the best-scoring passage per parent document, then take the top N. */
-function collapseByParent(hits: GroundingHit[], top: number): GroundingHit[] {
-  const best = new Map<string, GroundingHit>();
-  for (const hit of hits) {
+/** Select ranked passages while limiting how many chunks one parent document can occupy. */
+export function selectGroundingHits(
+  hits: GroundingHit[],
+  top: number,
+  maxPerParent = 1,
+): GroundingHit[] {
+  const selected: GroundingHit[] = [];
+  const parentCounts = new Map<string, number>();
+  for (const hit of [...hits].sort((a, b) => b.score - a.score)) {
     const key = hit.parentId ?? hit.id;
-    const current = best.get(key);
-    if (!current || hit.score > current.score) best.set(key, hit);
+    const count = parentCounts.get(key) ?? 0;
+    if (count >= maxPerParent) continue;
+    selected.push(hit);
+    parentCounts.set(key, count + 1);
+    if (selected.length === top) break;
   }
-  return [...best.values()].sort((a, b) => b.score - a.score).slice(0, top);
+  return selected;
 }

@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import replace
 
 import pytest
+from agent_framework import FileSkillsSource, SkillsSourceContext
 from pydantic import ValidationError
 
 import engagements_agent.runtime as runtime_module
@@ -11,6 +12,8 @@ from engagements_agent.governance import (
     ENGAGEMENTS_TOOL_NAMES,
     GROUNDING_TOOL_NAMES,
     MODEL_TOOL_NAMES,
+    ORCHESTRATOR_TOOL_NAMES,
+    SKILL_TOOL_NAMES,
     GovernanceDenied,
     GovernanceRuntime,
 )
@@ -21,7 +24,11 @@ from engagements_agent.models import (
     CapturedCall,
     ToolDescriptor,
 )
-from engagements_agent.runtime import AgentRuntime, AgentRunTimeout
+from engagements_agent.runtime import (
+    AgentRuntime,
+    AgentRunTimeout,
+    validate_document_plan_sources,
+)
 
 
 class PlannerBridge:
@@ -44,7 +51,9 @@ def test_agent_framework_tools_match_governance_allowlist(settings: Settings) ->
 
     tools = runtime._build_tools(request, [], None, set(CAPABILITY_TOOL_NAMES))
 
-    assert {tool.name for tool in tools} == MODEL_TOOL_NAMES
+    assert {tool.name for tool in tools} == ORCHESTRATOR_TOOL_NAMES
+    assert SKILL_TOOL_NAMES <= MODEL_TOOL_NAMES
+    assert "run_skill_script" not in MODEL_TOOL_NAMES
     schemas = {tool.name: tool.to_json_schema_spec() for tool in tools}
     assert schemas["plan_options"]["function"]["parameters"]["required"] == ["window"]
     assert (
@@ -77,6 +86,81 @@ def test_grounding_only_capability_builds_only_the_grounding_tool(
     assert {tool.name for tool in tools} == GROUNDING_TOOL_NAMES
     schema = tools[0].to_json_schema_spec()["function"]["parameters"]
     assert schema["required"] == ["query"]
+
+
+async def test_packaged_document_planning_skill_is_discovered(
+    settings: Settings,
+) -> None:
+    governance = GovernanceRuntime(settings)
+    runtime = AgentRuntime(
+        settings,
+        governance,
+        GovernedMcpClient(governance, timeout_seconds=5),
+    )
+    source = FileSkillsSource(
+        settings.skill_paths,
+        script_filter=lambda _skill_name, _relative_path: False,
+    )
+
+    skills = await source.get_skills(SkillsSourceContext(agent=runtime))
+
+    assert [skill.frontmatter.name for skill in skills] == [
+        "document-trip-planning"
+    ]
+    content = await skills[0].get_content()
+    assert "references/index-guide.md" in content
+    assert "rank every resolved record" in content
+    assert "regional add-ons" in content
+    assert "Never issue one search per ID" in content
+    assert "region ID, region name, ALL aliases" in content
+    assert "maxPerParent" in content
+    assert "mandatory for every event trip" in content
+    assert "missing booth, time, or availability details" in content
+    assert "planning intent, not a lookup" in content
+    assert "within eight `search_grounding` calls" in content
+    assert "<available_scripts />" in content
+
+
+def test_document_plan_rejects_sources_not_returned_in_the_same_turn() -> None:
+    decision = AgentDecision(
+        intent="event",
+        stage="plan",
+        answer="A cited plan.",
+        documentPlan={
+            "title": "AUSA plan",
+            "summary": "One meeting.",
+            "sourceIds": ["event-hit"],
+            "days": [
+                {
+                    "day": 1,
+                    "meetings": [
+                        {
+                            "target": "UAS exhibitor",
+                            "purpose": "Discuss autonomy.",
+                            "sourceIds": ["meeting-hit"],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    captured = [
+        CapturedCall(
+            name="search_grounding",
+            args={"query": "AUSA UAS"},
+            result={"hits": [{"id": "event-hit"}, {"id": "meeting-hit"}]},
+            text="2 passages.",
+            modelResult={},
+        )
+    ]
+
+    validate_document_plan_sources(decision, captured)
+
+    bad = decision.model_copy(deep=True)
+    assert bad.document_plan is not None
+    bad.document_plan.days[0].meetings[0].source_ids = ["invented-hit"]
+    with pytest.raises(RuntimeError, match="invented-hit"):
+        validate_document_plan_sources(bad, captured)
 
 
 async def test_a_capability_with_no_recognised_surface_fails_the_run(
@@ -167,6 +251,52 @@ def test_agent_decision_rejects_inconsistent_stage_fields() -> None:
             stage="options",
             leaderId="L1",
             answer="Two options.",
+        )
+
+
+def test_agent_decision_accepts_a_cited_document_plan_only_at_plan_stage() -> None:
+    plan = {
+        "title": "AUSA UAS engagement plan",
+        "event": "AUSA Annual Meeting",
+        "destination": "Washington, DC",
+        "startDate": "2026-10-12",
+        "endDate": "2026-10-13",
+        "summary": "Two days of document-grounded UAS meetings.",
+        "sourceIds": ["ausaguide#overview"],
+        "days": [
+            {
+                "day": 1,
+                "date": "2026-10-12",
+                "location": "Convention Center",
+                "meetings": [
+                    {
+                        "target": "Example UAS exhibitor",
+                        "purpose": "Discuss autonomy priorities.",
+                        "sourceIds": ["ausaguide#exhibitor"],
+                    }
+                ],
+            }
+        ],
+    }
+
+    decision = AgentDecision(
+        intent="event",
+        stage="plan",
+        answer="Here is the cited plan.",
+        documentPlan=plan,
+    )
+
+    assert decision.document_plan is not None
+    assert decision.document_plan.days[0].meetings[0].source_ids == [
+        "ausaguide#exhibitor"
+    ]
+
+    with pytest.raises(ValidationError, match="only valid at the plan stage"):
+        AgentDecision(
+            intent="lookup",
+            stage="answer",
+            answer="Not a plan.",
+            documentPlan=plan,
         )
 
 

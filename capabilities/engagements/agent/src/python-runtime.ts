@@ -16,6 +16,35 @@ export interface PythonAgentResult {
   captured: RuntimeCapturedCall[];
 }
 
+export interface PythonDocumentPlanMeeting {
+  target: string;
+  organization: string | null;
+  purpose: string;
+  location: string | null;
+  time: string | null;
+  sourceIds: string[];
+}
+
+export interface PythonDocumentPlanDay {
+  day: number;
+  date: string | null;
+  location: string | null;
+  meetings: PythonDocumentPlanMeeting[];
+  notes: string[];
+}
+
+export interface PythonDocumentTripPlan {
+  title: string;
+  event: string | null;
+  destination: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  summary: string;
+  days: PythonDocumentPlanDay[];
+  sourceIds: string[];
+  gaps: string[];
+}
+
 export interface PythonAgentDecision {
   intent: "area" | "event" | "radius" | "lookup";
   stage: "clarify" | "options" | "plan" | "answer";
@@ -24,6 +53,7 @@ export interface PythonAgentDecision {
   leaderId: string | null;
   recommendedOptionIndex: number | null;
   answer: string;
+  documentPlan?: PythonDocumentTripPlan | null;
 }
 
 interface RuntimeRequestContext {

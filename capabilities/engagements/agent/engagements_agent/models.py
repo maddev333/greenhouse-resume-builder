@@ -68,6 +68,35 @@ class AgentRunRequest(ToolContextRequest):
     max_iterations: int = Field(default=8, ge=1, le=20)
 
 
+class DocumentPlanMeeting(ApiModel):
+    target: str = Field(min_length=1, max_length=200)
+    organization: str | None = Field(default=None, max_length=200)
+    purpose: str = Field(min_length=1, max_length=500)
+    location: str | None = Field(default=None, max_length=300)
+    time: str | None = Field(default=None, max_length=100)
+    source_ids: list[str] = Field(min_length=1)
+
+
+class DocumentPlanDay(ApiModel):
+    day: int = Field(ge=1)
+    date: str | None = Field(default=None, max_length=40)
+    location: str | None = Field(default=None, max_length=300)
+    meetings: list[DocumentPlanMeeting] = Field(min_length=1)
+    notes: list[str] = Field(default_factory=list)
+
+
+class DocumentTripPlan(ApiModel):
+    title: str = Field(min_length=1, max_length=300)
+    event: str | None = Field(default=None, max_length=300)
+    destination: str | None = Field(default=None, max_length=300)
+    start_date: str | None = Field(default=None, max_length=40)
+    end_date: str | None = Field(default=None, max_length=40)
+    summary: str = Field(min_length=1, max_length=2_000)
+    days: list[DocumentPlanDay] = Field(min_length=1)
+    source_ids: list[str] = Field(min_length=1)
+    gaps: list[str] = Field(default_factory=list)
+
+
 class AgentDecision(ApiModel):
     intent: Literal["area", "event", "radius", "lookup"] = Field(
         description="Framework-selected workflow intent."
@@ -101,6 +130,10 @@ class AgentDecision(ApiModel):
         min_length=1,
         description="Concise grounded response for the executive assistant.",
     )
+    document_plan: DocumentTripPlan | None = Field(
+        default=None,
+        description="Document-grounded itinerary proposed from search_grounding passages.",
+    )
 
     @model_validator(mode="after")
     def validate_stage_fields(self) -> "AgentDecision":
@@ -118,6 +151,10 @@ class AgentDecision(ApiModel):
             )
         if self.stage == "answer" and self.intent != "lookup":
             raise ValueError("Only lookup intent can return the answer stage.")
+        if self.document_plan is not None and self.stage != "plan":
+            raise ValueError("documentPlan is only valid at the plan stage.")
+        if self.document_plan is not None and self.intent == "lookup":
+            raise ValueError("documentPlan requires a planning intent.")
         return self
 
 

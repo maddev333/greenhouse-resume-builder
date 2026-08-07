@@ -48,6 +48,8 @@ import {
   optionsToPlanResult,
   parseDayScheduleEdit,
   parseRadiusAsk,
+  planAreaOptions,
+  planGuidedTrip,
   planTrip,
   rankHotTopics,
   renderEventDayByDay,
@@ -677,10 +679,11 @@ test("system prompt advertises search_grounding only when the index carries a co
 
 test("the grounding prompt carries no catalog and forbids unsupported answers", () => {
   const prompt = buildGroundingSystemPrompt();
-  assert.match(prompt, /exactly one tool, search_grounding/);
+  assert.match(prompt, /one corpus tool, search_grounding/);
+  assert.match(prompt, /load the document-trip-planning skill/);
   assert.match(prompt, /Answer ONLY from the returned passages/);
   assert.match(prompt, /Do NOT substitute/);
-  assert.match(prompt, /cannot plan trips/);
+  assert.match(prompt, /return stage="plan".*documentPlan/s);
   assert.doesNotMatch(prompt, /Whitfield/);
   assert.doesNotMatch(prompt, /\bL1\b/);
   assert.doesNotMatch(prompt, /\bT3\b/);
@@ -769,11 +772,103 @@ test(
     );
     // The surface is discovered before the prompt is composed, and the demo seed never reaches it.
     assert.deepEqual(paths, ["/tools/list", "/run"]);
-    assert.match(runBody.system, /exactly one tool, search_grounding/);
+    assert.match(runBody.system, /one corpus tool, search_grounding/);
     assert.doesNotMatch(runBody.system, /Whitfield/);
     assert.doesNotMatch(runBody.system, /Leader roster/);
   },
 );
+
+test("a cited document plan projects canonical Search citation metadata", () => {
+  const base = {
+    ok: false,
+    mode: "deterministic",
+    question: "Plan an AUSA trip",
+    answer: null,
+    toolCalls: [],
+    menu: null,
+    itinerary: null,
+    tripMap: null,
+  } as any;
+  const result = agentDecisionToPlanResult(
+    base,
+    {
+      intent: "event",
+      stage: "plan",
+      clarify: null,
+      category: null,
+      leaderId: null,
+      recommendedOptionIndex: null,
+      answer: "Two cited meetings are recommended.",
+      documentPlan: {
+        title: "AUSA UAS plan",
+        event: "AUSA",
+        destination: "Washington, DC",
+        startDate: "2026-10-12",
+        endDate: "2026-10-13",
+        summary: "A focused UAS visit.",
+        sourceIds: ["event-hit"],
+        gaps: ["Meeting times are not documented."],
+        days: [
+          {
+            day: 1,
+            date: "2026-10-12",
+            location: "Convention Center",
+            notes: [],
+            meetings: [
+              {
+                target: "Meridian Robotics",
+                organization: "Meridian Robotics",
+                purpose: "Discuss autonomy.",
+                location: null,
+                time: null,
+                sourceIds: ["meeting-hit"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+    [
+      {
+        name: "search_grounding",
+        args: { query: "AUSA dates" },
+        result: {
+          hits: [
+            {
+              id: "event-hit",
+              title: "AUSA program",
+              url: "https://example.test/ausa",
+            },
+            {
+              id: "meeting-hit",
+              title: "AUSA exhibitor directory",
+              parentId: "directory",
+            },
+          ],
+        },
+        text: "2 passages.",
+      },
+    ],
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.stage, "plan");
+  assert.equal(result.itinerary, null);
+  assert.deepEqual(result.documentPlan?.citations, [
+    {
+      id: "event-hit",
+      title: "AUSA program",
+      url: "https://example.test/ausa",
+      parentId: null,
+    },
+    {
+      id: "meeting-hit",
+      title: "AUSA exhibitor directory",
+      url: null,
+      parentId: "directory",
+    },
+  ]);
+});
 
 test(
   "a grounding-only capability refuses the deterministic planner instead of reporting an outage",
@@ -812,6 +907,201 @@ test(
     assert.equal(result.deterministicReason, "grounding-only-capability");
     assert.match(result.error ?? "", /RETRIEVAL_BACKEND=grounding/);
     assert.deepEqual(result.toolCalls, []);
+  },
+);
+
+test(
+  "guided planning reports grounding-only mode as unavailable without an error",
+  { concurrency: false },
+  async (t) => {
+    const originalFetch = globalThis.fetch;
+    t.after(() => {
+      globalThis.fetch = originalFetch;
+    });
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          tools: [{ name: "search_grounding" }],
+          backend: "grounding",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+
+    const result = await planAreaOptions({
+      question: "Plan a trip to Boston",
+      serverUrl: "http://mcp.invalid/mcp",
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.stage, "unavailable");
+    assert.equal(result.error, undefined);
+    assert.match(result.answer ?? "", /document search mode/);
+  },
+);
+
+test(
+  "guided planning routes a grounding capability through the document skill path",
+  { concurrency: false },
+  async (t) => {
+    const originalFetch = globalThis.fetch;
+    const prior = {
+      endpoint: process.env.AZURE_OPENAI_ENDPOINT,
+      deployment: process.env.AZURE_OPENAI_DEPLOYMENT,
+    };
+    t.after(() => {
+      globalThis.fetch = originalFetch;
+      if (prior.endpoint === undefined)
+        delete process.env.AZURE_OPENAI_ENDPOINT;
+      else process.env.AZURE_OPENAI_ENDPOINT = prior.endpoint;
+      if (prior.deployment === undefined)
+        delete process.env.AZURE_OPENAI_DEPLOYMENT;
+      else process.env.AZURE_OPENAI_DEPLOYMENT = prior.deployment;
+    });
+    process.env.AZURE_OPENAI_ENDPOINT = "https://model.invalid";
+    process.env.AZURE_OPENAI_DEPLOYMENT = "gpt-test";
+
+    const paths: string[] = [];
+    globalThis.fetch = (async (url) => {
+      const path = new URL(String(url)).pathname;
+      paths.push(path);
+      const json = (payload: unknown) =>
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      if (path === "/tools/list") {
+        return json({
+          tools: [{ name: "search_grounding" }],
+          backend: "grounding",
+        });
+      }
+      const capture = {
+        name: "search_grounding",
+        args: { query: "AUSA UAS" },
+        result: {
+          hits: [
+            { id: "event-hit", title: "AUSA program" },
+            { id: "meeting-hit", title: "AUSA exhibitors" },
+          ],
+        },
+        text: "2 passages.",
+        modelResult: {},
+      };
+      return json({
+        output: null,
+        decision: {
+          intent: "event",
+          stage: "plan",
+          clarify: null,
+          category: null,
+          leaderId: null,
+          recommendedOptionIndex: null,
+          answer: "A cited AUSA plan.",
+          documentPlan: {
+            title: "AUSA UAS plan",
+            event: "AUSA",
+            destination: "Washington, DC",
+            startDate: null,
+            endDate: null,
+            summary: "One grounded meeting.",
+            sourceIds: ["event-hit"],
+            gaps: ["Dates are not present."],
+            days: [
+              {
+                day: 1,
+                date: null,
+                location: null,
+                notes: [],
+                meetings: [
+                  {
+                    target: "UAS exhibitor",
+                    organization: null,
+                    purpose: "Discuss autonomy.",
+                    location: null,
+                    time: null,
+                    sourceIds: ["meeting-hit"],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        iterations: 3,
+        toolCalls: [{ name: "search_grounding", args: capture.args }],
+        captured: [capture],
+      });
+    }) as typeof fetch;
+
+    const result = await planGuidedTrip({
+      question: "Plan a trip to AUSA for UAS meetings",
+      serverUrl: "http://mcp.invalid/mcp",
+    });
+
+    assert.ok("documentPlan" in result);
+    assert.equal(result.stage, "plan");
+    assert.equal(result.documentPlan?.title, "AUSA UAS plan");
+    assert.deepEqual(paths, ["/tools/list", "/tools/list", "/run"]);
+  },
+);
+
+test(
+  "guided planning preserves the structured planner option workflow",
+  { concurrency: false },
+  async (t) => {
+    const originalFetch = globalThis.fetch;
+    t.after(() => {
+      globalThis.fetch = originalFetch;
+    });
+    const plan = {
+      area: { id: "R-BOSTON", name: "Greater Boston" },
+      window: { start: "2026-10-01", end: "2026-10-10" },
+      topicIds: ["T3"],
+      leaderOptions: [{ leaderId: "L1", name: "Leader One", score: 9 }],
+      chosenLeaderId: "L1",
+      durationOptions: [
+        {
+          tier: "core",
+          days: 2,
+          stops: [{ contactId: "C1" }],
+          roiScore: "1.50",
+          overBudget: false,
+        },
+      ],
+      extensionOptions: [],
+    };
+    globalThis.fetch = (async (url) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/tools/list") {
+        return new Response(
+          JSON.stringify({
+            tools: AGENT_TOOL_NAMES.map((name) => ({ name })),
+            backend: "planner",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          name: "plan_options",
+          args: {},
+          result: plan,
+          text: "One structured option.",
+          modelResult: plan,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    const result = await planGuidedTrip({
+      regionId: "R-BOSTON",
+      leaderId: "L1",
+      serverUrl: "http://mcp.invalid/mcp",
+    });
+
+    assert.equal(result.stage, "options");
+    assert.ok("durationOptions" in result);
+    assert.equal(result.durationOptions[0].tier, "core");
+    assert.equal("documentPlan" in result, false);
   },
 );
 

@@ -51,7 +51,11 @@ DISCOVERY_TOOL_NAMES = frozenset({"search_businesses"})
 
 ORCHESTRATOR_TOOL_NAMES = CAPABILITY_TOOL_NAMES | DISCOVERY_TOOL_NAMES
 
-MODEL_TOOL_NAMES = ORCHESTRATOR_TOOL_NAMES
+#: Local, read-only Agent Framework skill tools. These never route to MCP and therefore do not
+#: belong in ORCHESTRATOR_TOOL_NAMES / authorize_tool. Script execution remains deliberately absent.
+SKILL_TOOL_NAMES = frozenset({"load_skill", "read_skill_resource"})
+
+MODEL_TOOL_NAMES = ORCHESTRATOR_TOOL_NAMES | SKILL_TOOL_NAMES
 
 
 def resolve_capability_backend(available: set[str]) -> str | None:

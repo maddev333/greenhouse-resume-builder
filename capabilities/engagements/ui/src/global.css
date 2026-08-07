@@ -222,6 +222,131 @@ body {
   color: var(--danger);
 }
 
+/* ---- document-grounded itinerary ---- */
+.doc-plan {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.doc-plan-head,
+.doc-day-head,
+.doc-meeting-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.doc-plan-kicker {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.doc-plan h3 {
+  margin: 2px 0 0;
+  font-size: 17px;
+  line-height: 1.3;
+}
+
+.doc-plan-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.doc-plan-summary {
+  margin: 10px 0;
+}
+
+.doc-days {
+  border-top: 1px solid var(--border);
+}
+
+.doc-day {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.doc-day-head .muted {
+  font-size: 12px;
+  text-align: right;
+}
+
+.doc-meetings {
+  margin: 10px 0 0;
+  padding-left: 24px;
+}
+
+.doc-meetings li {
+  padding: 0 0 10px 4px;
+}
+
+.doc-meetings li:last-child {
+  padding-bottom: 0;
+}
+
+.doc-meeting-head {
+  align-items: baseline;
+}
+
+.doc-meeting-meta,
+.doc-day-notes {
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.doc-source-refs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.doc-source-refs a,
+.doc-citations a {
+  color: var(--accent);
+}
+
+.doc-gaps {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--warn-text);
+  background: var(--warn-bg);
+  font-size: 12px;
+}
+
+.doc-gaps ul,
+.doc-citations ol {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.doc-citations {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .doc-plan-head,
+  .doc-day-head {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .doc-day-head .muted {
+    text-align: left;
+  }
+}
+
 /* ---- chips ---- */
 .meta-row {
   display: flex;

@@ -6,6 +6,8 @@ from agent_framework import Agent
 from engagements_agent.config import Settings
 from engagements_agent.governance import (
     ENGAGEMENTS_TOOL_NAMES,
+    MODEL_TOOL_NAMES,
+    SKILL_TOOL_NAMES,
     GovernanceDenied,
     GovernanceRuntime,
     resolve_capability_backend,
@@ -53,6 +55,12 @@ def test_capability_backend_is_classified_from_the_registered_tools() -> None:
     assert resolve_capability_backend({"search_grounding"}) == "grounding"
     assert resolve_capability_backend({"search_contacts"}) is None
     assert resolve_capability_backend(set()) is None
+
+
+def test_model_guard_allows_only_read_only_skill_tools() -> None:
+    assert SKILL_TOOL_NAMES <= MODEL_TOOL_NAMES
+    assert SKILL_TOOL_NAMES == {"load_skill", "read_skill_resource"}
+    assert "run_skill_script" not in MODEL_TOOL_NAMES
 
 
 def test_agt_policy_blocks_ssn_in_tool_arguments(settings: Settings) -> None:

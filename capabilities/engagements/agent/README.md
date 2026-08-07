@@ -100,15 +100,32 @@ npm run serve --workspace @greenhouse-resume-builder/cap-engagements-mcp-engagem
 
 The Python runtime discovers the capability's tool surface on every turn and adapts to it:
 
-| Capability backend  | Tools offered to the model                                                                 | Turn                                                                                            |
-| ------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| `memory` / `search` | the nine planner tools (plus `search_grounding` when the index also declares a RAG corpus) | the full planning workflows below                                                               |
-| `grounding`         | `search_grounding` only                                                                    | a cited grounded answer (`intent=lookup`, `stage=answer`); the deterministic planner is refused |
+| Capability backend  | Tools offered to the model                                                                 | Turn                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `memory` / `search` | the nine planner tools (plus `search_grounding` when the index also declares a RAG corpus) | the full planning workflows below                                       |
+| `grounding`         | `search_grounding` + trusted read-only skill loading                                       | a cited answer or document-derived trip plan; no deterministic fallback |
 
 An endpoint that serves neither surface fails with a 502 naming the missing tools, rather than a
 model turn with no grounded tool behind it. Under `grounding` the seed's leader roster and topic
 catalog are kept OUT of the system prompt (a text corpus has no leaders, and a model handed the demo
 roster will answer from it), so Azure OpenAI is required — there is no deterministic path.
+
+### Document-grounded trip skill
+
+Grounding mode loads the packaged
+[`document-trip-planning` skill](./engagements_agent/skills/document-trip-planning/SKILL.md) through
+Agent Framework's `SkillsProvider`. The skill teaches query decomposition and itinerary synthesis;
+it never supplies people, events, dates, or locations. Those facts must come from `search_grounding`
+hits returned in the current turn.
+
+Update
+[`references/index-guide.md`](./engagements_agent/skills/document-trip-planning/references/index-guide.md)
+when the RAG corpus changes its source inventory, terminology, or query conventions. Keep factual
+records in Azure AI Search rather than copying them into the skill. The runtime rejects a
+`documentPlan` when any trip or meeting `sourceIds` value was not returned by `search_grounding`,
+and the gateway reconstructs citation titles/URLs from the captured hits before the UI renders it.
+Skill scripts are not discovered or allowed; only `load_skill` and `read_skill_resource` are admitted
+by the model capability guard.
 
 **2a. Start the Python runtime** for CLI use:
 
@@ -264,22 +281,23 @@ Robotics within 40 mi"_ — the LLM (or the deterministic `parseRadiusAsk` fallb
 
 ## Config (repo-root `.env`)
 
-| var                                                 | default                        | purpose                                                                                                           |
-| --------------------------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `ENGAGEMENTS_MCP_URL`                               | `http://localhost:3010/mcp`    | engagements capability endpoint                                                                                   |
-| `ENGAGEMENTS_AGENT_PORT`                            | `3020`                         | HTTP `/ask` port                                                                                                  |
-| `ENGAGEMENTS_PYTHON_AGENT_URL`                      | `http://127.0.0.1:3030`        | Microsoft Agent Framework + AGT runtime                                                                           |
-| `ENGAGEMENTS_PYTHON_AGENT_TIMEOUT_MS`               | `60000`                        | TypeScript gateway timeout for Python runtime requests                                                            |
-| `ENGAGEMENTS_DEFAULT_LEADER`                        | first leader (`L1`)            | leader used when the ask names none                                                                               |
-| `ENGAGEMENTS_TOP_N`                                 | `3`                            | candidates routed into the itinerary                                                                              |
-| `ENGAGEMENTS_PLAN_WINDOW`                           | seed `today` → `today`+horizon | override the `/plan-options` + `/plan-radius` trip window (`START..END`, ISO dates)                               |
-| `ENGAGEMENTS_PLAN_HORIZON_DAYS`                     | `25`                           | default window length when no explicit window is given                                                            |
-| `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_DEPLOYMENT` | —                              | enable the LLM path (else deterministic). Auth via `az login` (DefaultAzureCredential) or `AZURE_OPENAI_API_KEY`. |
-| `AZURE_OPENAI_API_VERSION`                          | `2024-10-21`                   | Azure OpenAI Chat Completions API version                                                                         |
-| `AGENT_REQUEST_TIMEOUT_SECONDS`                     | `45`                           | Python model-run budget and per-MCP-request timeout; keep below the gateway timeout                               |
-| `AGT_ENABLED`                                       | `true`                         | enforce the official Agent Governance Toolkit policy                                                              |
-| `AGT_POLICY_PATH`                                   | `governance/policy.yaml`       | AGT 4.1 YAML policy                                                                                               |
-| `AGT_AUDIT_MAX_ENTRIES`                             | `10000`                        | rotate the bounded in-memory AGT hash chain at this size                                                          |
+| var                                                 | default                             | purpose                                                                                                           |
+| --------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `ENGAGEMENTS_MCP_URL`                               | `http://localhost:3010/mcp`         | engagements capability endpoint                                                                                   |
+| `ENGAGEMENTS_AGENT_PORT`                            | `3020`                              | HTTP `/ask` port                                                                                                  |
+| `ENGAGEMENTS_PYTHON_AGENT_URL`                      | `http://127.0.0.1:3030`             | Microsoft Agent Framework + AGT runtime                                                                           |
+| `ENGAGEMENTS_PYTHON_AGENT_TIMEOUT_MS`               | `60000`                             | TypeScript gateway timeout for Python runtime requests                                                            |
+| `ENGAGEMENTS_SKILL_PATHS`                           | packaged `engagements_agent/skills` | comma/semicolon-separated trusted skill directories; used for grounding-mode planning                             |
+| `ENGAGEMENTS_DEFAULT_LEADER`                        | first leader (`L1`)                 | leader used when the ask names none                                                                               |
+| `ENGAGEMENTS_TOP_N`                                 | `3`                                 | candidates routed into the itinerary                                                                              |
+| `ENGAGEMENTS_PLAN_WINDOW`                           | seed `today` → `today`+horizon      | override the `/plan-options` + `/plan-radius` trip window (`START..END`, ISO dates)                               |
+| `ENGAGEMENTS_PLAN_HORIZON_DAYS`                     | `25`                                | default window length when no explicit window is given                                                            |
+| `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_DEPLOYMENT` | —                                   | enable the LLM path (else deterministic). Auth via `az login` (DefaultAzureCredential) or `AZURE_OPENAI_API_KEY`. |
+| `AZURE_OPENAI_API_VERSION`                          | `2024-10-21`                        | Azure OpenAI Chat Completions API version                                                                         |
+| `AGENT_REQUEST_TIMEOUT_SECONDS`                     | `45`                                | Python model-run budget and per-MCP-request timeout; keep below the gateway timeout                               |
+| `AGT_ENABLED`                                       | `true`                              | enforce the official Agent Governance Toolkit policy                                                              |
+| `AGT_POLICY_PATH`                                   | `governance/policy.yaml`            | AGT 4.1 YAML policy                                                                                               |
+| `AGT_AUDIT_MAX_ENTRIES`                             | `10000`                             | rotate the bounded in-memory AGT hash chain at this size                                                          |
 
 ## Test / typecheck
 

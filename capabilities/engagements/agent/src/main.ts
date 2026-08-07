@@ -15,6 +15,7 @@ import {
   discoverAreaBusinesses,
   hotTopics,
   planAreaOptions,
+  planGuidedTrip,
   planRadiusOptions,
   planTrip,
 } from "./orchestrator.js";
@@ -400,7 +401,7 @@ async function serve(): Promise<void> {
     } = req.body ?? {};
     try {
       res.json(
-        await planAreaOptions({
+        await planGuidedTrip({
           question,
           regionId,
           region,

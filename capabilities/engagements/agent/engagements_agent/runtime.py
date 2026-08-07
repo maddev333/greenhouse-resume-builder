@@ -9,6 +9,7 @@ from agent_framework import (
     Agent,
     FunctionInvocationConfiguration,
     MiddlewareTermination,
+    SkillsProvider,
     tool,
 )
 from agent_framework.openai import OpenAIChatCompletionClient
@@ -41,6 +42,34 @@ class AgentRunTimeout(RuntimeError):
     pass
 
 
+def validate_document_plan_sources(
+    decision: AgentDecision,
+    captured: list[CapturedCall],
+) -> None:
+    plan = decision.document_plan
+    if plan is None:
+        return
+
+    available_ids = {
+        str(hit["id"])
+        for call in captured
+        if call.name == "search_grounding" and isinstance(call.result, dict)
+        for hit in call.result.get("hits", [])
+        if isinstance(hit, dict) and hit.get("id")
+    }
+    referenced_ids = set(plan.source_ids)
+    for day in plan.days:
+        for meeting in day.meetings:
+            referenced_ids.update(meeting.source_ids)
+
+    unknown_ids = sorted(referenced_ids - available_ids)
+    if unknown_ids:
+        raise RuntimeError(
+            "Document plan cited source ids that search_grounding did not return in this turn: "
+            + ", ".join(unknown_ids)
+        )
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -52,6 +81,24 @@ class AgentRuntime:
         self.governance = governance
         self.mcp_client = mcp_client
         self._credential: DefaultAzureCredential | None = None
+        self._skills_provider = self._create_skills_provider(settings)
+
+    @staticmethod
+    def _create_skills_provider(settings: Settings) -> SkillsProvider | None:
+        if not settings.skill_paths:
+            return None
+        missing = [str(path) for path in settings.skill_paths if not path.is_dir()]
+        if missing:
+            raise RuntimeError(
+                "ENGAGEMENTS_SKILL_PATHS contains missing directories: "
+                + ", ".join(missing)
+            )
+        return SkillsProvider.from_paths(
+            settings.skill_paths,
+            script_filter=lambda _skill_name, _relative_path: False,
+            disable_load_skill_approval=True,
+            disable_read_skill_resource_approval=True,
+        )
 
     async def close(self) -> None:
         if self._credential is not None:
@@ -66,6 +113,11 @@ class AgentRuntime:
             try:
                 async with run_timeout:
                     available = await self._discover_capability(request)
+                    backend = resolve_capability_backend(available)
+                    if backend == "grounding" and self._skills_provider is None:
+                        raise RuntimeError(
+                            "Document-grounded planning requires ENGAGEMENTS_SKILL_PATHS."
+                        )
                     client = await self._create_model_client(request.max_iterations)
                     tools = self._build_tools(request, captured, denials, available)
                     max_tokens = self.governance.max_tokens
@@ -74,6 +126,11 @@ class AgentRuntime:
                         name=self.settings.agent_id,
                         instructions=request.system,
                         tools=tools,
+                        context_providers=(
+                            [self._skills_provider]
+                            if backend == "grounding" and self._skills_provider is not None
+                            else None
+                        ),
                         middleware=self.governance.middleware,
                         default_options=(
                             {"max_tokens": max_tokens}
@@ -102,6 +159,7 @@ class AgentRuntime:
         decision = response.value
         if not isinstance(decision, AgentDecision):
             raise RuntimeError("Agent Framework returned no structured planning decision.")
+        validate_document_plan_sources(decision, captured)
         return AgentRunResponse(
             output=decision.answer,
             decision=decision,
@@ -664,8 +722,16 @@ class AgentRuntime:
             top: Annotated[
                 int | None,
                 Field(
-                    description="How many passages to return after collapsing by source document "
+                    description="Maximum passages to return after applying source diversity "
                     "(default 8)."
+                ),
+            ] = None,
+            maxPerParent: Annotated[
+                int | None,
+                Field(
+                    description="Maximum passages from one parent document (default 1). "
+                    "Increase for batched ID lookups when one JSON or CSV source contains "
+                    "many records."
                 ),
             ] = None,
             filter: Annotated[  # noqa: A002 - the MCP argument is named `filter`
@@ -684,7 +750,12 @@ class AgentRuntime:
             """
             return await invoke(
                 "search_grounding",
-                {"query": query, "top": top, "filter": filter},
+                {
+                    "query": query,
+                    "top": top,
+                    "maxPerParent": maxPerParent,
+                    "filter": filter,
+                },
             )
 
         planner = ENGAGEMENTS_TOOL_NAMES <= served

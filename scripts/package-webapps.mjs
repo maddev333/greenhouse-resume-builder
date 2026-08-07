@@ -191,6 +191,8 @@ function parsePythonDependencies(pyproject) {
 }
 
 async function buildRuntime(stage) {
+  const packageSource = join(PYTHON_PROJECT_DIR, "engagements_agent");
+  const skillsSource = `${join(packageSource, "skills")}${sep}`;
   const packageDestination = join(
     stage,
     "capabilities",
@@ -199,9 +201,11 @@ async function buildRuntime(stage) {
     "engagements_agent",
   );
   await copyTree(
-    join(PYTHON_PROJECT_DIR, "engagements_agent"),
+    packageSource,
     packageDestination,
-    (path) => path.endsWith(".py"),
+    (path) =>
+      path.endsWith(".py") ||
+      (path.startsWith(skillsSource) && /\.(?:md|json)$/i.test(path)),
   );
   await mkdir(join(stage, "governance"), { recursive: true });
   await copyFile(

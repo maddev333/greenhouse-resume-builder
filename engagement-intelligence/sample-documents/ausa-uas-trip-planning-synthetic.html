@@ -1,0 +1,1030 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AUSA UAS Engagement Planning Packet - Synthetic Test Data</title>
+    <style>
+      :root {
+        --ink: #14202b;
+        --muted: #51606d;
+        --paper: #ffffff;
+        --navy: #17324d;
+        --blue: #1f6685;
+        --teal: #2c7a78;
+        --gold: #d2a33a;
+        --line: #cbd5dc;
+        --wash: #eef4f6;
+        --warning: #fff4d6;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #dfe5e8;
+        color: var(--ink);
+        font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+        font-size: 10.5pt;
+        line-height: 1.42;
+        letter-spacing: 0;
+      }
+
+      @page {
+        size: Letter;
+        margin: 0;
+      }
+
+      .page {
+        position: relative;
+        width: 8.5in;
+        height: 11in;
+        margin: 0 auto 0.18in;
+        padding: 0.62in 0.68in 0.58in;
+        overflow: hidden;
+        background: var(--paper);
+        page-break-after: always;
+        break-after: page;
+      }
+
+      .page:last-child {
+        page-break-after: auto;
+        break-after: auto;
+      }
+
+      .page.compact {
+        font-size: 9.7pt;
+        line-height: 1.34;
+      }
+
+      .page.compact h2 {
+        margin-bottom: 0.12in;
+      }
+
+      .page.compact .section {
+        margin-bottom: 0.14in;
+      }
+
+      .page.compact .priority-table {
+        margin-bottom: 0.14in;
+      }
+
+      .page.compact .priority-table th,
+      .page.compact .priority-table td {
+        padding: 0.07in 0.08in;
+      }
+
+      .page.compact .priority-table td:first-child {
+        width: 1.55in;
+        color: var(--navy);
+        font-size: inherit;
+        font-weight: 700;
+      }
+
+      .page.compact li {
+        margin-bottom: 0.035in;
+      }
+
+      .top-rule {
+        position: absolute;
+        inset: 0 0 auto;
+        height: 0.13in;
+        background: linear-gradient(
+          90deg,
+          var(--navy) 0 58%,
+          var(--teal) 58% 84%,
+          var(--gold) 84%
+        );
+      }
+
+      .eyebrow {
+        margin: 0 0 0.12in;
+        color: var(--blue);
+        font-size: 8.5pt;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 6.7in;
+        margin-bottom: 0.18in;
+        color: var(--navy);
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 31pt;
+        font-weight: 700;
+        line-height: 1.04;
+      }
+
+      h2 {
+        margin-bottom: 0.18in;
+        color: var(--navy);
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 23pt;
+        line-height: 1.08;
+      }
+
+      h3 {
+        margin-bottom: 0.08in;
+        color: var(--navy);
+        font-size: 12pt;
+        line-height: 1.2;
+      }
+
+      .subtitle {
+        max-width: 6.5in;
+        color: var(--muted);
+        font-size: 13pt;
+        line-height: 1.42;
+      }
+
+      .synthetic-banner {
+        display: inline-block;
+        margin: 0.12in 0 0.28in;
+        padding: 0.08in 0.13in;
+        border: 1px solid #c9961f;
+        border-radius: 4px;
+        background: var(--warning);
+        color: #654b10;
+        font-size: 9pt;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .hero-band {
+        margin: 0.2in -0.68in 0.3in;
+        padding: 0.28in 0.68in;
+        background: var(--navy);
+        color: white;
+      }
+
+      .hero-band strong {
+        display: block;
+        margin-bottom: 0.05in;
+        color: #8dd1d0;
+        font-size: 9pt;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .hero-band span {
+        display: block;
+        max-width: 6.8in;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 17pt;
+        line-height: 1.3;
+      }
+
+      .facts {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.12in;
+        margin: 0 0 0.26in;
+      }
+
+      .fact {
+        min-height: 0.9in;
+        padding: 0.12in;
+        border-top: 3px solid var(--teal);
+        background: var(--wash);
+      }
+
+      .fact b {
+        display: block;
+        margin-bottom: 0.04in;
+        color: var(--muted);
+        font-size: 7.8pt;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .fact span {
+        color: var(--navy);
+        font-size: 11pt;
+        font-weight: 700;
+      }
+
+      .section {
+        margin-bottom: 0.22in;
+      }
+
+      .callout {
+        padding: 0.14in 0.17in;
+        border-left: 4px solid var(--gold);
+        background: #faf7ed;
+      }
+
+      .callout p:last-child,
+      .section p:last-child {
+        margin-bottom: 0;
+      }
+
+      .meeting {
+        margin-bottom: 0.2in;
+        padding: 0.16in 0.18in;
+        border: 1px solid var(--line);
+        border-left: 5px solid var(--blue);
+        border-radius: 4px;
+        background: white;
+      }
+
+      .meeting-header {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 0.12in;
+        align-items: start;
+        margin-bottom: 0.08in;
+      }
+
+      .meeting-name {
+        color: var(--navy);
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 16pt;
+        font-weight: 700;
+        line-height: 1.15;
+      }
+
+      .time {
+        padding: 0.05in 0.08in;
+        border-radius: 3px;
+        background: var(--navy);
+        color: white;
+        font-size: 9pt;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .org {
+        margin-bottom: 0.08in;
+        color: var(--teal);
+        font-weight: 700;
+      }
+
+      .label {
+        color: var(--muted);
+        font-size: 8pt;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .meeting p {
+        margin-bottom: 0.08in;
+      }
+
+      .meeting p:last-child {
+        margin-bottom: 0;
+      }
+
+      .priority-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0.08in 0 0.22in;
+      }
+
+      .priority-table th,
+      .priority-table td {
+        padding: 0.1in 0.09in;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .priority-table th {
+        background: var(--navy);
+        color: white;
+        font-size: 8pt;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .priority-table td:first-child {
+        width: 0.38in;
+        color: var(--blue);
+        font-size: 15pt;
+        font-weight: 800;
+      }
+
+      ul {
+        margin: 0.05in 0 0.18in 0.2in;
+        padding: 0;
+      }
+
+      li {
+        margin-bottom: 0.06in;
+      }
+
+      .two-col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.22in;
+      }
+
+      .record {
+        margin-bottom: 0.12in;
+        padding: 0.11in 0.14in;
+        border: 1px solid var(--line);
+        background: var(--wash);
+      }
+
+      .record-id {
+        color: var(--blue);
+        font-family: Consolas, monospace;
+        font-size: 8pt;
+        font-weight: 700;
+      }
+
+      .footer {
+        position: absolute;
+        right: 0.68in;
+        bottom: 0.24in;
+        left: 0.68in;
+        display: flex;
+        justify-content: space-between;
+        padding-top: 0.08in;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 7.5pt;
+        font-weight: 600;
+      }
+
+      .footer strong {
+        color: #8a6110;
+        letter-spacing: 0.03em;
+      }
+
+      @media print {
+        html,
+        body {
+          background: white;
+        }
+
+        .page {
+          margin: 0;
+          box-shadow: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <section class="page">
+      <div class="top-rule"></div>
+      <p class="eyebrow">Strategic Engagements / Index Validation Packet</p>
+      <h1>AUSA UAS Engagement Planning Packet</h1>
+      <p class="subtitle">
+        A self-contained synthetic document for testing document-grounded trip
+        planning, ranked meeting recommendations, day sequencing, and citation
+        enforcement in Azure AI Search.
+      </p>
+      <div class="synthetic-banner">
+        Synthetic test data - not an official AUSA program
+      </div>
+
+      <div class="hero-band">
+        <strong>Target question</strong>
+        <span
+          >"I am planning a trip to AUSA. Who should I meet on the UAS/drone
+          topic?"</span
+        >
+      </div>
+
+      <div class="facts">
+        <div class="fact">
+          <b>Event</b>
+          <span>AUSA Annual Meeting &amp; Exposition</span>
+        </div>
+        <div class="fact">
+          <b>Test dates</b>
+          <span>October 12-14, 2026</span>
+        </div>
+        <div class="fact">
+          <b>Destination</b>
+          <span>Washington, DC</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>What this packet contains</h3>
+        <ul>
+          <li>
+            A synthetic event fact sheet with dates, venue, city, and exhibit
+            hours.
+          </li>
+          <li>
+            Four fictional meeting targets whose presence and UAS relevance are
+            explicitly stated.
+          </li>
+          <li>
+            Three days of confirmed synthetic meeting windows and locations.
+          </li>
+          <li>
+            Known planning gaps that the agent should preserve instead of
+            inventing details.
+          </li>
+        </ul>
+      </div>
+
+      <div class="callout">
+        <p>
+          <strong>Data-use notice.</strong> Every person, organization, session,
+          booth assignment, meeting window, and schedule detail in this packet
+          is fictional and exists only for software testing. AUSA is referenced
+          solely as the synthetic anchor requested by the test.
+        </p>
+      </div>
+
+      <div class="footer">
+        <strong>SYNTHETIC TEST DATA - NOT FOR OPERATIONAL USE</strong>
+        <span>Page 1 of 8</span>
+      </div>
+    </section>
+
+    <section class="page">
+      <div class="top-rule"></div>
+      <p class="eyebrow">
+        AUSA Annual Meeting &amp; Exposition / Synthetic Event Record
+      </p>
+      <h2>Event Facts and Planning Anchor</h2>
+      <div class="synthetic-banner">Synthetic test data - event facts</div>
+
+      <div class="facts">
+        <div class="fact">
+          <b>Event dates</b>
+          <span>Mon Oct 12 - Wed Oct 14, 2026</span>
+        </div>
+        <div class="fact">
+          <b>Venue</b>
+          <span>Walter E. Washington Convention Center</span>
+        </div>
+        <div class="fact">
+          <b>City</b>
+          <span>Washington, DC</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Event identity</h3>
+        <p>
+          For this synthetic planning exercise, the anchor is the
+          <strong>AUSA Annual Meeting &amp; Exposition</strong>, scheduled for
+          <strong>October 12 through October 14, 2026</strong> at the
+          <strong
+            >Walter E. Washington Convention Center, 801 Mount Vernon Place NW,
+            Washington, DC</strong
+          >. The event is treated as a three-day conference and exposition.
+        </p>
+      </div>
+
+      <div class="section">
+        <h3>Synthetic exhibit hours</h3>
+        <table class="priority-table">
+          <thead>
+            <tr>
+              <th>Day</th>
+              <th>Date</th>
+              <th>Exhibit floor hours</th>
+              <th>Planning note</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>Monday, October 12</td>
+              <td>09:00-17:00</td>
+              <td>Industry autonomy and C-UAS meetings</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Tuesday, October 13</td>
+              <td>09:00-17:00</td>
+              <td>Edge AI session and speaker follow-up</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>Wednesday, October 14</td>
+              <td>09:00-15:30</td>
+              <td>Open architecture and Army lab engagement</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section">
+        <h3>Topic scope</h3>
+        <p>
+          The UAS/drone topic in this packet includes
+          <strong>unmanned aircraft systems</strong>,
+          <strong>small UAS</strong>, <strong>autonomy</strong>,
+          <strong>collaborative autonomy</strong>,
+          <strong>edge artificial intelligence</strong>,
+          <strong>open payload architectures</strong>, and
+          <strong>counter-UAS (C-UAS)</strong>. These terms are intentionally
+          repeated to support acronym and synonym retrieval.
+        </p>
+      </div>
+
+      <div class="callout">
+        <p>
+          <strong>Evidence boundary.</strong> This packet confirms only the
+          meeting windows and locations printed on later pages. It does not
+          confirm travel reservations, lodging, invitations, security access, or
+          attendee contact information.
+        </p>
+      </div>
+
+      <div class="footer">
+        <strong>SYNTHETIC TEST DATA - NOT FOR OPERATIONAL USE</strong>
+        <span>Page 2 of 8</span>
+      </div>
+    </section>
+
+    <section class="page">
+      <div class="top-rule"></div>
+      <p class="eyebrow">AUSA / UAS, Drone, Autonomy, and Counter-UAS</p>
+      <h2>Priority Meeting Slate</h2>
+      <div class="synthetic-banner">Synthetic test data - ranked targets</div>
+
+      <p>
+        The following four fictional targets have documented synthetic presence
+        at AUSA and direct relevance to UAS/drone priorities. The ranking
+        reflects topic relevance and the specificity of the meeting opportunity
+        in this packet; it is not an operational assessment.
+      </p>
+
+      <table class="priority-table">
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Meeting target</th>
+            <th>UAS relevance</th>
+            <th>Documented presence</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>
+              <strong>Dr. Maya Chen</strong><br />VP, Autonomy<br />Meridian
+              Robotics
+            </td>
+            <td>
+              Collaborative autonomy for small UAS and contested logistics
+            </td>
+            <td>Booth 1842; confirmed synthetic meeting on Day 1</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>
+              <strong>Daniel Ortiz</strong><br />Director, C-UAS Programs<br />Sentinel
+              Drone Systems
+            </td>
+            <td>Counter-UAS sensing, tracking, and defeat integration</td>
+            <td>Booth 2210; confirmed synthetic meeting on Day 1</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>
+              <strong>Priya Nair</strong><br />Chief Technology Officer<br />SkyFoundry
+              AI
+            </td>
+            <td>
+              Edge AI and resilient perception for small unmanned aircraft
+              systems
+            </td>
+            <td>Room 202B session; confirmed speaker follow-up on Day 2</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>
+              <strong>Marcus Bell</strong><br />Program Director<br />Army
+              Applied Autonomy Lab
+            </td>
+            <td>
+              Open UAS payload interfaces and government experimentation
+              pathways
+            </td>
+            <td>
+              Innovation Pavilion Table I-7; confirmed office hours on Day 3
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="two-col">
+        <div class="callout">
+          <h3>Primary outcomes</h3>
+          <ul>
+            <li>Compare autonomy and C-UAS approaches.</li>
+            <li>Identify test and integration opportunities.</li>
+            <li>Understand open-interface adoption barriers.</li>
+          </ul>
+        </div>
+        <div class="callout">
+          <h3>Do not infer</h3>
+          <ul>
+            <li>No personal contact details are provided.</li>
+            <li>No invitation acceptance is documented.</li>
+            <li>No costs, ROI, or travel times are stated.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer">
+        <strong>SYNTHETIC TEST DATA - NOT FOR OPERATIONAL USE</strong>
+        <span>Page 3 of 8</span>
+      </div>
+    </section>
+
+    <section class="page">
+      <div class="top-rule"></div>
+      <p class="eyebrow">
+        AUSA Day 1 / Monday, October 12, 2026 / Washington, DC
+      </p>
+      <h2>Industry Autonomy and Counter-UAS</h2>
+      <div class="synthetic-banner">
+        Synthetic test data - confirmed meeting windows
+      </div>
+
+      <div class="meeting">
+        <div class="meeting-header">
+          <div>
+            <div class="meeting-name">Dr. Maya Chen</div>
+            <div class="org">Vice President, Autonomy - Meridian Robotics</div>
+          </div>
+          <div class="time">10:30-11:00</div>
+        </div>
+        <p>
+          <span class="label">Location</span><br />Meridian Robotics Booth 1842,
+          AUSA exhibit floor, Walter E. Washington Convention Center
+        </p>
+        <p>
+          <span class="label">Documented presence</span><br />
+          Dr. Maya Chen is the named Meridian Robotics representative for the
+          full synthetic AUSA exhibit period. This packet confirms a reserved
+          test meeting window at Booth 1842 on Monday, October 12, 2026 from
+          10:30 to 11:00.
+        </p>
+        <p>
+          <span class="label">Purpose and relevance</span><br />
+          Discuss Meridian Robotics' collaborative autonomy stack for small
+          unmanned aircraft systems, degraded-communications behavior, and
+          modular mission software for contested logistics. Ask what government
+          test environment and interface documentation would be needed for a
+          follow-on technical exchange.
+        </p>
+      </div>
+
+      <div class="meeting">
+        <div class="meeting-header">
+          <div>
+            <div class="meeting-name">Daniel Ortiz</div>
+            <div class="org">
+              Director, C-UAS Programs - Sentinel Drone Systems
+            </div>
+          </div>
+          <div class="time">14:00-14:30</div>
+        </div>
+        <p>
+          <span class="label">Location</span><br />Sentinel Drone Systems Booth
+          2210, AUSA exhibit floor, Walter E. Washington Convention Center
+        </p>
+        <p>
+          <span class="label">Documented presence</span><br />
+          Daniel Ortiz is the named Sentinel Drone Systems representative for
+          the synthetic AUSA counter-UAS demonstration. This packet confirms a
+          reserved test meeting window at Booth 2210 on Monday, October 12, 2026
+          from 14:00 to 14:30.
+        </p>
+        <p>
+          <span class="label">Purpose and relevance</span><br />
+          Review counter-UAS sensing, tracking, command-and-control integration,
+          and layered defeat options against small drone threats. Ask which
+          interfaces are available for government test ranges and what evidence
+          exists for performance in dense radio-frequency environments.
+        </p>
+      </div>
+
+      <div class="callout">
+        <p>
+          <strong>Day 1 note.</strong> Both meetings are inside the convention
+          center. This packet does not state the walking time between Booth 1842
+          and Booth 2210, so no transit duration should be invented.
+        </p>
+      </div>
+
+      <div class="footer">
+        <strong>SYNTHETIC TEST DATA - NOT FOR OPERATIONAL USE</strong>
+        <span>Page 4 of 8</span>
+      </div>
+    </section>
+
+    <section class="page">
+      <div class="top-rule"></div>
+      <p class="eyebrow">
+        AUSA Day 2 / Tuesday, October 13, 2026 / Washington, DC
+      </p>
+      <h2>Edge AI for Small UAS</h2>
+      <div class="synthetic-banner">
+        Synthetic test data - session and follow-up
+      </div>
+
+      <div class="meeting">
+        <div class="meeting-header">
+          <div>
+            <div class="meeting-name">Priya Nair</div>
+            <div class="org">Chief Technology Officer - SkyFoundry AI</div>
+          </div>
+          <div class="time">10:00-10:20</div>
+        </div>
+        <p>
+          <span class="label">Location</span><br />Speaker discussion area
+          outside Room 202B, Walter E. Washington Convention Center
+        </p>
+        <p>
+          <span class="label">Documented presence</span><br />
+          Priya Nair is the featured speaker for the synthetic session "Edge AI
+          for Small UAS," scheduled in Room 202B on Tuesday, October 13, 2026
+          from 09:00 to 09:45. This packet confirms a reserved test follow-up
+          with Priya Nair in the speaker discussion area outside Room 202B from
+          10:00 to 10:20.
+        </p>
+        <p>
+          <span class="label">Purpose and relevance</span><br />
+          Discuss resilient onboard perception for small unmanned aircraft
+          systems, operation under intermittent connectivity, edge-model
+          assurance, and integration with modular autonomy stacks. Ask which
+          evaluation data can be shared for a government technical assessment.
+        </p>
+      </div>
+
+      <div class="section">
+        <h3>Supporting session record</h3>
+        <div class="record">
+          <div class="record-id">SYN-SESSION-UAS-201</div>
+          <strong>Edge AI for Small UAS</strong><br />
+          Tuesday, October 13, 2026, 09:00-09:45, Room 202B. The synthetic
+          session covers onboard perception, low-bandwidth operations, model
+          assurance, and edge compute limits for small UAS. Priya Nair of
+          SkyFoundry AI is the named featured speaker.
+        </div>
+      </div>
+
+      <div class="callout">
+        <p>
+          <strong>Day 2 note.</strong> The packet confirms the session and
+          follow-up window but does not confirm reserved seating, credential
+          requirements, or a private meeting room.
+        </p>
+      </div>
+
+      <div class="footer">
+        <strong>SYNTHETIC TEST DATA - NOT FOR OPERATIONAL USE</strong>
+        <span>Page 5 of 8</span>
+      </div>
+    </section>
+
+    <section class="page">
+      <div class="top-rule"></div>
+      <p class="eyebrow">
+        AUSA Day 3 / Wednesday, October 14, 2026 / Washington, DC
+      </p>
+      <h2>Open Architecture and Experimentation</h2>
+      <div class="synthetic-banner">Synthetic test data - office hours</div>
+
+      <div class="meeting">
+        <div class="meeting-header">
+          <div>
+            <div class="meeting-name">Marcus Bell</div>
+            <div class="org">Program Director - Army Applied Autonomy Lab</div>
+          </div>
+          <div class="time">14:30-15:00</div>
+        </div>
+        <p>
+          <span class="label">Location</span><br />Innovation Pavilion Table
+          I-7, Walter E. Washington Convention Center
+        </p>
+        <p>
+          <span class="label">Documented presence</span><br />
+          Marcus Bell is the named host for the Army Applied Autonomy Lab's
+          synthetic AUSA office hours. This packet confirms an office-hours
+          meeting at Innovation Pavilion Table I-7 on Wednesday, October 14,
+          2026 from 14:30 to 15:00.
+        </p>
+        <p>
+          <span class="label">Purpose and relevance</span><br />
+          Discuss open payload interfaces for unmanned aircraft systems,
+          reusable autonomy test harnesses, pathways for government
+          experimentation, and the evidence package expected before a technology
+          enters a field demonstration. Ask how industry teams should document
+          interface compliance and safety constraints.
+        </p>
+      </div>
+
+      <div class="section">
+        <h3>Supporting office-hours record</h3>
+        <div class="record">
+          <div class="record-id">SYN-OFFICE-UAS-301</div>
+          <strong>Army Applied Autonomy Lab - Open UAS Interfaces</strong><br />
+          Wednesday, October 14, 2026, 14:30-15:00, Innovation Pavilion Table
+          I-7. Marcus Bell is the named program director. The synthetic
+          discussion covers open UAS payload interfaces, government test
+          harnesses, experimentation pathways, and safety evidence.
+        </div>
+      </div>
+
+      <div class="callout">
+        <p>
+          <strong>Day 3 note.</strong> Exhibit floor hours end at 15:30 in this
+          synthetic packet. No later meeting, departure time, or airport
+          transfer is documented.
+        </p>
+      </div>
+
+      <div class="footer">
+        <strong>SYNTHETIC TEST DATA - NOT FOR OPERATIONAL USE</strong>
+        <span>Page 6 of 8</span>
+      </div>
+    </section>
+
+    <section class="page compact">
+      <div class="top-rule"></div>
+      <p class="eyebrow">AUSA / Synthetic Trip Constraints</p>
+      <h2>Logistics, Boundaries, and Known Gaps</h2>
+      <div class="synthetic-banner">
+        Synthetic test data - preserve these gaps
+      </div>
+
+      <div class="two-col">
+        <div class="section">
+          <h3>Documented logistics</h3>
+          <ul>
+            <li>
+              The synthetic event venue is the Walter E. Washington Convention
+              Center.
+            </li>
+            <li>
+              The stated venue address is 801 Mount Vernon Place NW, Washington,
+              DC.
+            </li>
+            <li>
+              All four recommended meetings occur inside the convention center.
+            </li>
+            <li>The event runs October 12-14, 2026.</li>
+            <li>The final documented meeting ends at 15:00 on October 14.</li>
+          </ul>
+        </div>
+        <div class="section">
+          <h3>Required planning gaps</h3>
+          <ul>
+            <li>The traveler and senior leader are not identified.</li>
+            <li>
+              Origin city and travel dates outside the event are not provided.
+            </li>
+            <li>
+              No flight, rail, hotel, vehicle, or reservation is documented.
+            </li>
+            <li>No meeting invitation or acceptance status is provided.</li>
+            <li>
+              No security, credential, or escort requirements are provided.
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Facts this packet does not support</h3>
+        <table class="priority-table">
+          <thead>
+            <tr>
+              <th>Unsupported detail</th>
+              <th>Required handling</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Walking or driving time</td>
+              <td>Do not estimate; note that transit time is absent.</td>
+            </tr>
+            <tr>
+              <td>Meeting availability beyond listed windows</td>
+              <td>Do not infer; use only the four stated windows.</td>
+            </tr>
+            <tr>
+              <td>Budget, cost, or trip ROI</td>
+              <td>Do not calculate; no cost evidence is present.</td>
+            </tr>
+            <tr>
+              <td>Personal phone numbers or email addresses</td>
+              <td>Do not invent; none are present.</td>
+            </tr>
+            <tr>
+              <td>Operational endorsement or commitment</td>
+              <td>Do not imply; the packet is synthetic test data.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <p>
+          <strong>Expected agent behavior.</strong> A document-grounded plan may
+          sequence the four stated meetings across October 12-14, 2026. It
+          should list the missing traveler, travel, reservation, access,
+          transit, budget, and invitation details as gaps.
+        </p>
+      </div>
+
+      <div class="footer">
+        <strong>SYNTHETIC TEST DATA - NOT FOR OPERATIONAL USE</strong>
+        <span>Page 7 of 8</span>
+      </div>
+    </section>
+
+    <section class="page">
+      <div class="top-rule"></div>
+      <p class="eyebrow">AUSA / Synthetic Attendance Confirmations</p>
+      <h2>Retrieval Appendix</h2>
+      <div class="synthetic-banner">
+        Synthetic test data - exact-name evidence
+      </div>
+
+      <p>
+        This appendix repeats the synthetic attendance confirmations in compact
+        form so exact-name follow-up searches can recover a self-contained
+        passage.
+      </p>
+
+      <div class="record">
+        <div class="record-id">SYN-CONFIRMATION-001</div>
+        <strong>Dr. Maya Chen - Meridian Robotics</strong><br />
+        Confirmed synthetic AUSA presence: Monday, October 12, 2026,
+        10:30-11:00, Booth 1842, Walter E. Washington Convention Center. Topic:
+        collaborative autonomy, small UAS, modular mission software, and
+        contested logistics.
+      </div>
+
+      <div class="record">
+        <div class="record-id">SYN-CONFIRMATION-002</div>
+        <strong>Daniel Ortiz - Sentinel Drone Systems</strong><br />
+        Confirmed synthetic AUSA presence: Monday, October 12, 2026,
+        14:00-14:30, Booth 2210, Walter E. Washington Convention Center. Topic:
+        counter-UAS sensing, tracking, command and control integration, and
+        layered defeat against small drone threats.
+      </div>
+
+      <div class="record">
+        <div class="record-id">SYN-CONFIRMATION-003</div>
+        <strong>Priya Nair - SkyFoundry AI</strong><br />
+        Confirmed synthetic AUSA presence: Tuesday, October 13, 2026,
+        10:00-10:20, speaker discussion area outside Room 202B, Walter E.
+        Washington Convention Center. Topic: edge AI, resilient perception, and
+        assurance for small unmanned aircraft systems.
+      </div>
+
+      <div class="record">
+        <div class="record-id">SYN-CONFIRMATION-004</div>
+        <strong>Marcus Bell - Army Applied Autonomy Lab</strong><br />
+        Confirmed synthetic AUSA presence: Wednesday, October 14, 2026,
+        14:30-15:00, Innovation Pavilion Table I-7, Walter E. Washington
+        Convention Center. Topic: open UAS payload interfaces, autonomy test
+        harnesses, and government experimentation pathways.
+      </div>
+
+      <div class="section">
+        <h3>Expected high-level plan</h3>
+        <p>
+          Day 1 may include Dr. Maya Chen and Daniel Ortiz. Day 2 may include
+          Priya Nair. Day 3 may include Marcus Bell. Every recommendation must
+          cite the Search hit that contains its confirmation; this appendix does
+          not provide Azure AI Search hit IDs because those are assigned by the
+          index at ingestion and query time.
+        </p>
+      </div>
+
+      <div class="callout">
+        <p>
+          <strong>End of synthetic packet.</strong> These records are
+          intentionally fictional and must not be used as evidence of real AUSA
+          attendance, availability, or organizational positions.
+        </p>
+      </div>
+
+      <div class="footer">
+        <strong>SYNTHETIC TEST DATA - NOT FOR OPERATIONAL USE</strong>
+        <span>Page 8 of 8</span>
+      </div>
+    </section>
+  </body>
+</html>

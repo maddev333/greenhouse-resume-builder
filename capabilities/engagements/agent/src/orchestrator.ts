@@ -22,6 +22,7 @@ import {
   runPythonAgent,
   type DiscoveredCapability,
   type PythonAgentDecision,
+  type PythonDocumentTripPlan,
   type PythonAgentResult,
 } from "./python-runtime.js";
 import {
@@ -92,6 +93,17 @@ export interface EventPlanContext {
   dayAssignments?: Record<string, number>;
 }
 
+export interface DocumentPlanCitation {
+  id: string;
+  title: string | null;
+  url: string | null;
+  parentId: string | null;
+}
+
+export interface DocumentTripPlan extends PythonDocumentTripPlan {
+  citations: DocumentPlanCitation[];
+}
+
 /**
  * When a turn is `mode: 'deterministic'`, WHY the LLM tool-calling loop wasn't used — surfaced in the
  * UI so the demo explains itself:
@@ -129,6 +141,8 @@ export interface PlanResult {
   itinerary: any | null;
   /** The ui://trip-map App payload for the host to render. */
   tripMap: any | null;
+  /** Cited itinerary synthesized from search_grounding when no structured planner is connected. */
+  documentPlan?: DocumentTripPlan | null;
   error?: string;
 
   // ── Leader-first, multi-option `/ask` envelope (additive; absent on the legacy single-plan path) ──
@@ -287,34 +301,73 @@ export function buildSystemPrompt(
 /**
  * System prompt for a capability running RETRIEVAL_BACKEND=grounding.
  *
- * That deployment registers ONLY `search_grounding` over a document corpus — there are no contacts,
- * events, leaders, or itineraries to plan with, and no seed catalog is injected. The turn is a cited
- * lookup or it is nothing.
+ * That deployment registers ONLY `search_grounding` as its data tool. Trusted Agent Framework
+ * skills teach the model how to synthesize a cited plan without injecting a seed catalog.
  */
 export function buildGroundingSystemPrompt(): string {
   return [
     "You are the Strategic Engagements grounded-answer assistant for a U.S. Army senior-leader",
     "executive assistant (EA).",
     "",
-    `The connected capability serves a DOCUMENT corpus and exposes exactly one tool, ${GROUNDING_TOOL_NAME}.`,
+    `The connected capability serves a DOCUMENT corpus and exposes one corpus tool, ${GROUNDING_TOOL_NAME}.`,
     "There is no contact directory, event calendar, leader roster, topic catalog, or itinerary builder",
-    "available in this deployment, and none is embedded in these instructions.",
+    "available in this deployment, and none is embedded in these instructions. Trusted planning skills",
+    "are advertised separately by the runtime and contain procedure only, never trip facts.",
     "",
     "Policy:",
-    `1. Call ${GROUNDING_TOOL_NAME} before answering. Re-query with different wording when the first`,
+    `1. For a trip-planning request, first load the document-trip-planning skill and follow it. Read`,
+    "   the resources it requires before searching. For other requests, use the corpus directly.",
+    `2. Call ${GROUNDING_TOOL_NAME} before answering. Re-query with different wording when the first`,
     "   passages are thin; you may call it several times.",
-    "2. Answer ONLY from the returned passages. Cite the title (and url when present) of each passage",
+    "3. Answer ONLY from the returned passages. Cite the title (and url when present) of each passage",
     "   you rely on.",
-    "3. If no passage supports an answer, say the corpus has nothing on it and stop. Do NOT substitute",
+    "4. If no passage supports an answer, say the corpus has nothing on it and stop. Do NOT substitute",
     "   prior knowledge, generic advice, illustrative names, or example organizations — a plausible",
     "   answer with no passage behind it is the worst possible outcome here.",
-    "4. Never name a person, organization, event, or leader id that did not appear in a passage.",
-    "5. You cannot plan trips, rank leaders, or build itineraries in this deployment. When asked, say",
-    "   the planning tools are not connected, then answer whatever part the corpus does cover.",
-    '6. Always return intent="lookup" and stage="answer"; leave clarify, category, leaderId, and',
-    "   recommendedOptionIndex null.",
-    "7. Keep answer concise and EA-ready.",
+    "5. Never name a person, organization, event, or leader id that did not appear in a passage.",
+    '6. For a supported trip, return stage="plan", a planning intent, and documentPlan. Every',
+    "   sourceIds value must be an exact hit id returned this turn. Leave leaderId null unless the",
+    "   corpus explicitly defines that id.",
+    '7. For a lookup or an unsupported trip, return intent="lookup", stage="answer", and no',
+    "   documentPlan. Leave clarify, category, leaderId, and recommendedOptionIndex null.",
+    "8. Keep answer concise and EA-ready.",
   ].join("\n");
+}
+
+function projectDocumentPlan(
+  plan: PythonDocumentTripPlan,
+  captured: CapturedCall[],
+): DocumentTripPlan {
+  const hits = new Map<string, any>();
+  for (const call of captured) {
+    if (call.name !== GROUNDING_TOOL_NAME) continue;
+    for (const hit of call.result?.hits ?? []) {
+      if (hit?.id) hits.set(String(hit.id), hit);
+    }
+  }
+  const referenced = new Set(plan.sourceIds);
+  for (const day of plan.days) {
+    for (const meeting of day.meetings) {
+      for (const id of meeting.sourceIds) referenced.add(id);
+    }
+  }
+  return {
+    ...plan,
+    citations: [...referenced].map((id) => {
+      const hit = hits.get(id);
+      if (!hit) {
+        throw new IncompleteAgentDecision(
+          `Document plan cited a Search hit that was not captured: ${id}`,
+        );
+      }
+      return {
+        id,
+        title: typeof hit.title === "string" ? hit.title : null,
+        url: typeof hit.url === "string" ? hit.url : null,
+        parentId: typeof hit.parentId === "string" ? hit.parentId : null,
+      };
+    }),
+  };
 }
 
 export function normalizeConversationHistory(
@@ -1773,6 +1826,31 @@ export function agentDecisionToPlanResult(
     ),
   ];
 
+  if (decision.documentPlan) {
+    if (decision.stage !== "plan" || decision.intent === "lookup") {
+      throw new IncompleteAgentDecision(
+        "A document plan requires a planning intent and the plan stage.",
+      );
+    }
+    return {
+      ...base,
+      ok: true,
+      mode: "llm",
+      deterministicReason: null,
+      answer: decision.answer,
+      toolCalls,
+      stage: "plan",
+      clarify: null,
+      category: null,
+      leaderId: decision.leaderId,
+      leaderName: null,
+      menu: null,
+      itinerary: null,
+      tripMap: null,
+      documentPlan: projectDocumentPlan(decision.documentPlan, captured),
+    };
+  }
+
   if (decision.stage === "options") {
     if (successfulBuildCalls.length < 2) {
       throw new IncompleteAgentDecision(
@@ -2341,8 +2419,8 @@ export interface AreaOptionsRequest {
 
 export interface AreaOptionsResult {
   ok: boolean;
-  /** `clarify` = the orchestrator needs a decision first; `options` = the menus are ready. */
-  stage: "clarify" | "options";
+  /** `clarify` = needs a decision; `options` = menus ready; `unavailable` = no planner surface. */
+  stage: "clarify" | "options" | "unavailable";
   /** When `stage:'clarify'`, WHICH decision is pending (drives the single question returned). */
   clarify: "area" | "leader" | null;
   question: string | null;
@@ -2626,6 +2704,14 @@ export async function planAreaOptions(
     client = await makeToolClient(url);
   } catch (e: any) {
     throwIfGovernanceDenied(e);
+    if (e instanceof GroundingOnlyCapabilityError) {
+      return {
+        ...emptyOptions(req.question ?? null, window),
+        stage: "unavailable",
+        answer:
+          "Guided trip planning is unavailable in document search mode. Ask a question about the indexed documents, or use a planner-backed data source for contacts, events, and leaders.",
+      };
+    }
     return {
       ...emptyOptions(req.question ?? null, window),
       error:
@@ -2712,6 +2798,43 @@ export async function planAreaOptions(
   } finally {
     await client.close().catch(() => {});
   }
+}
+
+/**
+ * Backend-aware entry for the UI's "Plan a trip" action. Structured backends retain the existing
+ * deterministic option wizard; a grounding-only corpus uses the skill-enabled model path and
+ * returns a cited documentPlan (or a grounded explanation of what evidence is missing).
+ */
+export async function planGuidedTrip(
+  req: AreaOptionsRequest,
+): Promise<AreaOptionsResult | PlanResult> {
+  const url = req.serverUrl || DEFAULT_URL();
+  let capability: DiscoveredCapability;
+  try {
+    capability = await discoverGovernedTools({
+      mcpUrl: url,
+      discoveryMcpUrl: DISCOVERY_URL(),
+    });
+  } catch {
+    return planAreaOptions(req);
+  }
+
+  if (capability.backend === "planner") {
+    return planAreaOptions(req);
+  }
+
+  const cityState = [req.city, req.state].filter(Boolean).join(", ");
+  const explicitArea = req.region ?? (cityState || undefined) ?? req.regionId;
+  const question =
+    req.question?.trim() ||
+    (explicitArea
+      ? `Plan a trip to ${explicitArea} using the indexed documents.`
+      : "Help me plan a trip using the indexed documents. Identify the event or destination details you need from me.");
+  return planTrip({
+    question,
+    radiusMi: req.radiusMi,
+    serverUrl: url,
+  });
 }
 
 /** Project a build_itinerary structuredContent into the compact itinerary the chat host renders. */

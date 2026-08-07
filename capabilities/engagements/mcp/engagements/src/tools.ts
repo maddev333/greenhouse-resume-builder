@@ -622,7 +622,17 @@ function registerGroundingTool(server: McpServer): void {
           .max(50)
           .optional()
           .describe(
-            "How many passages to return after collapsing by source document (default 8).",
+            "Maximum passages to return after applying source diversity (default 8).",
+          ),
+        maxPerParent: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe(
+            "Maximum passages from one parent document (default 1). Increase for batched ID " +
+              "lookups when one JSON or CSV source contains many records.",
           ),
         filter: z
           .string()
@@ -632,8 +642,8 @@ function registerGroundingTool(server: McpServer): void {
           ),
       },
     },
-    async ({ query, top, filter }): Promise<CallToolResult> => {
-      const hits = await searchGrounding({ query, top, filter });
+    async ({ query, top, maxPerParent, filter }): Promise<CallToolResult> => {
+      const hits = await searchGrounding({ query, top, maxPerParent, filter });
       const summary = hits.length
         ? `${hits.length} passage(s) for "${query}".`
         : `No passages matched "${query}".`;
